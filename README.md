@@ -1,0 +1,99 @@
+# UburNode 音频检索服务
+
+基于 [UburNode 音频检索服务技术规范](.cursor/skills/uburnode-audio-search/SKILL.md) 搭建的 FastAPI 工程骨架。
+
+## 架构
+
+```text
+对外 HTTP (FastAPI)  ──读──► Elasticsearch + Embedding + RetrievalService
+                    ──写──► comm-service (gRPC) ──► MongoDB
+                              └── EsSync ──► Elasticsearch
+```
+
+## 目录结构
+
+```text
+UburNode/
+├── app/
+│   ├── main.py              # FastAPI 入口 + lifespan
+│   ├── core/                # 配置、日志
+│   ├── api/audio.py         # 4 个 HTTP 端点
+│   ├── schemas/audio.py     # Pydantic 模型
+│   ├── services/            # AudioService、RetrievalService
+│   ├── es/                  # EsSearch、EsSync
+│   ├── embedding/encoder.py # BGE-M3 向量编码
+│   └── comm/client.py       # comm-service gRPC 客户端
+├── proto/                   # bionode_comm.proto（唯一真源）
+├── scripts/gen_proto.sh     # 生成 gRPC stub
+├── tests/
+├── .cursor/skills/          # 项目 Skill
+├── pyproject.toml
+└── .env.example
+```
+
+## 快速开始
+
+```bash
+# 1. 创建虚拟环境并安装依赖
+python3.12 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+
+# 2. 生成 comm gRPC stub
+chmod +x scripts/gen_proto.sh
+./scripts/gen_proto.sh
+
+# 3. 配置环境变量
+cp .env.example .env
+# 编辑 ES_NODE、COMM_GRPC_HOST 等
+
+# 4. 启动服务
+uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
+```
+
+开发模式（`APP_DEBUG=true`）跳过 Embedding 模型加载，便于本地调试 HTTP 路由。
+
+## HTTP 端点
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/audio` | POST | 创建音频并同步 ES |
+| `/audio/{id}` | PUT | 更新音频并同步 ES |
+| `/audio/{id}` | DELETE | 删除音频并同步 ES |
+| `/audio/search` | POST | 三维度检索 |
+| `/health` | GET | 健康检查 |
+
+OpenAPI 文档：启动后访问 `http://localhost:8080/docs`。
+
+## 检索流水线
+
+```text
+睡眠阶段精确过滤 → 内容形态准入 → 厌恶剔除 + 粗排 → 精排
+```
+
+## Proto 变更
+
+`comm-service` 修改 `proto/bionode_comm.proto` 后须重新生成 stub：
+
+```bash
+./scripts/gen_proto.sh
+```
+
+## 日志
+
+每次 HTTP 请求自动写入日志文件（`RequestLogMiddleware`），包含 method、path、status、耗时、`request_id`。
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `LOG_DIR` | `logs` | 日志目录 |
+| `LOG_FILE_NAME` | `uburnode.log` | 日志文件名 |
+| `LOG_ROTATION` | `10 MB` | 单文件滚动大小 |
+| `LOG_RETENTION` | `7 days` | 历史日志保留 |
+
+日志同时输出到控制台和 `logs/uburnode.log`。响应头会回传 `X-Request-Id` 便于链路追踪。
+
+## 测试
+
+```bash
+pytest
+```

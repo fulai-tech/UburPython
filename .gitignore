@@ -1,0 +1,22 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+.env
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+logs/*.log
+logs/*.log.*
+.DS_Store
+.idea/
+.vscode/
+.cursor/
+
+# 模型缓存（sentence-transformers / HuggingFace）
+.cache/
+models/

@@ -1,0 +1,45 @@
+[project]
+name = "uburnode-audio-search-service"
+version = "0.1.0"
+description = "UburNode 音频检索服务 — FastAPI HTTP 对外 + gRPC 调 comm-service + ES 索引"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115.0,<0.116",
+    "uvicorn[standard]>=0.32.0",
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.6.0",
+    "elasticsearch>=8.15.0,<9",
+    "aiohttp>=3.11.0",
+    "grpcio>=1.68.0",
+    "grpcio-tools>=1.68.0",
+    "sentence-transformers>=3.3.0",
+    "loguru>=0.7.0",
+    "anyio>=4.6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "httpx>=0.28.0",
+    "ruff>=0.8.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
