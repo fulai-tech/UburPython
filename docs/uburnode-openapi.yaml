@@ -1,0 +1,393 @@
+openapi: 3.0.3
+info:
+  title: UburNode 音频检索服务
+  description: |
+    音频检索 HTTP API。写路径经 comm-service 写 Mongo 并同步 ES；读路径只查 ES。
+
+    **标签前缀（扁平 tags）**：`sleep:`、`content:`、`mechanism:`、`feat:`、`rhythm:`、`risk:`；无前缀默认归入 content_form。
+
+    **统一响应**：`{ code, msg, data, timestamp }`，`code` 与 HTTP 状态码一致（200 成功），业务数据在 `data`。
+
+    **测试前置**：本地需 ES（`docker compose -f docker-compose.es.yml up -d`）且服务已启动；CUD 需 comm-service 可达。
+  version: 0.1.0
+  contact:
+    name: UburNode
+
+servers:
+  - url: http://localhost:8080
+    description: 本地开发
+  - url: http://uburnode
+    description: 内网 Nginx（生产/测试机）
+
+tags:
+  - name: audio
+    description: 音频原料 CUD 与检索
+
+paths:
+  /api/audio:
+    post:
+      tags: [audio]
+      summary: 创建音频
+      description: comm-service 写 Mongo → EsSync 同步 ES（含 embedding）。创建接口返回的 id 用于后续更新/删除。
+      operationId: createAudio
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAudioRequest"
+            example:
+              audio_url: https://cdn.example.com/a.mp3
+              audio_name: 深夜雨声
+              tags:
+                - "sleep:深睡"
+                - "content:雨声"
+              evidence_level: C
+              recommend_weight: 0.45
+              category_code: 0
+              noise_color: ""
+              description: ""
+      responses:
+        "200":
+          $ref: "#/components/responses/ApiSuccessCreate"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "502":
+          $ref: "#/components/responses/UpstreamError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/audio/{material_id}:
+    put:
+      tags: [audio]
+      summary: 更新音频
+      description: 未传字段表示不修改；更新后从 comm 读回真值再 upsert ES。
+      operationId: updateAudio
+      parameters:
+        - $ref: "#/components/parameters/MaterialId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateAudioRequest"
+            example:
+              audio_name: 深夜雨声（修订）
+              tags:
+                - "sleep:深睡"
+                - "content:白噪音"
+              evidence_level: B
+              recommend_weight: 0.75
+      responses:
+        "200":
+          $ref: "#/components/responses/ApiSuccessEmpty"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    delete:
+      tags: [audio]
+      summary: 删除音频
+      description: comm 删 Mongo 真值 + EsSync 删 audio_materials 文档；tag_vectors 不删（标签向量可被其他音频复用）。
+      operationId: deleteAudio
+      parameters:
+        - $ref: "#/components/parameters/MaterialId"
+      responses:
+        "200":
+          $ref: "#/components/responses/ApiSuccessEmpty"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/audio/search:
+    post:
+      tags: [audio]
+      summary: 检索音频
+      description: |
+        三维度检索（只读 ES）：睡眠阶段精确过滤 → 内容形态准入（精确/向量≥SIM_THRESHOLD）→ 厌恶剔除 + 粗排 → 精排。
+      operationId: searchAudio
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SearchAudioRequest"
+            example:
+              sleep_stage_tags:
+                - 深睡
+              content_tags:
+                - 雨声
+              disliked_tags:
+                - 嘈杂
+              top_k: 10
+      responses:
+        "200":
+          $ref: "#/components/responses/ApiSuccessSearch"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+components:
+  parameters:
+    MaterialId:
+      name: material_id
+      in: path
+      required: true
+      description: 音频原料 ID（Mongo ObjectId 字符串）
+      schema:
+        type: string
+        example: "674a1b2c3d4e5f6789012345"
+
+  responses:
+    ApiSuccessCreate:
+      description: 创建成功（code=200）
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiEnvelope"
+          example:
+            code: 200
+            msg: 创建成功
+            data:
+              id: "674a1b2c3d4e5f6789012345"
+            timestamp: 1717500000000
+    ApiSuccessEmpty:
+      description: 操作成功且无业务数据（code=200）
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiEnvelope"
+          example:
+            code: 200
+            msg: 更新成功
+            data: {}
+            timestamp: 1717500000000
+    ApiSuccessSearch:
+      description: 检索成功（code=200，无命中时 data.results 为空数组）
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiEnvelope"
+          example:
+            code: 200
+            msg: 检索成功
+            data:
+              results: []
+            timestamp: 1717500000000
+    ValidationError:
+      description: 请求参数校验失败
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiEnvelope"
+          example:
+            code: 422
+            msg: "body.audio_url: Field required"
+            data: {}
+            timestamp: 1717500000000
+    ServiceUnavailable:
+      description: 依赖未就绪（如编码器、ES、服务启动中）
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiEnvelope"
+          example:
+            code: 503
+            msg: 向量编码器未就绪，请关闭 APP_DEBUG 并确保模型已加载
+            data: {}
+            timestamp: 1717500000000
+    UpstreamError:
+      description: 上游 comm-service 或内部编排失败
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiEnvelope"
+          example:
+            code: 502
+            msg: 创建成功但按名称未找到原料：深夜雨声
+            data: {}
+            timestamp: 1717500000000
+    InternalError:
+      description: 未预期服务器错误
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiEnvelope"
+          example:
+            code: 500
+            msg: 服务器内部错误，请稍后重试
+            data: {}
+            timestamp: 1717500000000
+
+  schemas:
+    ApiEnvelope:
+      type: object
+      required: [code, msg, data, timestamp]
+      properties:
+        code:
+          type: integer
+          description: 与 HTTP 状态码一致，200 为成功
+        msg:
+          type: string
+        data:
+          type: object
+          additionalProperties: true
+        timestamp:
+          type: integer
+          format: int64
+          description: Unix 毫秒时间戳
+
+    EvidenceLevel:
+      type: string
+      enum: [A, B, C, D, R, X]
+      description: 证据等级
+
+    TagItem:
+      type: object
+      required: [vector_id, label]
+      properties:
+        vector_id:
+          type: string
+          description: 关联 tag_vectors 索引的文档 ID
+        label:
+          type: string
+
+    AudioTags:
+      type: object
+      properties:
+        sleep_stage:
+          type: array
+          items:
+            $ref: "#/components/schemas/TagItem"
+        content_form:
+          type: array
+          items:
+            $ref: "#/components/schemas/TagItem"
+        mechanism:
+          type: array
+          items:
+            $ref: "#/components/schemas/TagItem"
+        audio_feat:
+          type: array
+          items:
+            $ref: "#/components/schemas/TagItem"
+        rhythm:
+          type: array
+          items:
+            $ref: "#/components/schemas/TagItem"
+        risk_control:
+          type: array
+          items:
+            $ref: "#/components/schemas/TagItem"
+
+    CreateAudioRequest:
+      type: object
+      required: [audio_url, audio_name]
+      properties:
+        audio_url:
+          type: string
+          format: uri
+        audio_name:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+          description: Mongo 扁平标签，EsSync 按前缀拆六维
+        evidence_level:
+          $ref: "#/components/schemas/EvidenceLevel"
+          default: C
+        recommend_weight:
+          type: number
+          format: float
+          nullable: true
+          description: 不传则按 evidence_level 映射默认权重
+        category_code:
+          type: integer
+          default: 0
+        noise_color:
+          type: string
+          default: ""
+        description:
+          type: string
+          default: ""
+
+    UpdateAudioRequest:
+      type: object
+      properties:
+        audio_url:
+          type: string
+          format: uri
+          nullable: true
+        audio_name:
+          type: string
+          nullable: true
+        tags:
+          type: array
+          items:
+            type: string
+          nullable: true
+        evidence_level:
+          allOf:
+            - $ref: "#/components/schemas/EvidenceLevel"
+          nullable: true
+        recommend_weight:
+          type: number
+          format: float
+          nullable: true
+        category_code:
+          type: integer
+          nullable: true
+        noise_color:
+          type: string
+          nullable: true
+        description:
+          type: string
+          nullable: true
+        status:
+          type: integer
+          nullable: true
+
+    SearchAudioRequest:
+      type: object
+      properties:
+        sleep_stage_tags:
+          type: array
+          items:
+            type: string
+        content_tags:
+          type: array
+          items:
+            type: string
+        disliked_tags:
+          type: array
+          items:
+            type: string
+        top_k:
+          type: integer
+          default: 10
+          minimum: 1
+
+    AudioResult:
+      type: object
+      required:
+        - audio_url
+        - audio_name
+        - tags
+        - evidence_level
+        - recommend_weight
+      properties:
+        audio_url:
+          type: string
+        audio_name:
+          type: string
+        tags:
+          $ref: "#/components/schemas/AudioTags"
+        evidence_level:
+          $ref: "#/components/schemas/EvidenceLevel"
+        recommend_weight:
+          type: number
+          format: float
+
