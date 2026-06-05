@@ -1,4 +1,4 @@
-"""BGE-M3 文本向量化。
+"""BGE-small-zh 文本向量化。
 
 sentence-transformers 推理为 CPU 阻塞调用，必须用 anyio.to_thread 避免卡住事件循环（规范 §八）。
 """
@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING
 import anyio
 from loguru import logger
 
+from app.core.exceptions import EncoderNotReadyError
+
 if TYPE_CHECKING:
     from sentence_transformers import SentenceTransformer
 
@@ -17,7 +19,7 @@ if TYPE_CHECKING:
 
 
 class Encoder:
-    """文本 → 1024 维向量（BAAI/bge-m3，normalize_embeddings=True 便于余弦比较）。"""
+    """文本 → 512 维向量（BAAI/bge-small-zh-v1.5，normalize_embeddings=True 便于余弦比较）。"""
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
@@ -38,7 +40,7 @@ class Encoder:
         if not texts:
             return []
         if self._model is None:
-            raise RuntimeError("向量编码器未加载，请先在 lifespan 中调用 load()")
+            raise EncoderNotReadyError()
 
         return await anyio.to_thread.run_sync(self._encode_sync, texts)
 
