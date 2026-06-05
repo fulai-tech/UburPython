@@ -62,19 +62,28 @@ class RetrievalService:
         )
 
         candidates_raw = await self._es_search.filter_by_sleep_stage(request.sleep_stage_tags)
+        logger.info("检索步骤1/4 睡眠阶段过滤：候选数={}", len(candidates_raw))
         if not candidates_raw:
-            logger.info("检索：睡眠阶段无匹配，返回空结果")
+            logger.info("检索：睡眠阶段无匹配，短路返回空结果")
             return []
 
         admitted = await self._apply_content_admission(candidates_raw, request.content_tags)
+        logger.info("检索步骤2/4 内容形态准入：通过数={}", len(admitted))
         if not admitted:
-            logger.info("检索：内容形态准入无匹配，返回空结果")
+            logger.info("检索：内容形态准入无匹配，短路返回空结果")
             return []
 
         filtered = self._apply_dislike_and_coarse_rank(admitted, request.disliked_tags)
+        logger.info("检索步骤3/4 厌恶剔除+粗排：剩余数={}", len(filtered))
 
         # 精排：业务字段未完善前，sort key 等价于 match_count
         ranked = sorted(filtered, key=lambda c: c.match_count, reverse=True)[:top_k]
+        logger.info(
+            "检索步骤4/4 精排截断：top_k={}，输出数={}，match_count序列={}",
+            top_k,
+            len(ranked),
+            [c.match_count for c in ranked],
+        )
 
         results = [
             AudioResult(
