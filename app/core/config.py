@@ -24,14 +24,15 @@ class Settings(BaseSettings):
     es_audio_index: str = "audio_materials"
     es_tag_vectors_index: str = "tag_vectors"
 
-    comm_grpc_host: str = "192.144.200.251"
-    comm_grpc_port: int = 50062
+    comm_grpc_host: str = "bionode-test.fulai.tech"
+    comm_grpc_port: int = 443
+    comm_grpc_use_tls: bool = True  # 443 走 TLS；内网明文可设 false
 
     sim_threshold: float = 0.8  # 内容形态向量模糊命中阈值（规范 §五-2）
     default_top_k: int = 10
 
-    embedding_model: str = "BAAI/bge-m3"
-    embedding_dim: int = 1024  # 与 ES dense_vector.dims 一致
+    embedding_model: str = "BAAI/bge-small-zh-v1.5"
+    embedding_dim: int = 512  # 与 ES dense_vector.dims 一致
 
     log_level: str = "INFO"
     log_dir: str = "logs"
