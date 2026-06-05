@@ -20,3 +20,6 @@ logs/*.log.*
 # 模型缓存（sentence-transformers / HuggingFace）
 .cache/
 models/
+
+# 本地接口文档（不提交远程）
+docs/UburNode-HTTP-API.md
