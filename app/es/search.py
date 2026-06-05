@@ -49,6 +49,24 @@ class EsSearch:
         response = await self._client.search(index=self.audio_index, body=query)
         return [hit["_source"] for hit in response["hits"]["hits"]]
 
+    async def find_tag_vector_id_by_label(self, label: str) -> str | None:
+        """按标签名称查 tag_vectors，命中则返回已有文档 _id（写路径去重复用）。"""
+        if not label:
+            return None
+
+        response = await self._client.search(
+            index=self.tag_vectors_index,
+            body={
+                "query": {"term": {"label_text": label}},
+                "size": 1,
+                "_source": False,
+            },
+        )
+        hits = response["hits"]["hits"]
+        if not hits:
+            return None
+        return hits[0]["_id"]
+
     async def get_tag_vectors(self, vector_ids: list[str]) -> dict[str, list[float]]:
         """批量取 tag_vectors，供内容形态向量模糊命中（步骤 2）。"""
         if not vector_ids:

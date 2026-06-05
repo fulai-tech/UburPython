@@ -7,7 +7,6 @@ Mongo 侧 tags 仍为 string[] 时，靠 TAG_DIMENSION_PREFIXES 拆维（待业�
 from __future__ import annotations
 
 import uuid
-from typing import Any
 
 from elasticsearch import AsyncElasticsearch
 from loguru import logger
@@ -58,7 +57,12 @@ class EsSync:
         return DEFAULT_DIMENSION, tag
 
     async def _embed_and_store_tag(self, dimension: str, label: str) -> str:
-        """每个标签独立 embedding 并写入 tag_vectors；_id 模拟 ObjectId 长度。"""
+        """标签 embedding 写入 tag_vectors；同名 label 已存在则复用 _id。"""
+        existing_id = await self._search.find_tag_vector_id_by_label(label)
+        if existing_id:
+            logger.debug("复用已有标签向量，label={}，id={}", label, existing_id)
+            return existing_id
+
         vector_id = uuid.uuid4().hex[:24]
         vector = await self._encoder.encode_one(label)
         await self._client.index(
@@ -110,24 +114,9 @@ class EsSync:
         logger.info("ES 已写入音频索引，id={}，名称={}", doc_id, audio_name)
 
     async def delete_audio(self, doc_id: str) -> None:
-        # ES 文档可能已被手动删或从未同步，删失败只 warn 不阻断 comm 删 Mongo
+        """仅删除 audio_materials；tag_vectors 保留供其他音频复用。"""
         try:
             await self._client.delete(index=self.audio_index, id=doc_id)
-            logger.info("ES 已删除音频，id={}", doc_id)
+            logger.info("ES 已删除音频索引文档，id={}（tag_vectors 未动）", doc_id)
         except Exception as exc:
             logger.warning("ES 删除音频失败，id={}，原因：{}", doc_id, exc)
-
-    async def delete_tag_vectors_for_doc(self, doc: dict[str, Any]) -> None:
-        """可选清理：删 audio 时回收孤立 tag_vectors（当前 delete 路径未默认调用）。"""
-        tags = doc.get("tags", {})
-        vector_ids: list[str] = []
-        for dim_items in tags.values():
-            if isinstance(dim_items, list):
-                for item in dim_items:
-                    if vid := item.get("vector_id"):
-                        vector_ids.append(vid)
-        for vid in vector_ids:
-            try:
-                await self._client.delete(index=self.tag_vectors_index, id=vid)
-            except Exception as exc:
-                logger.warning("ES 删除标签向量失败，id={}，原因：{}", vid, exc)
