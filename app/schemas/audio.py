@@ -1,11 +1,18 @@
 """Pydantic 对外契约模型（替代 uburnode_audio.proto）。
 
-字段 snake_case，与 ES / comm 全链路一致；列表字段用复数资源名（results 非 list）。
+字段 snake_case，与 ES / comm 全链路一致；检索出参列表字段用 audios。
 """
 
 from enum import Enum
+from typing import Self
 
 from pydantic import BaseModel, Field
+
+from app.core.tags import (
+    DIMENSION_FIELDS,
+    dimensions_from_flat_tags,
+    flat_tags_from_dimensions,
+)
 
 
 class EvidenceLevel(str, Enum):
@@ -37,8 +44,31 @@ class TagItem(BaseModel):
     label: str
 
 
+class AudioTagsInput(BaseModel):
+    """六维标签入参：各维为 label 字符串列表，字段名与 AudioTags 一致。"""
+
+    sleep_stage: list[str] = Field(default_factory=list)
+    content_form: list[str] = Field(default_factory=list)
+    mechanism: list[str] = Field(default_factory=list)
+    audio_feat: list[str] = Field(default_factory=list)
+    rhythm: list[str] = Field(default_factory=list)
+    risk_control: list[str] = Field(default_factory=list)
+
+    def to_flat_tags(self) -> list[str]:
+        """→ Mongo / comm 扁平 string[]。"""
+        return flat_tags_from_dimensions(self.model_dump())
+
+    @classmethod
+    def from_flat_tags(cls, flat_tags: list[str]) -> Self:
+        """Mongo / comm 扁平 string[] → 六维入参。"""
+        return cls(**dimensions_from_flat_tags(flat_tags))
+
+    def dimension_fields(self) -> tuple[str, ...]:
+        return DIMENSION_FIELDS
+
+
 class AudioTags(BaseModel):
-    """六维标签结构，与 ES audio_materials.tags 同构。"""
+    """六维标签结构，与 ES audio_materials.tags 同构（出参含 vector_id）。"""
 
     sleep_stage: list[TagItem] = Field(default_factory=list)
     content_form: list[TagItem] = Field(default_factory=list)
@@ -57,32 +87,68 @@ class AudioTags(BaseModel):
     def sleep_stage_labels(self) -> set[str]:
         return {item.label for item in self.sleep_stage}
 
+    def to_label_tags(self) -> AudioTagsInput:
+        """检索出参：六维标签仅保留 label 字符串。"""
+        return AudioTagsInput(
+            sleep_stage=[item.label for item in self.sleep_stage],
+            content_form=[item.label for item in self.content_form],
+            mechanism=[item.label for item in self.mechanism],
+            audio_feat=[item.label for item in self.audio_feat],
+            rhythm=[item.label for item in self.rhythm],
+            risk_control=[item.label for item in self.risk_control],
+        )
 
-class CreateAudioRequest(BaseModel):
-    """POST /audio 请求体。tags 为 Mongo 侧扁平 string[]，EsSync 负责拆六维。"""
 
-    audio_url: str
-    audio_name: str
-    tags: list[str] = Field(default_factory=list)
+class AudioMetaDataIn(BaseModel):
+    """创建/更新入参，与 comm AudioMetaData 同构。"""
+
+    url: str
+    duration_sec: int = 0
+
+
+class AudioMetaInfoIn(BaseModel):
+    """创建/更新入参，与 comm AudioMetaInfo 同构。"""
+
+    meta_data: AudioMetaDataIn
+    is_loopable: bool = False
+    is_voice: bool = False
+
+
+class WriteAudioRequest(BaseModel):
+    """创建/更新音频共用请求体；tags 六维对象，服务端转扁平 string[] 写 comm / ES。"""
+
+    category_code: int = 0
+    noise_color: str | None = None
+    level: int = 0
+    name: str
+    description: str = ""
+    tags: AudioTagsInput = Field(default_factory=AudioTagsInput)
+    audio_info: AudioMetaInfoIn
     evidence_level: EvidenceLevel = EvidenceLevel.C
     recommend_weight: float | None = None
-    category_code: int = 0
-    noise_color: str = ""
-    description: str = ""
+
+    def flat_tags(self) -> list[str]:
+        return self.tags.to_flat_tags()
+
+    def resolved_noise_color(self) -> str:
+        return self.noise_color or ""
+
+    def resolved_recommend_weight(self) -> float:
+        if self.recommend_weight is not None:
+            return self.recommend_weight
+        return EVIDENCE_WEIGHT_MAP[self.evidence_level]
+
+    @property
+    def audio_url(self) -> str:
+        return self.audio_info.meta_data.url
 
 
-class UpdateAudioRequest(BaseModel):
-    """PUT /audio/{id} 请求体；未传字段表示不更新。"""
+class CreateAudioRequest(WriteAudioRequest):
+    """POST /audio 请求体。"""
 
-    audio_url: str | None = None
-    audio_name: str | None = None
-    tags: list[str] | None = None
-    evidence_level: EvidenceLevel | None = None
-    recommend_weight: float | None = None
-    category_code: int | None = None
-    noise_color: str | None = None
-    description: str | None = None
-    status: int | None = None
+
+class UpdateAudioRequest(WriteAudioRequest):
+    """PUT /audio/{material_id} 请求体，字段与创建一致；id 走路径参数。"""
 
 
 class SearchAudioRequest(BaseModel):
@@ -91,7 +157,7 @@ class SearchAudioRequest(BaseModel):
     sleep_stage_tags: list[str] = Field(default_factory=list)
     content_tags: list[str] = Field(default_factory=list)
     disliked_tags: list[str] = Field(default_factory=list)
-    top_k: int = 10
+    top_k: int | None = Field(default=None, ge=1)
 
 
 class AudioResult(BaseModel):
@@ -99,18 +165,69 @@ class AudioResult(BaseModel):
 
     audio_url: str
     audio_name: str
-    tags: AudioTags
+    tags: AudioTagsInput
     evidence_level: EvidenceLevel
     recommend_weight: float
 
 
-class CreateAudioData(BaseModel):
-    """创建成功时写入 ApiResponse.data。"""
+class AudioMetaDataOut(BaseModel):
+    """与 comm AudioMetaData 同构。"""
+
+    url: str = ""
+    duration_sec: int = 0
+
+
+class AudioMetaInfoOut(BaseModel):
+    """与 comm AudioMetaInfo 同构。"""
+
+    meta_data: AudioMetaDataOut = Field(default_factory=AudioMetaDataOut)
+    is_loopable: bool = False
+    is_voice: bool = False
+
+
+class AudioMaterialData(BaseModel):
+    """创建成功时 data，与 comm-service AudioMaterialInfo 同构。"""
 
     id: str
+    category_code: int = 0
+    level: int = 0
+    noise_color: str = ""
+    name: str = ""
+    description: str = ""
+    tags: list[str] = Field(default_factory=list)
+    audio_info: AudioMetaInfoOut = Field(default_factory=AudioMetaInfoOut)
+    status: int = 0
+    create_time: str = ""
+    update_time: str = ""
+
+    @classmethod
+    def from_comm_material(cls, material: object) -> Self:
+        """bionode_comm_pb2.AudioMaterialInfo → HTTP 出参。"""
+        audio_info = getattr(material, "audio_info", None)
+        meta_data = getattr(audio_info, "meta_data", None) if audio_info else None
+        return cls(
+            id=material.id,
+            category_code=material.category_code,
+            level=material.level,
+            noise_color=material.noise_color,
+            name=material.name,
+            description=material.description,
+            tags=list(material.tags),
+            audio_info=AudioMetaInfoOut(
+                meta_data=AudioMetaDataOut(
+                    url=getattr(meta_data, "url", "") or "",
+                    duration_sec=getattr(meta_data, "duration_sec", 0) or 0,
+                ),
+                is_loopable=getattr(audio_info, "is_loopable", False),
+                is_voice=getattr(audio_info, "is_voice", False),
+            ),
+            status=material.status,
+            create_time=material.create_time,
+            update_time=material.update_time,
+        )
 
 
 class SearchAudioData(BaseModel):
     """检索成功时写入 ApiResponse.data。"""
 
-    results: list[AudioResult] = Field(default_factory=list)
+    audios: list[AudioResult] = Field(default_factory=list)

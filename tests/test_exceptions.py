@@ -68,8 +68,10 @@ def test_create_audio_encoder_error_returns_envelope() -> None:
         response = TestClient(app).post(
             "/api/audio",
             json={
-                "audio_url": "https://cdn.example.com/a.mp3",
-                "audio_name": "测试",
+                "name": "测试",
+                "audio_info": {
+                    "meta_data": {"url": "https://cdn.example.com/a.mp3"},
+                },
             },
         )
 

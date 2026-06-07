@@ -10,6 +10,7 @@
   .venv/bin/python scripts/seed_es_test_data.py --count 300
   .venv/bin/python scripts/seed_es_test_data.py --no-reseed # 不先清旧 seed 再写入
   .venv/bin/python scripts/seed_es_test_data.py --verify  # 写入后跑检索回归用例
+  .venv/bin/python scripts/seed_es_test_data.py --export docs/seed-test-data-300.json --count 300
 
 依赖: .env 中 ES_NODE、EMBEDDING_MODEL；首次会下载向量模型。
 """
@@ -624,6 +625,38 @@ def build_seed_fixtures(total: int = SEED_TOTAL_DEFAULT) -> list[dict[str, objec
     return _CURATED_FIXTURES + extra
 
 
+def export_seed_fixtures_json(path: Path, total: int = SEED_TOTAL_DEFAULT) -> None:
+    """将 seed 假数据导出为 JSON（与写入 ES 的字段一致，不连 ES）。"""
+    fixtures = build_seed_fixtures(total)
+    stage_counts: dict[str, int] = {s: 0 for s in SLEEP_STAGES}
+    records: list[dict[str, object]] = []
+    for row in fixtures:
+        flat_tags = list(row["flat_tags"])  # type: ignore[arg-type]
+        for tag in flat_tags:
+            if tag.startswith("sleep:"):
+                stage_counts[tag.removeprefix("sleep:")] += 1
+                break
+        records.append(
+            {
+                "id": row["id"],
+                "audio_url": row["audio_url"],
+                "audio_name": row["audio_name"],
+                "flat_tags": flat_tags,
+                "evidence_level": row["evidence_level"],
+                "recommend_weight": row["recommend_weight"],
+            }
+        )
+    payload = {
+        "count": len(records),
+        "source": "scripts/seed_es_test_data.py",
+        "sleep_stage_counts": stage_counts,
+        "records": records,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    logger.info("已导出 {} 条测试数据 → {}", len(records), path)
+
+
 @dataclass(frozen=True)
 class SearchCase:
     name: str
@@ -844,9 +877,19 @@ async def _main() -> None:
         action="store_true",
         help="写入后执行内置检索用例（需加载 embedding 模型）",
     )
+    parser.add_argument(
+        "--export",
+        type=Path,
+        metavar="PATH",
+        help="仅导出 seed 假数据到 JSON 文件（不连 ES、不写入）",
+    )
     args = parser.parse_args()
-    settings = get_settings()
 
+    if args.export:
+        export_seed_fixtures_json(args.export, total=args.count)
+        return
+
+    settings = get_settings()
     client = AsyncElasticsearch(settings.es_node)
     try:
         if args.clear:

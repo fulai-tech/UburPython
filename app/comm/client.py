@@ -13,6 +13,7 @@ from loguru import logger
 
 from app.comm.grpc_gen import bionode_comm_pb2, bionode_comm_pb2_grpc
 from app.core.config import Settings
+from app.schemas.audio import AudioMetaInfoIn
 
 # comm ListAudioMaterials：status 默认 0 时列表为空；新建原料为已发布状态 1
 AUDIO_MATERIAL_STATUS_PUBLISHED = 1
@@ -67,23 +68,20 @@ class CommClient:
         self,
         *,
         category_code: int,
-        noise_color: str,
+        noise_color: str | None,
         name: str,
         description: str,
         tags: list[str],
-        audio_url: str,
+        audio_info: AudioMetaInfoIn,
     ) -> None:
         stub = self._require_stub()
-        audio_info = bionode_comm_pb2.AudioMetaInfo(
-            meta_data=bionode_comm_pb2.AudioMetaData(url=audio_url),
-        )
         request = bionode_comm_pb2.CreateAudioMaterialReq(
             category_code=category_code,
-            noise_color=noise_color,
+            noise_color=noise_color or "",
             name=name,
             description=description,
             tags=tags,
-            audio_info=audio_info,
+            audio_info=_to_proto_audio_info(audio_info),
         )
         await stub.CreateAudioMaterial(request)
 
@@ -91,34 +89,26 @@ class CommClient:
         self,
         material_id: str,
         *,
-        category_code: int | None = None,
-        noise_color: str | None = None,
-        name: str | None = None,
-        description: str | None = None,
-        tags: list[str] | None = None,
-        audio_url: str | None = None,
+        category_code: int,
+        noise_color: str | None,
+        name: str,
+        description: str,
+        tags: list[str],
+        audio_info: AudioMetaInfoIn,
         status: int | None = None,
     ) -> None:
-        """Update 需先 Get 再合并：proto 要求全量字段，comm 不做部分更新。"""
+        """Update 需先 Get 再合并 status；其余字段以 HTTP 请求体为准。"""
         stub = self._require_stub()
         existing = await self.get_audio_material(material_id)
 
-        audio_info = existing.audio_info
-        if audio_url is not None:
-            audio_info = bionode_comm_pb2.AudioMetaInfo(
-                meta_data=bionode_comm_pb2.AudioMetaData(url=audio_url),
-                is_loopable=existing.audio_info.is_loopable,
-                is_voice=existing.audio_info.is_voice,
-            )
-
         request = bionode_comm_pb2.UpdateAudioMaterialReq(
             id=material_id,
-            category_code=category_code if category_code is not None else existing.category_code,
-            noise_color=noise_color if noise_color is not None else existing.noise_color,
-            name=name if name is not None else existing.name,
-            description=description if description is not None else existing.description,
-            tags=tags if tags is not None else list(existing.tags),
-            audio_info=audio_info,
+            category_code=category_code,
+            noise_color=noise_color or "",
+            name=name,
+            description=description,
+            tags=tags,
+            audio_info=_to_proto_audio_info(audio_info),
             status=status if status is not None else existing.status,
         )
         await stub.UpdateAudioMaterial(request)
@@ -146,3 +136,14 @@ class CommClient:
             )
         )
         return list(response.materials)
+
+
+def _to_proto_audio_info(audio_info: AudioMetaInfoIn) -> bionode_comm_pb2.AudioMetaInfo:
+    return bionode_comm_pb2.AudioMetaInfo(
+        meta_data=bionode_comm_pb2.AudioMetaData(
+            url=audio_info.meta_data.url,
+            duration_sec=audio_info.meta_data.duration_sec,
+        ),
+        is_loopable=audio_info.is_loopable,
+        is_voice=audio_info.is_voice,
+    )

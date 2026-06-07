@@ -52,13 +52,13 @@ class RetrievalService:
         self._settings = settings
 
     async def search(self, request: SearchAudioRequest) -> list[AudioResult]:
-        top_k = request.top_k or self._settings.default_top_k
+        top_k_label = request.top_k if request.top_k is not None else "全部"
         logger.info(
             "检索开始，睡眠阶段={}，内容标签={}，厌恶标签={}，top_k={}",
             request.sleep_stage_tags,
             request.content_tags,
             request.disliked_tags,
-            top_k,
+            top_k_label,
         )
 
         candidates_raw = await self._es_search.filter_by_sleep_stage(request.sleep_stage_tags)
@@ -77,10 +77,12 @@ class RetrievalService:
         logger.info("检索步骤3/4 厌恶剔除+粗排：剩余数={}", len(filtered))
 
         # 精排：业务字段未完善前，sort key 等价于 match_count
-        ranked = sorted(filtered, key=lambda c: c.match_count, reverse=True)[:top_k]
+        ranked = sorted(filtered, key=lambda c: c.match_count, reverse=True)
+        if request.top_k is not None:
+            ranked = ranked[: request.top_k]
         logger.info(
             "检索步骤4/4 精排截断：top_k={}，输出数={}，match_count序列={}",
-            top_k,
+            top_k_label,
             len(ranked),
             [c.match_count for c in ranked],
         )
@@ -89,7 +91,7 @@ class RetrievalService:
             AudioResult(
                 audio_url=c.source["audio_url"],
                 audio_name=c.source["audio_name"],
-                tags=c.tags,
+                tags=c.tags.to_label_tags(),
                 evidence_level=c.evidence_level,
                 recommend_weight=c.recommend_weight,
             )

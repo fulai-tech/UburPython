@@ -29,7 +29,6 @@ class Settings(BaseSettings):
     comm_grpc_use_tls: bool = True  # 443 走 TLS；内网明文可设 false
 
     sim_threshold: float = 0.8  # 内容形态向量模糊命中阈值（规范 §五-2）
-    default_top_k: int = 10
 
     embedding_model: str = "BAAI/bge-small-zh-v1.5"
     embedding_dim: int = 512  # 与 ES dense_vector.dims 一致

@@ -12,20 +12,9 @@ from elasticsearch import AsyncElasticsearch
 from loguru import logger
 
 from app.core.config import Settings
+from app.core.tags import resolve_flat_tag
 from app.embedding.encoder import Encoder
 from app.es.search import EsSearch
-
-# 扁平 tag 前缀 → ES 六维字段名；无前缀默认归入 content_form
-TAG_DIMENSION_PREFIXES: dict[str, str] = {
-    "sleep:": "sleep_stage",
-    "content:": "content_form",
-    "mechanism:": "mechanism",
-    "feat:": "audio_feat",
-    "rhythm:": "rhythm",
-    "risk:": "risk_control",
-}
-
-DEFAULT_DIMENSION = "content_form"
 
 
 class EsSync:
@@ -51,10 +40,7 @@ class EsSync:
         return self._settings.es_tag_vectors_index
 
     def _resolve_dimension(self, tag: str) -> tuple[str, str]:
-        for prefix, dimension in TAG_DIMENSION_PREFIXES.items():
-            if tag.startswith(prefix):
-                return dimension, tag[len(prefix) :]
-        return DEFAULT_DIMENSION, tag
+        return resolve_flat_tag(tag)
 
     async def _embed_and_store_tag(self, dimension: str, label: str) -> str:
         """标签 embedding 写入 tag_vectors；同名 label 已存在则复用 _id。"""

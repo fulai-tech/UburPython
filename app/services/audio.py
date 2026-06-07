@@ -12,13 +12,12 @@ from app.comm.client import CommClient
 from app.core.exceptions import CommMaterialNotFoundError
 from app.es.sync import EsSync
 from app.schemas.audio import (
+    AudioMaterialData,
     CreateAudioRequest,
-    CreateAudioData,
-    EvidenceLevel,
-    EVIDENCE_WEIGHT_MAP,
     SearchAudioData,
     SearchAudioRequest,
     UpdateAudioRequest,
+    WriteAudioRequest,
 )
 from app.services.retrieval import RetrievalService
 
@@ -36,69 +35,34 @@ class AudioService:
         self._es_sync = es_sync
         self._retrieval = retrieval
 
-    async def create_audio(self, request: CreateAudioRequest) -> CreateAudioData:
-        weight = request.recommend_weight
-        if weight is None:
-            weight = EVIDENCE_WEIGHT_MAP[request.evidence_level]
-
+    async def create_audio(self, request: CreateAudioRequest) -> AudioMaterialData:
         await self._comm.create_audio_material(
             category_code=request.category_code,
-            noise_color=request.noise_color,
-            name=request.audio_name,
+            noise_color=request.resolved_noise_color(),
+            name=request.name,
             description=request.description,
-            tags=request.tags,
-            audio_url=request.audio_url,
+            tags=request.flat_tags(),
+            audio_info=request.audio_info,
         )
 
-        material_id = await self._resolve_latest_material_id(request.audio_name)
+        material_id = await self._resolve_latest_material_id(request.name)
         logger.info("已创建音频原料，id={}", material_id)
 
-        await self._es_sync.upsert_audio(
-            material_id,
-            audio_url=request.audio_url,
-            audio_name=request.audio_name,
-            flat_tags=request.tags,
-            evidence_level=request.evidence_level.value,
-            recommend_weight=weight,
-        )
-        return CreateAudioData(id=material_id)
+        await self._sync_es(material_id, request)
+        material = await self._comm.get_audio_material(material_id)
+        return AudioMaterialData.from_comm_material(material)
 
     async def update_audio(self, material_id: str, request: UpdateAudioRequest) -> None:
         await self._comm.update_audio_material(
             material_id,
             category_code=request.category_code,
-            noise_color=request.noise_color,
-            name=request.audio_name,
+            noise_color=request.resolved_noise_color(),
+            name=request.name,
             description=request.description,
-            tags=request.tags,
-            audio_url=request.audio_url,
-            status=request.status,
+            tags=request.flat_tags(),
+            audio_info=request.audio_info,
         )
-
-        # ES 需全量文档：从 comm 读回合并后的真值再 upsert
-        material = await self._comm.get_audio_material(material_id)
-        evidence = request.evidence_level.value if request.evidence_level else "C"
-        weight = request.recommend_weight
-        if weight is None and request.evidence_level:
-            weight = EVIDENCE_WEIGHT_MAP.get(
-                request.evidence_level,
-                EVIDENCE_WEIGHT_MAP[EvidenceLevel.C],
-            )
-        if weight is None:
-            weight = 0.45
-
-        audio_url = request.audio_url or material.audio_info.meta_data.url
-        audio_name = request.audio_name or material.name
-        tags = request.tags if request.tags is not None else list(material.tags)
-
-        await self._es_sync.upsert_audio(
-            material_id,
-            audio_url=audio_url,
-            audio_name=audio_name,
-            flat_tags=tags,
-            evidence_level=evidence,
-            recommend_weight=weight,
-        )
+        await self._sync_es(material_id, request)
 
     async def delete_audio(self, material_id: str) -> None:
         await self._comm.delete_audio_material(material_id)
@@ -106,7 +70,17 @@ class AudioService:
 
     async def search_audio(self, request: SearchAudioRequest) -> SearchAudioData:
         results = await self._retrieval.search(request)
-        return SearchAudioData(results=results)
+        return SearchAudioData(audios=results)
+
+    async def _sync_es(self, material_id: str, request: WriteAudioRequest) -> None:
+        await self._es_sync.upsert_audio(
+            material_id,
+            audio_url=request.audio_url,
+            audio_name=request.name,
+            flat_tags=request.flat_tags(),
+            evidence_level=request.evidence_level.value,
+            recommend_weight=request.resolved_recommend_weight(),
+        )
 
     async def _resolve_latest_material_id(self, name: str) -> str:
         """comm CreateAudioMaterial 返回 EmptyRes，按名称反查 id（临时方案）。"""

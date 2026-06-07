@@ -206,7 +206,7 @@ async def _search(client: httpx.AsyncClient, base: str, body: dict) -> tuple[lis
     payload = resp.json()
     if resp.status_code != 200 or payload.get("code") != 200:
         raise RuntimeError(f"search failed: {resp.status_code} {payload}")
-    results = payload.get("data", {}).get("results", [])
+    results = payload.get("data", {}).get("audios", [])
     names = [r["audio_name"] for r in results]
     # match_count 不对外暴露，粗排顺序即代理
     return names, list(range(len(names)))
