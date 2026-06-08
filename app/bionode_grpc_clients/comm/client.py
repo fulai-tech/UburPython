@@ -117,6 +117,29 @@ class CommClient:
         stub = self._require_stub()
         await stub.DeleteAudioMaterial(bionode_comm_pb2.IdReq(id=material_id))
 
+    async def list_audio_materials_page(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = 100,
+    ) -> tuple[list[bionode_comm_pb2.AudioMaterialInfo], int]:
+        """分页拉取已发布原料；返回 (materials, total)。"""
+        stub = self._require_stub()
+        from app.bionode_grpc_clients.comm.grpc_gen import bionode_common_pb2
+
+        response = await stub.ListAudioMaterials(
+            bionode_comm_pb2.ListAudioMaterialsReq(
+                page=bionode_common_pb2.PageRequest(
+                    page=page,
+                    page_size=page_size,
+                    order_by="update_time desc",
+                ),
+                status=AUDIO_MATERIAL_STATUS_PUBLISHED,
+            )
+        )
+        total = response.page.total if response.HasField("page") else len(response.materials)
+        return list(response.materials), total
+
     async def list_audio_materials_by_name(
         self, name: str
     ) -> list[bionode_comm_pb2.AudioMaterialInfo]:

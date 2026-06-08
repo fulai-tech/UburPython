@@ -39,6 +39,17 @@ class Settings(BaseSettings):
     log_rotation: str = "10 MB"
     log_retention: str = "7 days"
 
+    # comm → ES 差异同步（服务内定时 + scripts/sync_es_from_comm.py 手动）
+    sync_enabled: bool = True
+    sync_interval_days: int = 7
+    sync_page_size: int = 100
+    sync_backup_dir: str = "data/sync_backup"
+    sync_backup_filename: str = "audio_materials_backup.json"
+
+    @property
+    def sync_backup_path(self) -> Path:
+        return Path(self.sync_backup_dir) / self.sync_backup_filename
+
     @property
     def comm_grpc_target(self) -> str:
         return f"{self.comm_grpc_host}:{self.comm_grpc_port}"

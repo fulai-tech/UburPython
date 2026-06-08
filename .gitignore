@@ -12,6 +12,7 @@ venv/
 .mypy_cache/
 logs/*.log
 logs/*.log.*
+data/sync_backup/
 .DS_Store
 .idea/
 .vscode/
