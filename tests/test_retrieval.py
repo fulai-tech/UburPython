@@ -49,8 +49,34 @@ def _build_service(
 ) -> tuple[RetrievalService, MagicMock, MagicMock]:
     mock_es = es_search or MagicMock(spec=EsSearch)
     mock_encoder = encoder or MagicMock(spec=Encoder)
-    svc = RetrievalService(mock_es, mock_encoder, settings or Settings())
+    svc = RetrievalService(
+        mock_es,
+        mock_encoder,
+        settings or Settings(search_sleep_stage_filter_enabled=True),
+    )
     return svc, mock_es, mock_encoder
+
+
+@pytest.mark.asyncio
+async def test_search_skips_sleep_stage_filter_when_disabled() -> None:
+    """关闭睡眠阶段过滤时跳过步骤 1，直接拉全量候选进入内容形态准入。"""
+    service, es_search, encoder = _build_service(
+        settings=Settings(search_sleep_stage_filter_enabled=False),
+    )
+    es_search.list_all_audio_candidates = AsyncMock(
+        return_value=[_audio_doc("雨声A", sleep_stage=["清醒"], content_form=["雨声"])]
+    )
+    es_search.parse_tags = EsSearch.parse_tags
+    request = SearchAudioRequest(
+        sleep_stage_tags=["放松"],
+        content_tags=["雨声"],
+    )
+
+    results = await service.search(request)
+
+    assert [r.audio_name for r in results] == ["雨声A"]
+    es_search.list_all_audio_candidates.assert_awaited_once()
+    es_search.filter_by_sleep_stage.assert_not_called()
 
 
 @pytest.mark.asyncio
