@@ -133,13 +133,6 @@ def create_app() -> FastAPI:
     register_exception_handlers(app)
     register_request_log_middleware(app)
     app.include_router(audio_router, prefix="/api")
-
-    from app.schemas.response import ApiResponse, success
-
-    @app.get("/health", response_model=ApiResponse)
-    async def health() -> ApiResponse:
-        return success(data={}, msg="服务正常")
-
     return app
 
 
