@@ -78,7 +78,7 @@ class AudioTags(BaseModel):
     risk_control: list[TagItem] = Field(default_factory=list)
 
     def content_labels(self) -> set[str]:
-        """内容形态准入 / 厌恶剔除使用的标签集合（四维度并集）。"""
+        """内容形态准入精确交集使用的标签集合（四维度并集）。"""
         labels: set[str] = set()
         for dim in (self.content_form, self.mechanism, self.audio_feat, self.rhythm):
             labels.update(item.label for item in dim)

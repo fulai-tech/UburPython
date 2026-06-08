@@ -2,8 +2,8 @@
 
 顺序固定（规范 §五，不可调换）：
   1. 睡眠阶段精确过滤（ES term，无命中 → 空数组）
-  2. 内容形态准入（精确交集 或 向量余弦 ≥ SIM_THRESHOLD）
-  3. 厌恶剔除 + 粗排（match_count 降序）
+  2. 内容形态准入（精确交集 或 向量逐标签计分，余弦 ≥ SIM_THRESHOLD）
+  3. 厌恶剔除 + 粗排（向量余弦 ≥ SIM_THRESHOLD 则剔除）
   4. 精排（当前等效 match_count；evidence_level 权重待业务完善）
 """
 
@@ -73,7 +73,7 @@ class RetrievalService:
             logger.info("检索：内容形态准入无匹配，短路返回空结果")
             return []
 
-        filtered = self._apply_dislike_and_coarse_rank(admitted, request.disliked_tags)
+        filtered = await self._apply_dislike_and_coarse_rank(admitted, request.disliked_tags)
         logger.info("检索步骤3/4 厌恶剔除+粗排：剩余数={}", len(filtered))
 
         # 精排：业务字段未完善前，sort key 等价于 match_count
@@ -139,12 +139,13 @@ class RetrievalService:
                 continue
 
             # 精确未命中才走向量模糊；同义词优先归一，不单独上向量（规范 §五）
-            if await self._fuzzy_content_match(tags, content_tags, request_vectors):
+            vector_hits = await self._count_fuzzy_vector_matches(tags, request_vectors)
+            if vector_hits > 0:
                 admitted.append(
                     ScoredCandidate(
                         source=doc,
                         tags=tags,
-                        match_count=1,
+                        match_count=vector_hits,
                         evidence_level=self._parse_evidence(doc),
                         recommend_weight=self._parse_weight(doc),
                     )
@@ -152,43 +153,45 @@ class RetrievalService:
 
         return admitted
 
-    async def _fuzzy_content_match(
+    async def _count_fuzzy_vector_matches(
         self,
         tags: AudioTags,
-        content_tags: list[str],
         request_vectors: list[list[float]],
-    ) -> bool:
-        """请求标签向量 vs 文档 tag_vectors 逐对余弦，任一 ≥ SIM_THRESHOLD 即准入。"""
+    ) -> int:
+        """每个请求标签向量独立计分：与文档四维度 tag_vectors 任一 ≥ SIM_THRESHOLD 则 +1。"""
         vector_ids: list[str] = []
         for dim in (tags.content_form, tags.mechanism, tags.audio_feat, tags.rhythm):
             vector_ids.extend(item.vector_id for item in dim)
 
-        if not vector_ids:
-            return False
+        if not vector_ids or not request_vectors:
+            return 0
 
         stored = await self._es_search.get_tag_vectors(vector_ids)
         threshold = self._settings.sim_threshold
+        matched = 0
 
         for req_vec in request_vectors:
             for vid in vector_ids:
                 doc_vec = stored.get(vid)
                 if doc_vec and _cosine_similarity(req_vec, doc_vec) >= threshold:
-                    return True
-        return False
+                    matched += 1
+                    break
 
-    def _apply_dislike_and_coarse_rank(
+        return matched
+
+    async def _apply_dislike_and_coarse_rank(
         self,
         candidates: list[ScoredCandidate],
         disliked_tags: list[str],
     ) -> list[ScoredCandidate]:
-        """步骤 3：disliked_tags 与内容标签有交集则剔除；粗排按 match_count。"""
+        """步骤 3：厌恶标签向量 vs 文档内容标签向量，余弦 ≥ SIM_THRESHOLD 则剔除。"""
         if not disliked_tags:
             return candidates
 
-        disliked = set(disliked_tags)
+        dislike_vectors = await self._encoder.encode(disliked_tags)
         result: list[ScoredCandidate] = []
         for candidate in candidates:
-            if candidate.tags.content_labels().intersection(disliked):
+            if await self._count_fuzzy_vector_matches(candidate.tags, dislike_vectors) > 0:
                 continue
             result.append(candidate)
         return result

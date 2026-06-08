@@ -134,8 +134,10 @@ async def test_search_skips_content_admission_when_no_content_tags() -> None:
 
 
 @pytest.mark.asyncio
-async def test_search_removes_candidate_when_disliked_tag_intersects() -> None:
-    """厌恶标签与内容标签有交集时剔除候选。"""
+async def test_search_removes_candidate_when_disliked_vector_matches() -> None:
+    """厌恶标签向量与文档内容标签向量余弦 ≥ 阈值时剔除候选。"""
+    unit_vec = [1.0] + [0.0] * (_VECTOR_DIM - 1)
+    orthogonal_vec = [0.0, 1.0] + [0.0] * (_VECTOR_DIM - 2)
     service, es_search, encoder = _build_service()
     es_search.filter_by_sleep_stage = AsyncMock(
         return_value=[
@@ -144,16 +146,89 @@ async def test_search_removes_candidate_when_disliked_tag_intersects() -> None:
         ]
     )
     es_search.parse_tags = EsSearch.parse_tags
+    encoder.encode = AsyncMock(
+        side_effect=[
+            [unit_vec, unit_vec],
+            [unit_vec],
+        ]
+    )
+    es_search.get_tag_vectors = AsyncMock(
+        side_effect=[
+            {"cf_雨声": orthogonal_vec},
+            {"cf_白噪音": unit_vec},
+        ]
+    )
     request = SearchAudioRequest(
         sleep_stage_tags=["放松"],
         content_tags=["雨声", "白噪音"],
-        disliked_tags=["白噪音"],
+        disliked_tags=["嘈杂"],
         top_k=10,
     )
 
     results = await service.search(request)
 
     assert [r.audio_name for r in results] == ["保留"]
+    assert encoder.encode.await_args_list[1].args[0] == ["嘈杂"]
+
+
+@pytest.mark.asyncio
+async def test_search_keeps_candidate_when_disliked_vector_below_threshold() -> None:
+    """厌恶标签向量与文档标签不相似时保留候选（不做精确字面剔除）。"""
+    unit_vec = [1.0] + [0.0] * (_VECTOR_DIM - 1)
+    orthogonal_vec = [0.0, 1.0] + [0.0] * (_VECTOR_DIM - 2)
+    service, es_search, encoder = _build_service()
+    es_search.filter_by_sleep_stage = AsyncMock(
+        return_value=[_audio_doc("白噪音音频", sleep_stage=["放松"], content_form=["白噪音"])]
+    )
+    es_search.parse_tags = EsSearch.parse_tags
+    encoder.encode = AsyncMock(
+        side_effect=[
+            [unit_vec],
+            [orthogonal_vec],
+        ]
+    )
+    es_search.get_tag_vectors = AsyncMock(return_value={"cf_白噪音": unit_vec})
+    request = SearchAudioRequest(
+        sleep_stage_tags=["放松"],
+        content_tags=["白噪音"],
+        disliked_tags=["白噪音"],
+        top_k=10,
+    )
+
+    results = await service.search(request)
+
+    assert [r.audio_name for r in results] == ["白噪音音频"]
+
+
+@pytest.mark.asyncio
+async def test_search_vector_match_count_ranks_by_hit_count() -> None:
+    """向量准入按每个 content_tag 独立计分，命中越多排序越靠前。"""
+    unit_x = [1.0] + [0.0] * (_VECTOR_DIM - 1)
+    unit_y = [0.0, 1.0] + [0.0] * (_VECTOR_DIM - 2)
+    service, es_search, encoder = _build_service()
+    es_search.filter_by_sleep_stage = AsyncMock(
+        return_value=[
+            _audio_doc("单命中", sleep_stage=["放松"], content_form=["下雨声"]),
+            _audio_doc("双命中", sleep_stage=["放松"], content_form=["下雨声", "大森林"]),
+        ]
+    )
+    es_search.parse_tags = EsSearch.parse_tags
+    encoder.encode = AsyncMock(return_value=[unit_x, unit_y])
+    es_search.get_tag_vectors = AsyncMock(
+        side_effect=[
+            {"cf_下雨声": unit_x},
+            {"cf_下雨声": unit_x, "cf_大森林": unit_y},
+        ]
+    )
+    request = SearchAudioRequest(
+        sleep_stage_tags=["放松"],
+        content_tags=["雨声", "森林"],
+        top_k=10,
+    )
+
+    results = await service.search(request)
+
+    assert [r.audio_name for r in results] == ["双命中", "单命中"]
 
 
 @pytest.mark.asyncio
