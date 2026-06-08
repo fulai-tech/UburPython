@@ -49,6 +49,12 @@ class EsSearch:
         response = await self._client.search(index=self.audio_index, body=query)
         return [hit["_source"] for hit in response["hits"]["hits"]]
 
+    async def list_all_audio_candidates(self) -> list[dict[str, Any]]:
+        """检索步骤 1（跳过睡眠阶段过滤时）：返回索引内全部音频候选。"""
+        query = {"query": {"match_all": {}}, "size": 1000}
+        response = await self._client.search(index=self.audio_index, body=query)
+        return [hit["_source"] for hit in response["hits"]["hits"]]
+
     async def find_tag_vector_id_by_label(self, label: str) -> str | None:
         """按标签名称查 tag_vectors，命中则返回已有文档 _id（写路径去重复用）。"""
         if not label:

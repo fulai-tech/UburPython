@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     comm_grpc_use_tls: bool = True  # 443 走 TLS；内网明文可设 false
 
     sim_threshold: float = 0.7  # 内容形态向量模糊命中阈值（规范 §五-2）
+    search_sleep_stage_filter_enabled: bool = False  # 检索步骤 1 是否按睡眠阶段过滤
 
     embedding_model: str = "BAAI/bge-small-zh-v1.5"
     embedding_dim: int = 512  # 与 ES dense_vector.dims 一致

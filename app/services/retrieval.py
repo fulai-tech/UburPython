@@ -61,10 +61,10 @@ class RetrievalService:
             top_k_label,
         )
 
-        candidates_raw = await self._es_search.filter_by_sleep_stage(request.sleep_stage_tags)
-        logger.info("检索步骤1/4 睡眠阶段过滤：候选数={}", len(candidates_raw))
+        candidates_raw = await self._fetch_step1_candidates(request.sleep_stage_tags)
         if not candidates_raw:
-            logger.info("检索：睡眠阶段无匹配，短路返回空结果")
+            if self._settings.search_sleep_stage_filter_enabled:
+                logger.info("检索：睡眠阶段无匹配，短路返回空结果")
             return []
 
         admitted = await self._apply_content_admission(candidates_raw, request.content_tags)
@@ -99,6 +99,17 @@ class RetrievalService:
         ]
         logger.info("检索完成，命中数={}", len(results))
         return results
+
+    async def _fetch_step1_candidates(self, sleep_stage_tags: list[str]) -> list[dict[str, Any]]:
+        """步骤 1：按配置决定是否按睡眠阶段过滤。"""
+        if not self._settings.search_sleep_stage_filter_enabled:
+            candidates = await self._es_search.list_all_audio_candidates()
+            logger.info("检索步骤1/4 睡眠阶段过滤：已跳过，候选数={}", len(candidates))
+            return candidates
+
+        candidates = await self._es_search.filter_by_sleep_stage(sleep_stage_tags)
+        logger.info("检索步骤1/4 睡眠阶段过滤：候选数={}", len(candidates))
+        return candidates
 
     async def _apply_content_admission(
         self,
