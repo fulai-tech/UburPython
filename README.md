@@ -1,14 +1,36 @@
-# UburNode 音频检索服务
+# UburNode
 
-基于 [UburNode 音频检索服务技术规范](.cursor/skills/uburnode-audio-search/SKILL.md) 搭建的 FastAPI 工程骨架。
+BioNode 体系中的**中间层服务**：以**音频检索**为核心能力，同时承担算法端与底层存储之间的**数据结构转换**。
+
+- **核心**：三维度音频检索（ES 召回 + 进程内 Embedding + 四步精排流水线）
+- **中间层**：统一对外 HTTP/Pydantic 契约，对内经 gRPC 访问 comm-service；在 HTTP、Mongo（扁平标签）、ES（六维结构 + 向量）之间做形态互转，避免算法端直连 Mongo 或各自维护多套字段约定
 
 ## 架构
 
 ```text
-对外 HTTP (FastAPI)  ──读──► Elasticsearch + Embedding + RetrievalService
-                    ──写──► comm-service (gRPC) ──► MongoDB
-                              └── EsSync ──► Elasticsearch
+算法端 / 调用方
+    │
+    ▼
+对外 HTTP (FastAPI + Pydantic)     ← 中间层：契约统一 + 数据结构转换
+    │
+    ├──读──► Elasticsearch + Embedding + RetrievalService
+    │
+    └──写──► comm-service (gRPC) ──► MongoDB（真值库，扁平 tags）
+                  └── EsSync ──► Elasticsearch（索引副本，六维 tags + vector_id）
 ```
+
+## 中间层数据转换
+
+UburNode 不只做检索，还在各存储边界维持**单一对外契约**并完成形态映射：
+
+| 边界 | 入站形态 | 出站形态 | 负责模块 |
+|------|----------|----------|----------|
+| HTTP 写（CUD） | 六维标签对象 `AudioTagsInput` | comm/Mongo 扁平 `string[]`（带维度前缀） | `app/schemas/audio.py`、`app/core/tags.py` |
+| HTTP 写响应 | comm `AudioMaterialInfo`（gRPC） | HTTP `AudioMaterialData` | `app/schemas/audio.py` |
+| ES 同步 | 扁平 tags + 业务字段 | ES 六维 `tags` + `tag_vectors` embedding | `app/es/sync.py` |
+| HTTP 读（检索） | ES 六维 `TagItem`（含 `vector_id`） | 出参六维 label 字符串 | `app/schemas/audio.py`、`app/services/retrieval.py` |
+
+字段命名全链路 **snake_case**；对外以 Pydantic + OpenAPI 为唯一 HTTP 契约，对内 comm 调用走同源 `bionode_comm.proto`。
 
 ## 目录结构
 
@@ -68,7 +90,6 @@ uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
 | `/api/audio/{id}` | PUT | 更新音频并同步 ES |
 | `/api/audio/{id}` | DELETE | 删除音频并同步 ES |
 | `/api/audio/search` | POST | 三维度检索 |
-| `/health` | GET | 健康检查（供探活，无 `/api` 前缀） |
 
 OpenAPI 文档：启动后访问 `http://localhost:8080/docs`。
 
