@@ -50,6 +50,7 @@ from app.es.sync import EsSync
 from app.middleware.request_log import register_request_log_middleware
 from app.services.audio import AudioService
 from app.services.retrieval import RetrievalService
+from scripts.sync_es_from_comm import shutdown_sync_scheduler, start_sync_scheduler
 
 
 @dataclass
@@ -113,10 +114,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     _app_state.audio_service = AudioService(comm_client, es_sync, retrieval)
 
+    start_sync_scheduler(_app_state, settings)
+
     logger.info("UburNode 音频检索服务已就绪")
     yield
 
     logger.info("正在关闭 UburNode 音频检索服务")
+    shutdown_sync_scheduler()
     await comm_client.close()
     await es_client.close()
 

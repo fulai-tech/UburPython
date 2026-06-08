@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from elasticsearch import AsyncElasticsearch
+from elasticsearch import AsyncElasticsearch, NotFoundError
 from loguru import logger
 
 from app.core.config import Settings
@@ -66,6 +66,37 @@ class EsSearch:
         if not hits:
             return None
         return hits[0]["_id"]
+
+    async def list_all_audio_doc_ids(self) -> set[str]:
+        """audio_materials 索引全部 _id（用于与源库对账删孤儿）。"""
+        doc_ids: set[str] = set()
+        search_after: list[str] | None = None
+        while True:
+            body: dict[str, Any] = {
+                "query": {"match_all": {}},
+                "_source": False,
+                "size": 500,
+                "sort": ["_doc"],
+            }
+            if search_after is not None:
+                body["search_after"] = search_after
+            response = await self._client.search(index=self.audio_index, body=body)
+            hits = response["hits"]["hits"]
+            if not hits:
+                break
+            for hit in hits:
+                doc_ids.add(hit["_id"])
+            search_after = hits[-1]["sort"]
+        return doc_ids
+
+    async def get_audio_source(self, doc_id: str) -> dict[str, Any] | None:
+        """按 _id 取 audio_materials 文档 _source；不存在返回 None。"""
+        try:
+            response = await self._client.get(index=self.audio_index, id=doc_id)
+            source = response.get("_source")
+            return source if isinstance(source, dict) else None
+        except NotFoundError:
+            return None
 
     async def get_tag_vectors(self, vector_ids: list[str]) -> dict[str, list[float]]:
         """批量取 tag_vectors，供内容形态向量模糊命中（步骤 2）。"""
