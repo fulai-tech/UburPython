@@ -22,7 +22,8 @@ UburNode/
 │   ├── services/            # AudioService、RetrievalService
 │   ├── es/                  # EsSearch、EsSync
 │   ├── embedding/encoder.py # bge-small-zh-v1.5 向量编码
-│   └── comm/client.py       # comm-service gRPC 客户端
+│   ├── bionode_grpc_clients/  # BioNode 外部微服务 gRPC 客户端
+│   │   └── comm/            # comm-service（client.py + grpc_gen/）
 ├── proto/                   # bionode_comm.proto（唯一真源）
 ├── scripts/gen_proto.sh     # 生成 gRPC stub
 ├── tests/

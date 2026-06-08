@@ -32,7 +32,7 @@ def _ensure_project_deps() -> None:
 
 
 async def run_probe(timeout_sec: float) -> int:
-    from app.comm.client import CommClient
+    from app.bionode_grpc_clients import CommClient
     from app.core.config import get_settings
 
     settings = get_settings()

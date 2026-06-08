@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.comm.client import AUDIO_MATERIAL_STATUS_PUBLISHED, CommClient
-from app.comm.grpc_gen import bionode_comm_pb2, bionode_common_pb2
+from app.bionode_grpc_clients.comm import AUDIO_MATERIAL_STATUS_PUBLISHED, CommClient
+from app.bionode_grpc_clients.comm.grpc_gen import bionode_comm_pb2, bionode_common_pb2
 from app.core.config import Settings
 
 

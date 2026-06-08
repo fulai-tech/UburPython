@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from loguru import logger
 
-from app.comm.client import CommClient
+from app.bionode_grpc_clients import CommClient
 from app.core.exceptions import CommMaterialNotFoundError
 from app.es.sync import EsSync
 from app.schemas.audio import (

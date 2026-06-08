@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# 由 proto/bionode_comm.proto（及依赖 bionode_common.proto）生成 gRPC stub 到 app/comm/grpc_gen/
+# 由 proto/bionode_comm.proto（及依赖 bionode_common.proto）生成 gRPC stub 到 app/bionode_grpc_clients/comm/grpc_gen/
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PROTO_DIR="$ROOT/proto"
-OUT_DIR="$ROOT/app/comm/grpc_gen"
+OUT_DIR="$ROOT/app/bionode_grpc_clients/comm/grpc_gen"
 
 mkdir -p "$OUT_DIR"
 touch "$OUT_DIR/__init__.py"

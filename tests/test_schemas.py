@@ -111,7 +111,7 @@ def test_cosine_similarity_identical() -> None:
 
 
 def test_audio_material_data_from_comm_material() -> None:
-    from app.comm.grpc_gen import bionode_comm_pb2
+    from app.bionode_grpc_clients.comm.grpc_gen import bionode_comm_pb2
     from app.schemas.audio import AudioMaterialData
 
     material = bionode_comm_pb2.AudioMaterialInfo(

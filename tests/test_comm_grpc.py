@@ -10,7 +10,7 @@ import os
 
 import pytest
 
-from app.comm.client import CommClient
+from app.bionode_grpc_clients import CommClient
 from app.core.config import get_settings
 
 

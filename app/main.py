@@ -17,7 +17,7 @@ from fastapi import FastAPI
 from loguru import logger
 
 from app.api.audio import router as audio_router
-from app.comm.client import CommClient
+from app.bionode_grpc_clients import CommClient
 from app.core.config import Settings, get_settings
 from app.core.exception_handlers import register_exception_handlers
 from app.core.logging import setup_logging

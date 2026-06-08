@@ -11,7 +11,7 @@ import asyncio
 import grpc
 from loguru import logger
 
-from app.comm.grpc_gen import bionode_comm_pb2, bionode_comm_pb2_grpc
+from app.bionode_grpc_clients.comm.grpc_gen import bionode_comm_pb2, bionode_comm_pb2_grpc
 from app.core.config import Settings
 from app.schemas.audio import AudioMetaInfoIn
 
@@ -122,7 +122,7 @@ class CommClient:
     ) -> list[bionode_comm_pb2.AudioMaterialInfo]:
         """Create 返回 EmptyRes 时的临时反查方案，待 proto 扩展后移除。"""
         stub = self._require_stub()
-        from app.comm.grpc_gen import bionode_common_pb2
+        from app.bionode_grpc_clients.comm.grpc_gen import bionode_common_pb2
 
         response = await stub.ListAudioMaterials(
             bionode_comm_pb2.ListAudioMaterialsReq(
