@@ -11,6 +11,7 @@ venv
 logs
 .env
 *.md
+!README.md
 tests
 .DS_Store
 .cache
