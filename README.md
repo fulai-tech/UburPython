@@ -145,7 +145,7 @@ chmod +x scripts/setup_github_secrets.sh
 #    后续每次 Deploy 仅 pull 镜像 + compose up，已装 Docker 则跳过安装
 ```
 
-内网访问：将 `uburnode` 解析到服务器 IP，访问 `http://uburnode/docs`。
+生产访问：`http://<服务器IP>:8001/docs`（nginx 映射宿主机 8001 → 容器 80，避免与宝塔 80 冲突）。
 
 ## 测试
 
