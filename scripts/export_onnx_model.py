@@ -12,8 +12,12 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
+
+# 国内服务器构建时无法直连 huggingface.co，默认走 HF 镜像站
+os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 
 _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:

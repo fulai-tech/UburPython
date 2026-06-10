@@ -14,3 +14,4 @@ tests
 .DS_Store
 .cache
 models
+!models/onnx/bge-small-zh-v1.5/**

@@ -1,0 +1,7 @@
+# 与 docker-compose.yml 叠加使用：跳过构建期 ONNX 导出（需已上传 models/onnx/bge-small-zh-v1.5）
+# docker compose -f docker-compose.yml -f docker-compose.prebuilt.yml up -d --build
+
+services:
+  app:
+    build:
+      dockerfile: Dockerfile.server

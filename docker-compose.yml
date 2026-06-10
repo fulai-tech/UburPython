@@ -18,6 +18,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        HF_ENDPOINT: https://hf-mirror.com
     image: uburnode-app:local
     container_name: uburnode-app
     env_file:
