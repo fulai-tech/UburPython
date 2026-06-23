@@ -842,7 +842,7 @@ async def _seed(settings, *, verify: bool, reseed: bool, total: int) -> None:
         print("\n--- 内置检索回归（进程内 RetrievalService）---\n")
         for case in SEARCH_CASES:
             results = await retrieval.search(case.request)
-            names = [r.audio_name for r in results]
+            names = [r["audio_name"] for r in results]
             expect_set = set(case.expect_names)
             hit_set = set(names)
             ok = expect_set.issubset(hit_set) if case.expect_names else len(names) == 0

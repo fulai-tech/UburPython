@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from app.core.codes import HttpStatus
 from app.main import create_app
-from app.schemas.audio import AudioMaterialData, AudioResult, AudioTagsInput, EvidenceLevel, SearchAudioData
+from app.schemas.audio import AudioMaterialData, SearchAudioData
 from tests.test_exceptions import _assert_envelope
 
 
@@ -16,14 +16,18 @@ def test_search_returns_http_200_envelope() -> None:
     mock_service = MagicMock()
     mock_service.search_audio = AsyncMock(
         return_value=SearchAudioData(
-            audios=[
-                AudioResult(
-                    audio_url="https://cdn.example.com/a.mp3",
-                    audio_name="雨声",
-                    tags=AudioTagsInput(content_form=["雨声"]),
-                    evidence_level=EvidenceLevel.B,
-                    recommend_weight=0.75,
-                )
+            materials=[
+                {
+                    "id": "6a33a7928030d4cf420efeb6",
+                    "audio_name": "雨声",
+                    "audio_url": "https://cdn.example.com/a.mp3",
+                    "sleep_stage_tags": [{"tag_id": "s1", "code": "unwind", "name": "放松"}],
+                    "content_form_tags": [{"tag_id": "c1", "code": "rain", "name": "雨声"}],
+                    "mechanism_tags": [],
+                    "audio_engineering_tags": [],
+                    "medical_risk_tags": [],
+                    "evidence_level_tags": [{"tag_id": "e1", "code": "B", "name": "中等证据"}],
+                }
             ]
         )
     )
@@ -41,9 +45,9 @@ def test_search_returns_http_200_envelope() -> None:
     body = response.json()
     _assert_envelope(body, HttpStatus.OK)
     assert body["msg"] == "检索成功"
-    assert len(body["data"]["audios"]) == 1
-    assert body["data"]["audios"][0]["tags"]["content_form"] == ["雨声"]
-    assert "vector_id" not in str(body["data"]["audios"][0]["tags"])
+    assert len(body["data"]["materials"]) == 1
+    assert body["data"]["materials"][0]["audio_name"] == "雨声"
+    assert body["data"]["materials"][0]["content_form_tags"][0]["name"] == "雨声"
     assert response.status_code == body["code"]
 
 

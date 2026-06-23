@@ -1,10 +1,10 @@
 """Pydantic 对外契约模型（替代 uburnode_audio.proto）。
 
-字段 snake_case，与 ES / comm 全链路一致；检索出参列表字段用 audios。
+字段 snake_case；检索出参直接返回 somni_audio_materials 索引文档（materials 列表）。
 """
 
 from enum import Enum
-from typing import Self
+from typing import Any, Self
 
 from pydantic import BaseModel, Field
 
@@ -160,14 +160,10 @@ class SearchAudioRequest(BaseModel):
     top_k: int | None = Field(default=None, ge=1)
 
 
-class AudioResult(BaseModel):
-    """单条检索结果。"""
+class SearchAudioData(BaseModel):
+    """检索成功时写入 ApiResponse.data；每项为 somni_audio_materials 索引文档（含 id）。"""
 
-    audio_url: str
-    audio_name: str
-    tags: AudioTagsInput
-    evidence_level: EvidenceLevel
-    recommend_weight: float
+    materials: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class AudioMetaDataOut(BaseModel):
@@ -227,7 +223,3 @@ class AudioMaterialData(BaseModel):
         )
 
 
-class SearchAudioData(BaseModel):
-    """检索成功时写入 ApiResponse.data。"""
-
-    audios: list[AudioResult] = Field(default_factory=list)

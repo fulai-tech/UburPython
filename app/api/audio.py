@@ -64,6 +64,6 @@ async def search_audio(
     body: SearchAudioRequest,
     service: AudioService = Depends(get_audio_service),
 ) -> ApiResponse:
-    """三维度检索：只读 ES，不写 Mongo / ES（规范红线）。"""
+    """三维度检索：只读 ES，返回 somni_audio_materials 索引文档列表。"""
     result = await service.search_audio(body)
     return success(data=result.model_dump(), msg="检索成功")

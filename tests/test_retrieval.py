@@ -15,8 +15,11 @@ from app.services.retrieval import RetrievalService
 _VECTOR_DIM = 512
 
 
-def _tag_items(prefix: str, labels: list[str]) -> list[dict[str, str]]:
-    return [{"vector_id": f"{prefix}_{label}", "label": label} for label in labels]
+def _tag_entries(prefix: str, labels: list[str]) -> list[dict[str, str]]:
+    return [
+        {"tag_id": f"{prefix}_{label}", "code": label, "name": label}
+        for label in labels
+    ]
 
 
 def _audio_doc(
@@ -29,16 +32,12 @@ def _audio_doc(
     return {
         "audio_url": f"https://cdn.example.com/{audio_name}.mp3",
         "audio_name": audio_name,
-        "evidence_level": "B",
-        "recommend_weight": 0.75,
-        "tags": {
-            "sleep_stage": _tag_items("ss", sleep_stage or []),
-            "content_form": _tag_items("cf", content_form or []),
-            "mechanism": _tag_items("mech", mechanism or []),
-            "audio_feat": [],
-            "rhythm": [],
-            "risk_control": [],
-        },
+        "evidence_level_tags": [{"tag_id": "ev_B", "code": "B", "name": "中等证据"}],
+        "sleep_stage_tags": _tag_entries("ss", sleep_stage or []),
+        "content_form_tags": _tag_entries("cf", content_form or []),
+        "mechanism_tags": _tag_entries("mech", mechanism or []),
+        "audio_engineering_tags": [],
+        "medical_risk_tags": [],
     }
 
 
@@ -74,7 +73,7 @@ async def test_search_skips_sleep_stage_filter_when_disabled() -> None:
 
     results = await service.search(request)
 
-    assert [r.audio_name for r in results] == ["雨声A"]
+    assert [r["audio_name"] for r in results] == ["雨声A"]
     es_search.list_all_audio_candidates.assert_awaited_once()
     es_search.filter_by_sleep_stage.assert_not_called()
 
@@ -109,12 +108,12 @@ async def test_search_admits_on_exact_content_intersection() -> None:
         top_k=10,
     )
 
-    es_search.get_tag_vectors = AsyncMock()
+    es_search.get_dictionary_vectors = AsyncMock()
     results = await service.search(request)
 
-    assert [r.audio_name for r in results] == ["雨声A", "雨声B"]
+    assert [r["audio_name"] for r in results] == ["雨声A", "雨声B"]
     encoder.encode.assert_awaited_once_with(["雨声", "森林"])
-    es_search.get_tag_vectors.assert_not_called()
+    es_search.get_dictionary_vectors.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -126,7 +125,7 @@ async def test_search_falls_back_to_vector_when_no_exact_hit() -> None:
         return_value=[_audio_doc("正念音频", sleep_stage=["放松"], content_form=["正念"])]
     )
     es_search.parse_tags = EsSearch.parse_tags
-    es_search.get_tag_vectors = AsyncMock(return_value={"cf_正念": unit_vec})
+    es_search.get_dictionary_vectors = AsyncMock(return_value={"cf_正念": unit_vec})
     encoder.encode = AsyncMock(return_value=[unit_vec])
     request = SearchAudioRequest(
         sleep_stage_tags=["放松"],
@@ -137,7 +136,7 @@ async def test_search_falls_back_to_vector_when_no_exact_hit() -> None:
     results = await service.search(request)
 
     assert len(results) == 1
-    assert results[0].audio_name == "正念音频"
+    assert results[0]["audio_name"] == "正念音频"
     encoder.encode.assert_awaited_once_with(["冥想"])
 
 
@@ -155,7 +154,7 @@ async def test_search_skips_content_admission_when_no_content_tags() -> None:
 
     results = await service.search(request)
 
-    assert {r.audio_name for r in results} == {"音频A", "音频B"}
+    assert {r["audio_name"] for r in results} == {"音频A", "音频B"}
     encoder.encode.assert_not_called()
 
 
@@ -178,7 +177,7 @@ async def test_search_removes_candidate_when_disliked_vector_matches() -> None:
             [unit_vec],
         ]
     )
-    es_search.get_tag_vectors = AsyncMock(
+    es_search.get_dictionary_vectors = AsyncMock(
         side_effect=[
             {"cf_雨声": orthogonal_vec},
             {"cf_白噪音": unit_vec},
@@ -193,7 +192,7 @@ async def test_search_removes_candidate_when_disliked_vector_matches() -> None:
 
     results = await service.search(request)
 
-    assert [r.audio_name for r in results] == ["保留"]
+    assert [r["audio_name"] for r in results] == ["保留"]
     assert encoder.encode.await_args_list[1].args[0] == ["嘈杂"]
 
 
@@ -213,7 +212,7 @@ async def test_search_keeps_candidate_when_disliked_vector_below_threshold() -> 
             [orthogonal_vec],
         ]
     )
-    es_search.get_tag_vectors = AsyncMock(return_value={"cf_白噪音": unit_vec})
+    es_search.get_dictionary_vectors = AsyncMock(return_value={"cf_白噪音": unit_vec})
     request = SearchAudioRequest(
         sleep_stage_tags=["放松"],
         content_tags=["白噪音"],
@@ -223,7 +222,7 @@ async def test_search_keeps_candidate_when_disliked_vector_below_threshold() -> 
 
     results = await service.search(request)
 
-    assert [r.audio_name for r in results] == ["白噪音音频"]
+    assert [r["audio_name"] for r in results] == ["白噪音音频"]
 
 
 @pytest.mark.asyncio
@@ -240,7 +239,7 @@ async def test_search_vector_match_count_ranks_by_hit_count() -> None:
     )
     es_search.parse_tags = EsSearch.parse_tags
     encoder.encode = AsyncMock(return_value=[unit_x, unit_y])
-    es_search.get_tag_vectors = AsyncMock(
+    es_search.get_dictionary_vectors = AsyncMock(
         side_effect=[
             {"cf_下雨声": unit_x},
             {"cf_下雨声": unit_x, "cf_大森林": unit_y},
@@ -254,7 +253,7 @@ async def test_search_vector_match_count_ranks_by_hit_count() -> None:
 
     results = await service.search(request)
 
-    assert [r.audio_name for r in results] == ["双命中", "单命中"]
+    assert [r["audio_name"] for r in results] == ["双命中", "单命中"]
 
 
 @pytest.mark.asyncio
@@ -276,7 +275,7 @@ async def test_search_coarse_rank_orders_by_match_count_desc() -> None:
 
     results = await service.search(request)
 
-    assert [r.audio_name for r in results] == ["多命中", "少命中"]
+    assert [r["audio_name"] for r in results] == ["多命中", "少命中"]
 
 
 @pytest.mark.asyncio
@@ -323,16 +322,19 @@ async def test_search_caps_results_to_top_k() -> None:
 
 
 @pytest.mark.asyncio
-async def test_search_result_tags_are_label_strings_only() -> None:
-    """检索出参 tags 为 label 字符串列表，不含 vector_id。"""
+async def test_search_returns_full_material_document() -> None:
+    """检索出参为 somni_audio_materials 索引文档，不做字段裁剪。"""
     service, es_search, _encoder = _build_service()
-    es_search.filter_by_sleep_stage = AsyncMock(
-        return_value=[_audio_doc("雨声A", sleep_stage=["放松"], content_form=["雨声"])]
-    )
+    doc = _audio_doc("雨声A", sleep_stage=["放松"], content_form=["雨声"])
+    doc["id"] = "6a33a7928030d4cf420efeb6"
+    es_search.filter_by_sleep_stage = AsyncMock(return_value=[doc])
     es_search.parse_tags = EsSearch.parse_tags
     request = SearchAudioRequest(sleep_stage_tags=["放松"], content_tags=["雨声"])
 
     results = await service.search(request)
 
-    assert results[0].tags.sleep_stage == ["放松"]
-    assert results[0].tags.content_form == ["雨声"]
+    assert results[0]["id"] == "6a33a7928030d4cf420efeb6"
+    assert results[0]["audio_name"] == "雨声A"
+    assert results[0]["sleep_stage_tags"][0]["name"] == "放松"
+    assert results[0]["content_form_tags"][0]["name"] == "雨声"
+    assert results[0]["evidence_level_tags"][0]["code"] == "B"

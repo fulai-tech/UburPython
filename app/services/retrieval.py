@@ -19,7 +19,6 @@ from app.core.config import Settings
 from app.embedding.encoder import Encoder
 from app.es.search import EsSearch
 from app.schemas.audio import (
-    AudioResult,
     AudioTags,
     EvidenceLevel,
     EVIDENCE_WEIGHT_MAP,
@@ -51,7 +50,7 @@ class RetrievalService:
         self._encoder = encoder
         self._settings = settings
 
-    async def search(self, request: SearchAudioRequest) -> list[AudioResult]:
+    async def search(self, request: SearchAudioRequest) -> list[dict[str, Any]]:
         top_k_label = request.top_k if request.top_k is not None else "全部"
         logger.info(
             "检索开始，睡眠阶段={}，内容标签={}，厌恶标签={}，top_k={}",
@@ -87,16 +86,7 @@ class RetrievalService:
             [c.match_count for c in ranked],
         )
 
-        results = [
-            AudioResult(
-                audio_url=c.source["audio_url"],
-                audio_name=c.source["audio_name"],
-                tags=c.tags.to_label_tags(),
-                evidence_level=c.evidence_level,
-                recommend_weight=c.recommend_weight,
-            )
-            for c in ranked
-        ]
+        results = [c.source for c in ranked]
         logger.info("检索完成，命中数={}", len(results))
         return results
 
@@ -169,21 +159,18 @@ class RetrievalService:
         tags: AudioTags,
         request_vectors: list[list[float]],
     ) -> int:
-        """每个请求标签向量独立计分：与文档四维度 tag_vectors 任一 ≥ SIM_THRESHOLD 则 +1。"""
-        vector_ids: list[str] = []
-        for dim in (tags.content_form, tags.mechanism, tags.audio_feat, tags.rhythm):
-            vector_ids.extend(item.vector_id for item in dim)
-
-        if not vector_ids or not request_vectors:
+        """每个请求标签向量独立计分：与文档 tag_dictionary name_vector ≥ SIM_THRESHOLD 则 +1。"""
+        tag_ids = EsSearch.content_tag_ids(tags)
+        if not tag_ids or not request_vectors:
             return 0
 
-        stored = await self._es_search.get_tag_vectors(vector_ids)
+        stored = await self._es_search.get_dictionary_vectors(tag_ids)
         threshold = self._settings.sim_threshold
         matched = 0
 
         for req_vec in request_vectors:
-            for vid in vector_ids:
-                doc_vec = stored.get(vid)
+            for tid in tag_ids:
+                doc_vec = stored.get(tid)
                 if doc_vec and _cosine_similarity(req_vec, doc_vec) >= threshold:
                     matched += 1
                     break
@@ -209,7 +196,11 @@ class RetrievalService:
 
     @staticmethod
     def _parse_evidence(doc: dict[str, Any]) -> EvidenceLevel:
-        raw = doc.get("evidence_level", "C")
+        evidence_tags = doc.get("evidence_level_tags") or []
+        if evidence_tags and isinstance(evidence_tags[0], dict):
+            raw = str(evidence_tags[0].get("code", "C"))
+        else:
+            raw = str(doc.get("evidence_level", "C"))
         try:
             return EvidenceLevel(raw)
         except ValueError:
