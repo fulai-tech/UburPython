@@ -70,7 +70,7 @@ class AudioService:
 
     async def search_audio(self, request: SearchAudioRequest) -> SearchAudioData:
         results = await self._retrieval.search(request)
-        return SearchAudioData(audios=results)
+        return SearchAudioData(materials=results)
 
     async def _sync_es(self, material_id: str, request: WriteAudioRequest) -> None:
         await self._es_sync.upsert_audio(
