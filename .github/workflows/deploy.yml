@@ -11,7 +11,7 @@ permissions:
 
 env:
   DEPLOY_DIR: /opt/uburnode
-  GIT_REPO: https://github.com/dwqnidq/UburNode.git
+  GIT_REPO: https://github.com/fulai-tech/UburPython.git
   DEPLOY_BRANCH: main
 
 jobs:
