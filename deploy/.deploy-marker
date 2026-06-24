@@ -1,0 +1,4 @@
+# 自动部署验证标记（勿手动编辑，由 CI 合入时更新）
+deploy_id=qlj-dev-0624-deploy-test
+updated_at=2026-06-24T00:00:00Z
+purpose=verify-github-actions-auto-deploy

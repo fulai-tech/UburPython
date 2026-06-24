@@ -2,9 +2,15 @@ name: Deploy UburNode
 
 on:
   workflow_dispatch:
+    inputs:
+      branch:
+        description: 要部署的分支
+        required: false
+        default: main
   push:
     branches:
       - main
+      - dev
 
 permissions:
   contents: read
@@ -40,7 +46,7 @@ jobs:
             set -euo pipefail
             DEPLOY_DIR="${{ secrets.DEPLOY_PATH || env.DEPLOY_DIR }}"
             GIT_REPO="${{ env.GIT_REPO }}"
-            DEPLOY_BRANCH="${{ secrets.DEPLOY_BRANCH || env.DEPLOY_BRANCH }}"
+            DEPLOY_BRANCH="${{ secrets.DEPLOY_BRANCH || (github.event_name == 'workflow_dispatch' && github.event.inputs.branch || github.ref_name) }}"
 
             if [ ! -d "$DEPLOY_DIR/.git" ]; then
               if [ -d "$DEPLOY_DIR" ] && [ -n "$(ls -A "$DEPLOY_DIR" 2>/dev/null)" ]; then
