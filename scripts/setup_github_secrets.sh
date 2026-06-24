@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-REPO="${GITHUB_REPO:-dwqnidq/UburNode}"
+REPO="${GITHUB_REPO:-fulai-tech/UburPython}"
 KEY_PATH="${DEPLOY_KEY_PATH:-$HOME/.ssh/uburnode_deploy}"
 DEPLOY_DIR="${DEPLOY_DIR:-/opt/uburnode}"
 
