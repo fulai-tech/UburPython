@@ -25,11 +25,14 @@ def _tag_entries(prefix: str, labels: list[str]) -> list[dict[str, str]]:
 def _audio_doc(
     audio_name: str,
     *,
+    doc_id: str | None = None,
+    description_score: float | None = None,
     sleep_stage: list[str] | None = None,
     content_form: list[str] | None = None,
     mechanism: list[str] | None = None,
 ) -> dict:
-    return {
+    doc = {
+        "_id": doc_id or audio_name,
         "audio_url": f"https://cdn.example.com/{audio_name}.mp3",
         "audio_name": audio_name,
         "evidence_level_tags": [{"tag_id": "ev_B", "code": "B", "name": "中等证据"}],
@@ -39,6 +42,15 @@ def _audio_doc(
         "audio_engineering_tags": [],
         "medical_risk_tags": [],
     }
+    if description_score is not None:
+        doc["_description_score"] = description_score
+    return doc
+
+
+def _unit(index: int) -> list[float]:
+    vec = [0.0] * _VECTOR_DIM
+    vec[index] = 1.0
+    return vec
 
 
 def _build_service(
@@ -338,3 +350,97 @@ async def test_search_returns_full_material_document() -> None:
     assert results[0]["sleep_stage_tags"][0]["name"] == "放松"
     assert results[0]["content_form_tags"][0]["name"] == "雨声"
     assert results[0]["evidence_level_tags"][0]["code"] == "B"
+
+
+@pytest.mark.asyncio
+async def test_text_query_can_return_description_only_recall() -> None:
+    unit_vec = _unit(0)
+    service, es_search, encoder = _build_service(
+        settings=Settings(search_sleep_stage_filter_enabled=False)
+    )
+    es_search.parse_tags = EsSearch.parse_tags
+    es_search.list_content_tag_vectors = AsyncMock(return_value=[])
+    es_search.search_by_description_vector = AsyncMock(
+        return_value=[
+            _audio_doc(
+                "描述命中",
+                doc_id="desc-hit",
+                description_score=0.9,
+                content_form=["海浪"],
+            )
+        ]
+    )
+    encoder.encode_one = AsyncMock(return_value=unit_vec)
+    request = SearchAudioRequest(query_text="想要睡前舒缓的海边声音", top_k=10)
+
+    results = await service.search(request)
+
+    assert [r["audio_name"] for r in results] == ["描述命中"]
+    es_search.search_by_description_vector.assert_awaited_once()
+    es_search.list_all_audio_candidates.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_text_query_extracts_positive_and_negative_tags() -> None:
+    unit_rain = _unit(0)
+    unit_noise = _unit(1)
+    service, es_search, encoder = _build_service(
+        settings=Settings(search_sleep_stage_filter_enabled=False)
+    )
+    es_search.parse_tags = EsSearch.parse_tags
+    es_search.list_content_tag_vectors = AsyncMock(
+        return_value=[
+            {"label": "雨声", "dimension": "content_form", "vector": unit_rain},
+            {"label": "嘈杂", "dimension": "content_form", "vector": unit_noise},
+        ]
+    )
+    es_search.search_by_description_vector = AsyncMock(return_value=[])
+    es_search.list_all_audio_candidates = AsyncMock(
+        return_value=[
+            _audio_doc("保留雨声", doc_id="keep", content_form=["雨声"]),
+            _audio_doc("剔除嘈杂", doc_id="drop", content_form=["嘈杂"]),
+        ]
+    )
+    encoder.encode_one = AsyncMock(return_value=unit_rain)
+    encoder.encode = AsyncMock(
+        side_effect=lambda texts: [unit_rain if t == "雨声" else unit_noise for t in texts]
+    )
+    es_search.get_dictionary_vectors = AsyncMock(return_value={"cf_嘈杂": unit_noise})
+    request = SearchAudioRequest(query_text="睡前轻柔雨声，不要嘈杂", top_k=10)
+
+    results = await service.search(request)
+
+    assert [r["audio_name"] for r in results] == ["保留雨声"]
+    assert ["雨声"] in [call.args[0] for call in encoder.encode.await_args_list]
+    assert ["嘈杂"] in [call.args[0] for call in encoder.encode.await_args_list]
+
+
+@pytest.mark.asyncio
+async def test_text_query_fusion_ranks_two_route_hit_first() -> None:
+    unit_rain = _unit(0)
+    service, es_search, encoder = _build_service(
+        settings=Settings(search_sleep_stage_filter_enabled=False)
+    )
+    es_search.parse_tags = EsSearch.parse_tags
+    es_search.list_content_tag_vectors = AsyncMock(
+        return_value=[{"label": "雨声", "dimension": "content_form", "vector": unit_rain}]
+    )
+    es_search.search_by_description_vector = AsyncMock(
+        return_value=[
+            _audio_doc("双路命中", doc_id="both", description_score=0.8, content_form=["雨声"]),
+            _audio_doc("仅描述命中", doc_id="desc", description_score=0.8, content_form=["海浪"]),
+        ]
+    )
+    es_search.list_all_audio_candidates = AsyncMock(
+        return_value=[
+            _audio_doc("双路命中", doc_id="both", content_form=["雨声"]),
+            _audio_doc("仅标签命中", doc_id="tag", content_form=["雨声"]),
+        ]
+    )
+    encoder.encode_one = AsyncMock(return_value=unit_rain)
+    encoder.encode = AsyncMock(return_value=[unit_rain])
+    request = SearchAudioRequest(query_text="雨声", top_k=3)
+
+    results = await service.search(request)
+
+    assert [r["audio_name"] for r in results] == ["双路命中", "仅描述命中", "仅标签命中"]

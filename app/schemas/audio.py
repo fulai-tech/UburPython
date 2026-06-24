@@ -3,7 +3,7 @@
 字段 snake_case；检索出参直接返回 somni_audio_materials 索引文档（materials 列表）。
 """
 
-from enum import Enum
+from enum import StrEnum
 from typing import Any, Self
 
 from pydantic import BaseModel, Field
@@ -15,7 +15,7 @@ from app.core.tags import (
 )
 
 
-class EvidenceLevel(str, Enum):
+class EvidenceLevel(StrEnum):
     """证据等级 A/B/C/D/R/X，与 ES keyword 及默认 recommend_weight 映射。"""
 
     A = "A"
@@ -68,7 +68,7 @@ class AudioTagsInput(BaseModel):
 
 
 class AudioTags(BaseModel):
-    """六维标签结构，与 ES audio_materials.tags 同构（出参含 vector_id）。"""
+    """六维标签结构，与 ES 音频素材索引 tags 同构（出参含 vector_id）。"""
 
     sleep_stage: list[TagItem] = Field(default_factory=list)
     content_form: list[TagItem] = Field(default_factory=list)
@@ -154,6 +154,7 @@ class UpdateAudioRequest(WriteAudioRequest):
 class SearchAudioRequest(BaseModel):
     """POST /audio/search 请求体。"""
 
+    query_text: str | None = None
     sleep_stage_tags: list[str] = Field(default_factory=list)
     content_tags: list[str] = Field(default_factory=list)
     disliked_tags: list[str] = Field(default_factory=list)
@@ -221,5 +222,4 @@ class AudioMaterialData(BaseModel):
             create_time=material.create_time,
             update_time=material.update_time,
         )
-
 

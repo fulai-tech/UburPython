@@ -42,3 +42,25 @@ async def test_delete_audio_removes_from_somni_index() -> None:
     client.delete.assert_awaited_once()
     assert client.delete.await_args.kwargs["index"] == Settings().es_audio_index
     assert client.delete.await_args.kwargs["id"] == "674a1b2c3d4e5f6789012345"
+
+
+@pytest.mark.asyncio
+async def test_upsert_audio_with_description_still_skips_es_write() -> None:
+    client = MagicMock()
+    client.index = AsyncMock()
+    encoder = MagicMock(spec=Encoder)
+    encoder.encode_one = AsyncMock(return_value=[0.2] * 512)
+    es_sync = EsSync(client, encoder, Settings())
+
+    await es_sync.upsert_audio(
+        "audio_001",
+        audio_url="https://cdn.example.com/a.mp3",
+        audio_name="深夜雨声",
+        description="适合睡前放松",
+        flat_tags=["content:雨声"],
+        evidence_level="B",
+        recommend_weight=0.75,
+    )
+
+    client.index.assert_not_called()
+    encoder.encode_one.assert_not_called()

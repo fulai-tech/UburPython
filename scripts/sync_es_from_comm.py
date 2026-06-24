@@ -45,6 +45,14 @@ if TYPE_CHECKING:
 _scheduler: AsyncIOScheduler | None = None
 TAG_STATUS_ACTIVE = "启用"
 MATERIAL_STATUS_ACTIVE = True
+DESCRIPTION_TAG_FIELDS = (
+    "sleep_stage_tags",
+    "content_form_tags",
+    "mechanism_tags",
+    "audio_engineering_tags",
+    "medical_risk_tags",
+    "evidence_level_tags",
+)
 
 
 @dataclass(frozen=True)
@@ -93,7 +101,29 @@ def material_doc_to_es(doc: dict[str, Any]) -> dict[str, Any] | None:
         return None
     payload = bson_to_jsonable(doc)
     payload.pop("_id", None)
+    payload["description_text"] = build_material_description_text(payload)
     return payload
+
+
+def build_material_description_text(doc: dict[str, Any]) -> str:
+    labels: list[str] = []
+    for field in DESCRIPTION_TAG_FIELDS:
+        items = doc.get(field) or []
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if isinstance(item, dict):
+                labels.extend(
+                    str(item.get(key, "")).strip()
+                    for key in ("name", "code", "en_name")
+                    if item.get(key)
+                )
+    parts = [
+        str(doc.get("audio_name", "")).strip(),
+        str(doc.get("description", "")).strip(),
+        " ".join(label for label in labels if label).strip(),
+    ]
+    return " ".join(part for part in parts if part)
 
 
 def tag_dictionary_compare_snapshot(doc: dict[str, Any]) -> dict[str, Any]:
@@ -116,8 +146,12 @@ def tag_dictionary_compare_snapshot(doc: dict[str, Any]) -> dict[str, Any]:
 
 
 def material_compare_snapshot(doc: dict[str, Any]) -> dict[str, Any]:
-    """原料 diff 快照。"""
-    return bson_to_jsonable(doc)
+    """原料 diff 快照（不比较 dense vector，避免浮点噪声导致反复更新）。"""
+    snapshot = bson_to_jsonable(doc)
+    snapshot.pop("_id", None)
+    snapshot.pop("id", None)
+    snapshot.pop("description_vector", None)
+    return snapshot
 
 
 def tag_documents_differ(desired: dict[str, Any], existing: dict[str, Any]) -> bool:
@@ -191,7 +225,14 @@ class TagDictionarySyncJob:
         self._dim = settings.embedding_dim
 
     async def run(self, *, dry_run: bool) -> dict[str, int]:
-        stats = {"fetched": 0, "deleted": 0, "created": 0, "updated": 0, "unchanged": 0, "failed": 0}
+        stats = {
+            "fetched": 0,
+            "deleted": 0,
+            "created": 0,
+            "updated": 0,
+            "unchanged": 0,
+            "failed": 0,
+        }
         docs = await self._mongo.fetch_tag_dictionary()
         stats["fetched"] = len(docs)
 
@@ -235,10 +276,19 @@ class TagDictionarySyncJob:
             es_doc["name_en_vector"] = (
                 await self._encoder.encode_one(name_en) if name_en else zero_vector(self._dim)
             )
-            await self._client.index(index=self._es_search.tag_dictionary_index, id=doc_id, document=es_doc)
+            await self._client.index(
+                index=self._es_search.tag_dictionary_index,
+                id=doc_id,
+                document=es_doc,
+            )
             return "created" if existing is None else "updated"
         except Exception as exc:
-            logger.error("同步标签词典失败，id={}，name={}，原因：{}", doc_id, es_doc.get("name"), exc)
+            logger.error(
+                "同步标签词典失败，id={}，name={}，原因：{}",
+                doc_id,
+                es_doc.get("name"),
+                exc,
+            )
             return "failed"
 
 
@@ -248,11 +298,13 @@ class MaterialsSyncJob:
         mongo: MongoSource,
         es_search: EsSearch,
         es_client: AsyncElasticsearch,
+        encoder: Encoder,
         settings: Settings,
     ) -> None:
         self._mongo = mongo
         self._es_search = es_search
         self._client = es_client
+        self._encoder = encoder
         self._settings = settings
 
     async def run(self, *, dry_run: bool) -> dict[str, int]:
@@ -300,15 +352,27 @@ class MaterialsSyncJob:
 
     async def _sync_one(self, doc_id: str, es_doc: dict[str, Any], *, dry_run: bool) -> str:
         existing = await self._es_search.get_audio_source(doc_id)
-        if existing and not material_documents_differ(es_doc, existing):
+        if (
+            existing
+            and not material_documents_differ(es_doc, existing)
+            and existing.get("description_vector")
+        ):
             return "unchanged"
         if dry_run:
             return "created" if existing is None else "updated"
         try:
+            es_doc["description_vector"] = await self._encoder.encode_one(
+                str(es_doc.get("description_text", ""))
+            )
             await self._client.index(index=self._es_search.audio_index, id=doc_id, document=es_doc)
             return "created" if existing is None else "updated"
         except Exception as exc:
-            logger.error("同步原料失败，id={}，name={}，原因：{}", doc_id, es_doc.get("audio_name"), exc)
+            logger.error(
+                "同步原料失败，id={}，name={}，原因：{}",
+                doc_id,
+                es_doc.get("audio_name"),
+                exc,
+            )
             return "failed"
 
 
@@ -339,7 +403,13 @@ class MongoEsSyncJob:
         )
         tag_stats = await tag_job.run(dry_run=dry_run)
 
-        material_job = MaterialsSyncJob(self._mongo, self._es_search, self._client, self._settings)
+        material_job = MaterialsSyncJob(
+            self._mongo,
+            self._es_search,
+            self._client,
+            self._encoder,
+            self._settings,
+        )
         material_stats = await material_job.run(dry_run=dry_run)
 
         result = SyncJobResult(

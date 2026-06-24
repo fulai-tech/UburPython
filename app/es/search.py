@@ -19,6 +19,7 @@ from app.es.index_mappings import (
 from app.schemas.audio import AudioTags, TagItem
 
 LEGACY_INDICES = ("audio_materials", "tag_vectors")
+CONTENT_TAG_TYPES = ("content_form", "mechanism", "audio_engineering")
 
 
 def _tag_item_from_dict(item: dict[str, Any]) -> TagItem | None:
@@ -56,11 +57,12 @@ def _parse_engineering_tags(items: list[dict[str, Any]] | None) -> list[TagItem]
 
 
 def _document_from_hit(hit: dict[str, Any]) -> dict[str, Any]:
-    """ES hit → 索引文档（id + _source，不做字段裁剪）。"""
+    """ES hit → 索引文档（id/_id + _source，不做字段裁剪）。"""
     source = hit.get("_source", {})
+    doc_id = str(hit.get("_id", ""))
     if not isinstance(source, dict):
-        return {"id": hit.get("_id", "")}
-    return {"id": hit["_id"], **source}
+        return {"id": doc_id, "_id": doc_id}
+    return {"id": doc_id, "_id": doc_id, **source}
 
 
 class EsSearch:
@@ -87,16 +89,10 @@ class EsSearch:
         if not sleep_stage_tags:
             return []
 
-        should = [
-            {
-                "nested": {
-                    "path": "sleep_stage_tags",
-                    "query": {"term": {"sleep_stage_tags.name": tag}},
-                }
-            }
-            for tag in sleep_stage_tags
-        ]
-        query = {"query": {"bool": {"should": should, "minimum_should_match": 1}}, "size": 1000}
+        query = {
+            "query": _sleep_stage_filter(sleep_stage_tags),
+            "size": 1000,
+        }
         response = await self._client.search(index=self.audio_index, body=query)
         return [_document_from_hit(hit) for hit in response["hits"]["hits"]]
 
@@ -154,7 +150,9 @@ class EsSearch:
         try:
             response = await self._client.get(index=self.audio_index, id=doc_id)
             source = response.get("_source")
-            return source if isinstance(source, dict) else None
+            if isinstance(source, dict):
+                return {"id": doc_id, "_id": doc_id, **source}
+            return None
         except NotFoundError:
             return None
 
@@ -179,6 +177,72 @@ class EsSearch:
 
     async def get_tag_vectors(self, vector_ids: list[str]) -> dict[str, list[float]]:
         return await self.get_dictionary_vectors(vector_ids)
+
+    async def list_content_tag_vectors(self, *, size: int = 1000) -> list[dict[str, Any]]:
+        """读取内容相关标签词典向量，供 query_text 自动映射到标准标签。"""
+        response = await self._client.search(
+            index=self.tag_dictionary_index,
+            body={
+                "query": {
+                    "bool": {
+                        "filter": [
+                            {"terms": {"type": list(CONTENT_TAG_TYPES)}},
+                            {"term": {"status": "启用"}},
+                        ]
+                    }
+                },
+                "size": size,
+            },
+        )
+        tags: list[dict[str, Any]] = []
+        for hit in response["hits"]["hits"]:
+            source = hit.get("_source") or {}
+            label = source.get("name")
+            vector = source.get("name_vector")
+            if label and vector:
+                tags.append(
+                    {
+                        "id": hit.get("_id", ""),
+                        "label": label,
+                        "dimension": source.get("type", ""),
+                        "vector": vector,
+                    }
+                )
+        return tags
+
+    async def search_by_description_vector(
+        self,
+        query_vector: list[float],
+        *,
+        sleep_stage_tags: list[str],
+        size: int,
+    ) -> list[dict[str, Any]]:
+        """description_vector 语义召回；缺少向量的旧文档自然不会命中。"""
+        if not query_vector or size <= 0:
+            return []
+
+        knn: dict[str, Any] = {
+            "field": "description_vector",
+            "query_vector": query_vector,
+            "k": size,
+            "num_candidates": max(size * 3, 50),
+        }
+        if sleep_stage_tags:
+            knn["filter"] = _sleep_stage_filter(sleep_stage_tags)
+
+        response = await self._client.search(
+            index=self.audio_index,
+            body={
+                "knn": knn,
+                "size": size,
+            },
+        )
+        results: list[dict[str, Any]] = []
+        for hit in response["hits"]["hits"]:
+            source = _document_from_hit(hit)
+            source["_description_score"] = float(hit.get("_score") or 0.0)
+            results.append(source)
+        return results
 
     @staticmethod
     def parse_tags(raw: dict[str, Any]) -> AudioTags:
@@ -221,3 +285,22 @@ class EsSearch:
             if not await self._client.indices.exists(index=index):
                 await self._client.indices.create(index=index, body=mapping)
                 logger.info("已创建 ES 索引：{}", index)
+            else:
+                await self._client.indices.put_mapping(index=index, body=mapping["mappings"])
+
+
+def _sleep_stage_filter(sleep_stage_tags: list[str]) -> dict[str, Any]:
+    return {
+        "bool": {
+            "should": [
+                {
+                    "nested": {
+                        "path": "sleep_stage_tags",
+                        "query": {"term": {"sleep_stage_tags.name": tag}},
+                    }
+                }
+                for tag in sleep_stage_tags
+            ],
+            "minimum_should_match": 1,
+        }
+    }

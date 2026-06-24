@@ -36,10 +36,14 @@ class Settings(BaseSettings):
     sim_threshold: float = 0.7  # 内容形态向量模糊命中阈值（规范 §五-2）
     search_sleep_stage_filter_enabled: bool = True  # 检索步骤 1 是否按睡眠阶段过滤
 
-    embedding_backend: str = "onnx"  # onnx（生产）| torch（对比/回退，需 sentence-transformers）
+    embedding_backend: str = "onnx"  # onnx | torch | qwen_api（DashScope/OpenAI 兼容）
     embedding_model: str = "BAAI/bge-small-zh-v1.5"
     embedding_dim: int = 512  # 与 ES dense_vector.dims 一致
     embedding_onnx_dir: str = "models/onnx/bge-small-zh-v1.5"
+    dashscope_api_key: str = ""
+    dashscope_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    embedding_api_timeout_sec: float = 30.0
+    embedding_api_batch_size: int = 10
 
     log_level: str = "INFO"
     log_dir: str = "logs"

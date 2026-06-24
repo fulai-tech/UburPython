@@ -39,6 +39,7 @@ class EsSync:
         flat_tags: list[str],
         evidence_level: str,
         recommend_weight: float,
+        description: str = "",
     ) -> None:
         """Somni 索引由 Mongo 同步维护，HTTP CUD 跳过 ES upsert。"""
         logger.warning(

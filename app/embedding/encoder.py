@@ -40,5 +40,9 @@ def create_encoder(settings: Settings) -> EncoderBase:
         from app.embedding.torch_encoder import TorchEncoder
 
         return TorchEncoder(settings)
-    msg = f"不支持的 EMBEDDING_BACKEND={settings.embedding_backend!r}，可选 onnx / torch"
+    if backend == "qwen_api":
+        from app.embedding.qwen_api_encoder import QwenApiEncoder
+
+        return QwenApiEncoder(settings)
+    msg = f"不支持的 EMBEDDING_BACKEND={settings.embedding_backend!r}，可选 onnx / torch / qwen_api"
     raise ValueError(msg)

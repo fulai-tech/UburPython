@@ -7,7 +7,6 @@ from __future__ import annotations
 
 from typing import Any
 
-
 _META_DESC_MAX_LEN = 50
 
 
@@ -48,6 +47,8 @@ def build_somni_audio_materials_mapping(embedding_dim: int) -> dict[str, Any]:
             "field_descriptions": {
                 "audio_name": "音频名称，用于后台管理、展示与检索出参",
                 "description": "音频描述，说明内容、声音特点或适用场景",
+                "description_text": "用于语义检索的拼接文本：名称 + 描述 + 标签名",
+                "description_vector": f"description_text 的 {embedding_dim} 维 embedding",
                 "status": "是否启用；true 表示可参与检索与同步",
                 "audio_url": "音频文件 CDN / 对象存储 URL",
                 "operation_type": "0 大模型打标，1 人工打标",
@@ -68,7 +69,8 @@ def build_somni_audio_materials_mapping(embedding_dim: int) -> dict[str, Any]:
                 ),
                 "mechanism_tags": "作用机制标签（多选）：如降低唤醒、声音遮蔽、注意力锚定",
                 "audio_engineering_tags": (
-                    "音频工程特征：维度 code + value 取值；spectral_profile 含 band_values、relative_loudness"
+                    "音频工程特征：维度 code + value 取值；"
+                    "spectral_profile 含 band_values、relative_loudness"
                 ),
                 "medical_risk_tags": "医学风控标签（多选）",
                 "evidence_level_tags": "证据等级 A/B/C/D/R/X，用于精排权重",
@@ -79,6 +81,17 @@ def build_somni_audio_materials_mapping(embedding_dim: int) -> dict[str, Any]:
             "description": _field(
                 "text",
                 "音频描述，说明内容、声音特点或适用场景（通常为大模型生成）",
+            ),
+            "description_text": _field(
+                "text",
+                "用于语义检索的拼接文本：音频名称、描述与标签名",
+            ),
+            "description_vector": _field(
+                "dense_vector",
+                f"description_text 的 embedding 向量（{embedding_dim} 维），供语义召回",
+                dims=embedding_dim,
+                index=True,
+                similarity="cosine",
             ),
             "status": _field("boolean", "是否启用；true 表示可参与检索与同步"),
             "audio_url": _field("keyword", "音频文件地址（CDN / 对象存储 / 内部资源 URL）"),

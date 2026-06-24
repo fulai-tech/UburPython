@@ -77,6 +77,7 @@ class AudioService:
             material_id,
             audio_url=request.audio_url,
             audio_name=request.name,
+            description=request.description,
             flat_tags=request.flat_tags(),
             evidence_level=request.evidence_level.value,
             recommend_weight=request.resolved_recommend_weight(),

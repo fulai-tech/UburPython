@@ -25,6 +25,13 @@ DIMENSION_FIELDS: tuple[str, ...] = (
     "risk_control",
 )
 
+CONTENT_DIMENSION_FIELDS: tuple[str, ...] = (
+    "content_form",
+    "mechanism",
+    "audio_feat",
+    "rhythm",
+)
+
 DEFAULT_DIMENSION = "content_form"
 
 

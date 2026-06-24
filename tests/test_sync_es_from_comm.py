@@ -127,6 +127,7 @@ async def test_tag_sync_job_deletes_es_orphan() -> None:
 async def test_material_sync_job_skips_unchanged(tmp_path) -> None:
     doc = _material_doc("6a33a7928030d4cf420efeb6")
     es_payload = material_doc_to_es(doc)
+    es_payload["description_vector"] = [0.1] * 512
     mongo = MagicMock()
     mongo.fetch_materials = AsyncMock(return_value=[doc])
     es_search = MagicMock()
@@ -135,13 +136,40 @@ async def test_material_sync_job_skips_unchanged(tmp_path) -> None:
     es_search.audio_index = "somni_audio_materials"
     es_client = MagicMock()
     es_client.index = AsyncMock()
+    encoder = MagicMock()
+    encoder.encode_one = AsyncMock(return_value=[0.1] * 512)
 
     stats = await MaterialsSyncJob(
-        mongo, es_search, es_client, Settings(sync_backup_dir=str(tmp_path))
+        mongo, es_search, es_client, encoder, Settings(sync_backup_dir=str(tmp_path))
     ).run(dry_run=False)
 
     assert stats["unchanged"] == 1
     es_client.index.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_material_sync_job_writes_description_vector(tmp_path) -> None:
+    doc = _material_doc("6a33a7928030d4cf420efeb6")
+    mongo = MagicMock()
+    mongo.fetch_materials = AsyncMock(return_value=[doc])
+    es_search = MagicMock()
+    es_search.list_all_audio_doc_ids = AsyncMock(return_value=set())
+    es_search.get_audio_source = AsyncMock(return_value=None)
+    es_search.audio_index = "somni_audio_materials"
+    es_client = MagicMock()
+    es_client.index = AsyncMock()
+    encoder = MagicMock()
+    encoder.encode_one = AsyncMock(return_value=[0.2] * 512)
+
+    stats = await MaterialsSyncJob(
+        mongo, es_search, es_client, encoder, Settings(sync_backup_dir=str(tmp_path))
+    ).run(dry_run=False)
+
+    assert stats["created"] == 1
+    indexed = es_client.index.await_args.kwargs["document"]
+    assert indexed["description_text"] == "测试音频 描述 放松 unwind 中等证据 B"
+    assert indexed["description_vector"] == [0.2] * 512
+    encoder.encode_one.assert_awaited_once_with(indexed["description_text"])
 
 
 @pytest.mark.asyncio
