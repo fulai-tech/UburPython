@@ -4,7 +4,6 @@ import pytest
 
 from app.core.tags import (
     dimensions_from_flat_tags,
-    flat_tags_from_dimensions,
     resolve_flat_tag,
 )
 from app.schemas.audio import AudioTags, AudioTagsInput, EvidenceLevel, TagItem
@@ -53,56 +52,79 @@ def test_flat_tags_from_dimensions_empty_labels_skipped() -> None:
     assert grouped["mechanism"] == []
 
 
-def _write_audio_json(**overrides: object) -> dict:
-    body = {
-        "category_code": 8,
-        "noise_color": None,
-        "level": 2,
-        "name": "柔和鋼琴 篝火白噪音",
-        "description": "",
-        "tags": {
-            "sleep_stage": ["放松"],
-            "content_form": ["雨声"],
-            "mechanism": [],
-            "audio_feat": [],
-            "rhythm": [],
-            "risk_control": [],
-        },
-        "audio_info": {
-            "meta_data": {
-                "url": "https://cdn.fulai.tech/common/audio/20260527222706_k4tejx.mp3",
-                "duration_sec": 600,
-            },
-            "is_loopable": True,
-            "is_voice": False,
-        },
-        "evidence_level": "B",
-        "recommend_weight": 0.75,
+def _somni_create_json(**overrides: object) -> dict:
+    body: dict = {
+        "audio_name": "阴雨天城市公寓的雷雨氛围感音效",
+        "audio_url": "https://cdn.fulai.tech/somni/audio/demo.mp3",
+        "operation_type": 0,
+        "created_by": "qwen3.5-omni-plus",
+        "updated_by": "qwen3.5-omni-plus",
+        "description": "雨夜场景",
+        "sleep_stage_tags": [
+            {"tag_id": "s1", "code": "unwind", "name": "放松"},
+        ],
+        "content_form_tags": [
+            {
+                "tag_id": "c1",
+                "code": "natural_sound",
+                "name": "自然声",
+                "en_name": "Natural Sound",
+            }
+        ],
+        "mechanism_tags": [],
+        "audio_engineering_tags": [
+            {
+                "tag_id": "e1",
+                "code": "event_density",
+                "name": "声音事件密度",
+                "value": {"tag_id": "v1", "code": "medium_low", "name": "中低"},
+            }
+        ],
+        "medical_risk_tags": [],
+        "evidence_level_tags": [{"tag_id": "ev1", "code": "B", "name": "中等证据"}],
+        "embedding": [0.1, 0.2],
     }
     body.update(overrides)
     return body
 
 
-def test_create_audio_request_accepts_tags_object() -> None:
+def test_create_audio_request_requires_only_audio_name() -> None:
     from app.schemas.audio import CreateAudioRequest
 
-    req = CreateAudioRequest.model_validate(_write_audio_json())
-    assert req.name == "柔和鋼琴 篝火白噪音"
-    assert req.audio_url == "https://cdn.fulai.tech/common/audio/20260527222706_k4tejx.mp3"
-    assert req.flat_tags() == ["sleep:放松", "content:雨声"]
+    req = CreateAudioRequest.model_validate({"audio_name": "仅名称即可"})
+    assert req.audio_name == "仅名称即可"
+    assert req.audio_url is None
+    assert req.sleep_stage_tags == []
 
 
-def test_create_audio_request_rejects_legacy_flat_fields() -> None:
+def test_create_audio_request_rejects_missing_audio_name() -> None:
+    from pydantic import ValidationError
+
     from app.schemas.audio import CreateAudioRequest
 
-    with pytest.raises(Exception):
-        CreateAudioRequest.model_validate(
-            {
-                "audio_url": "https://cdn.example.com/a.mp3",
-                "audio_name": "深夜雨声",
-                "tags": ["sleep:放松", "content:雨声"],
-            }
-        )
+    with pytest.raises(ValidationError):
+        CreateAudioRequest.model_validate({"audio_url": "https://cdn.example.com/a.mp3"})
+
+
+def test_create_audio_request_accepts_somni_document() -> None:
+    from app.schemas.audio import CreateAudioRequest
+
+    req = CreateAudioRequest.model_validate(_somni_create_json())
+    assert req.audio_name.startswith("阴雨天")
+    assert req.sleep_stage_tags[0].name == "放松"
+    assert req.audio_engineering_tags[0].value is not None
+    assert req.audio_engineering_tags[0].value.code == "medium_low"
+    assert req.embedding == [0.1, 0.2]
+
+
+def test_update_audio_request_all_fields_optional() -> None:
+    from app.schemas.audio import UpdateAudioRequest
+
+    req = UpdateAudioRequest.model_validate({})
+    assert req.model_dump(exclude_unset=True) == {}
+
+    partial = UpdateAudioRequest.model_validate({"description": "改描述"})
+    assert partial.model_dump(exclude_unset=True) == {"description": "改描述"}
 
 
 def test_cosine_similarity_identical() -> None:

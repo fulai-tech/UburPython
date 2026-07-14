@@ -67,12 +67,7 @@ def test_create_audio_encoder_error_returns_envelope() -> None:
     with patch("app.main.get_app_state", return_value=mock_state):
         response = TestClient(app).post(
             "/api/audio",
-            json={
-                "name": "测试",
-                "audio_info": {
-                    "meta_data": {"url": "https://cdn.example.com/a.mp3"},
-                },
-            },
+            json={"audio_name": "测试"},
         )
 
     assert response.status_code == 503

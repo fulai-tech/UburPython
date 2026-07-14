@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from app.core.codes import HttpStatus
 from app.main import create_app
-from app.schemas.audio import AudioMaterialData, SearchAudioData
+from app.schemas.audio import SearchAudioData
 from tests.test_exceptions import _assert_envelope
 
 
@@ -51,15 +51,15 @@ def test_search_returns_http_200_envelope() -> None:
     assert response.status_code == body["code"]
 
 
-def test_create_audio_accepts_six_dimension_tags() -> None:
+def test_create_audio_accepts_somni_body() -> None:
     mock_service = MagicMock()
     mock_service.create_audio = AsyncMock(
-        return_value=AudioMaterialData(
-            id="seed_001",
-            name="深夜雨声",
-            tags=["sleep:放松", "content:雨声"],
-            audio_info={"meta_data": {"url": "https://cdn.example.com/a.mp3"}},
-        )
+        return_value={
+            "id": "seed_001",
+            "audio_name": "深夜雨声",
+            "audio_url": "https://cdn.example.com/a.mp3",
+            "sleep_stage_tags": [{"tag_id": "s1", "code": "unwind", "name": "放松"}],
+        }
     )
     mock_state = MagicMock()
     mock_state.audio_service = mock_service
@@ -69,29 +69,9 @@ def test_create_audio_accepts_six_dimension_tags() -> None:
         response = TestClient(app).post(
             "/api/audio",
             json={
-                "category_code": 8,
-                "noise_color": None,
-                "level": 2,
-                "name": "深夜雨声",
-                "description": "",
-                "tags": {
-                    "sleep_stage": ["放松"],
-                    "content_form": ["雨声"],
-                    "mechanism": [],
-                    "audio_feat": [],
-                    "rhythm": [],
-                    "risk_control": [],
-                },
-                "audio_info": {
-                    "meta_data": {
-                        "url": "https://cdn.example.com/a.mp3",
-                        "duration_sec": 600,
-                    },
-                    "is_loopable": True,
-                    "is_voice": False,
-                },
-                "evidence_level": "B",
-                "recommend_weight": 0.75,
+                "audio_name": "深夜雨声",
+                "audio_url": "https://cdn.example.com/a.mp3",
+                "sleep_stage_tags": [{"tag_id": "s1", "code": "unwind", "name": "放松"}],
             },
         )
 
@@ -99,6 +79,25 @@ def test_create_audio_accepts_six_dimension_tags() -> None:
     body = response.json()
     _assert_envelope(body, HttpStatus.OK)
     assert body["data"]["id"] == "seed_001"
-    assert body["data"]["name"] == "深夜雨声"
-    assert body["data"]["audio_info"]["meta_data"]["url"] == "https://cdn.example.com/a.mp3"
+    assert body["data"]["audio_name"] == "深夜雨声"
     mock_service.create_audio.assert_awaited_once()
+
+
+def test_update_audio_accepts_partial_somni_body() -> None:
+    mock_service = MagicMock()
+    mock_service.update_audio = AsyncMock()
+    mock_state = MagicMock()
+    mock_state.audio_service = mock_service
+
+    app = create_app()
+    with patch("app.main.get_app_state", return_value=mock_state):
+        response = TestClient(app).put(
+            "/api/audio/674a1b2c3d4e5f6789012345",
+            json={"description": "仅更新描述"},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    _assert_envelope(body, HttpStatus.OK)
+    assert body["msg"] == "更新成功"
+    mock_service.update_audio.assert_awaited_once()

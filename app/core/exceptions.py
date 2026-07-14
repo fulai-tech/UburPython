@@ -31,6 +31,22 @@ class CommMaterialNotFoundError(AppError):
         )
 
 
+class MaterialNotFoundError(AppError):
+    def __init__(self, material_id: str) -> None:
+        super().__init__(
+            message=f"音频原料不存在：{material_id}",
+            status_code=HttpStatus.NOT_FOUND,
+        )
+
+
+class MongoNotConfiguredError(AppError):
+    def __init__(self) -> None:
+        super().__init__(
+            message="Mongo 未配置（MONGO_URI），无法写入音频原料",
+            status_code=HttpStatus.SERVICE_UNAVAILABLE,
+        )
+
+
 class EncoderNotReadyError(AppError):
     def __init__(self) -> None:
         super().__init__(

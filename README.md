@@ -5,7 +5,7 @@ BioNode 体系中的 **Somni 音频检索服务**：以三维度检索为核心�
 - **核心**：三维度音频检索（`somni_audio_materials` ES 召回 + 标签词典向量 + 四步精排流水线）
 - **数据源**：MongoDB `Fullive` 库（`somni_audio_materials`、`somni_audio_tag_dictionary`）
 - **索引**：Elasticsearch `somni_audio_materials`、`somni_audio_tag_dictionary`（字段含义见 mapping `meta.description`）
-- **写路径（遗留）**：HTTP CUD 仍经 comm-service gRPC；Somni 索引由同步脚本维护
+- **写路径**：`POST/PUT /api/audio` 写 Mongo `somni_audio_materials`（Somni 文档体）；有 `audio_url` 时同步 upsert ES；`DELETE` 仍经 comm-service
 
 ## 架构
 
@@ -19,7 +19,8 @@ BioNode 体系中的 **Somni 音频检索服务**：以三维度检索为核心�
     │                  + somni_audio_tag_dictionary (ES 向量)
     │                  + 进程内 Embedding (bge-small-zh-v1.5)
     │
-    ├──写（CUD，遗留）──► comm-service (gRPC) ──► MongoDB（旧 comm 表）
+    ├──写（创建/更新）──► Mongo somni_audio_materials ──► ES upsert（有 audio_url）
+    ├──写（删除）──► comm-service (gRPC) + ES delete
     │
     └──同步（定时/手动）──► MongoDB Somni 集合 ──► Elasticsearch
 ```
@@ -31,7 +32,8 @@ BioNode 体系中的 **Somni 音频检索服务**：以三维度检索为核心�
 | Mongo → ES 同步 | `somni_audio_materials`、`somni_audio_tag_dictionary` | 同名 ES 索引 | `scripts/sync_es_from_comm.py` |
 | 标签向量 | 词典 `name` / `name_en` | `name_vector` / `name_en_vector` | 同步脚本 + `app/embedding/` |
 | HTTP 检索 | ES 原料文档 | `data.materials[]` 原样返回 | `app/services/retrieval.py` |
-| HTTP CUD（遗留） | 六维标签入参 | comm 扁平 tags | `app/services/audio.py` |
+| HTTP 创建/更新 | Somni 文档体（仅创建强制 `audio_name`） | Mongo + ES | `app/services/audio.py` |
+| HTTP 删除（遗留） | material_id | comm + ES delete | `app/services/audio.py` |
 
 字段命名全链路 **snake_case**。Somni 表结构详见仓库内 `音频表结构.md`。
 
@@ -45,9 +47,11 @@ UburPython/
 │   ├── api/audio.py            # 4 个 HTTP 端点
 │   ├── schemas/audio.py        # Pydantic 模型
 │   ├── services/               # AudioService、RetrievalService
+│   ├── mongo/materials.py      # Mongo somni_audio_materials 读写
 │   ├── es/
 │   │   ├── search.py           # EsSearch 读路径
-│   │   ├── sync.py             # EsSync 写路径（CUD 跳过 upsert）
+│   │   ├── sync.py             # EsSync（Somni upsert + 删除）
+│   │   ├── somni_docs.py       # description_text 等文档转换
 │   │   └── index_mappings.py   # ES 索引 mapping + 字段注释
 │   ├── embedding/encoder.py    # bge-small-zh-v1.5 向量编码
 │   └── bionode_grpc_clients/   # comm-service gRPC 客户端
@@ -95,12 +99,39 @@ uv run uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
 
 | 端点 | 方法 | 说明 |
 |------|------|------|
-| `/api/audio` | POST | 创建音频（comm gRPC，遗留） |
-| `/api/audio/{id}` | PUT | 更新音频（comm gRPC，遗留） |
-| `/api/audio/{id}` | DELETE | 删除音频 |
+| `/api/audio` | POST | 创建音频（Mongo Somni；仅 `audio_name` 必填） |
+| `/api/audio/{id}` | PUT | 更新音频（字段全选填，partial update） |
+| `/api/audio/{id}` | DELETE | 删除音频（comm + ES） |
 | `/api/audio/search` | POST | 三维度检索 |
 
 OpenAPI 文档：启动后访问 `http://localhost:8080/docs`。
+
+### 创建接口
+
+**请求** `POST /api/audio`（仅 `audio_name` 必填，其余选填）：
+
+```json
+{
+  "audio_name": "阴雨天城市公寓的雷雨氛围感音效",
+  "audio_url": "https://cdn.fulai.tech/somni/audio/demo.mp3",
+  "operation_type": 0,
+  "created_by": "qwen3.5-omni-plus",
+  "description": "...",
+  "sleep_stage_tags": [{"tag_id": "...", "code": "unwind", "name": "放松"}],
+  "content_form_tags": [],
+  "mechanism_tags": [],
+  "audio_engineering_tags": [],
+  "medical_risk_tags": [],
+  "evidence_level_tags": [{"tag_id": "...", "code": "B", "name": "中等证据"}],
+  "embedding": []
+}
+```
+
+有 `audio_url` 时会同步写入 ES（生成 `description_text` / `description_vector`）。
+
+### 更新接口
+
+**请求** `PUT /api/audio/{id}`：同一套字段，**全部可选**，只更新请求中出现的字段。
 
 ### 检索接口
 
@@ -206,7 +237,6 @@ cd /opt/uburpython && docker compose up -d --build
 
 生产访问：`http://<服务器IP>:8001/docs`（nginx 映射宿主机 8001 → 容器 80）。
 
-应用日志挂载到项目目录：`logs/uburnode.log`（可直接 `tail -f`）。
 
 ## 测试
 
