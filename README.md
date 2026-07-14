@@ -206,6 +206,8 @@ cd /opt/uburpython && docker compose up -d --build
 
 生产访问：`http://<服务器IP>:8001/docs`（nginx 映射宿主机 8001 → 容器 80）。
 
+应用日志挂载到项目目录：`logs/uburnode.log`（可直接 `tail -f`）。
+
 ## 测试
 
 ```bash
