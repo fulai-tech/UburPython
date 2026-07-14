@@ -22,6 +22,7 @@ service QuizService {
   rpc UpdateQuestion (UpdateQuestionReq)          returns (QuestionRes);
   rpc UpdateQuestionStatus (UpdateQuestionStatusReq) returns (EmptyRes);
   rpc DeleteQuestion (IdReq)                      returns (EmptyRes);
+  rpc GetQuestionsByIds (GetQuestionsByIdsRequest) returns (QuestionListRes);
 
   // ----- 人格配置 -----
   rpc GetPersonality (GetPersonalityReq)          returns (PersonalityRes);
@@ -61,10 +62,13 @@ service SurveyService {
   rpc SaveAnswerAlways (SaveAnswerReq)            returns (AnswerRes);  // 不按天去重，每次新建（App/Somni 用）
   rpc GetAnswerProgress (GetAnswerProgressReq)    returns (AnswerRes);
   rpc ListAnswers (ListAnswersReq)                returns (AnswerListRes);
+  rpc GetAnswerById (GetAnswerByIdReq)            returns (AnswerRes);
 
   // ----- 测评结果 -----
   rpc ComputeMhrCodes (ComputeMhrCodesReq)        returns (ComputeMhrCodesRes);  // 仅计算人格编码，不落库（Somni 匿名提交用）
   rpc SubmitQuiz (SubmitQuizReq)                  returns (QuizResultRes);
+  rpc H5SubmitQuiz (SubmitQuizReq)                returns (QuizResultRes);  // H5：三位人格精确匹配
+  rpc SubmitScaleQuiz (SubmitScaleQuizReq)        returns (QuizResultRes);
   rpc GetLatestResult (GetLatestResultReq)        returns (QuizResultRes);
   rpc GetResultById (GetResultByIdReq)             returns (QuizResultRes);
   rpc ListResults (ListResultsReq)                returns (QuizResultListRes);
@@ -149,10 +153,16 @@ service SomniService {
   // ----- 控制台会话上下文 -----
   /** 根据 session_id 查询会话关联的人格编码和方案阶段，供控制台接管 APP 会话时加载 */
   rpc GetSessionContext (SomniGetSessionContextReq) returns (SomniGetSessionContextRes);
+  /** 控制台结束会话：停设备与调度；有 somni_plans 时同步 is_started=false */
+  rpc ConsoleStopDeviceSession (SomniConsoleStopDeviceSessionReq) returns (SomniConsoleStopDeviceSessionRes);
 
   // ----- 控制台手动干预 -----
   rpc TriggerIntervention (TriggerInterventionReq) returns (EmptyRes);
   rpc StopIntervention (StopInterventionReq) returns (EmptyRes);
+  /** 联调：清空 AI 思维滑动窗/冷却/patrol/序列（不抑制 patrol，不清 current_phase） */
+  rpc ResetAiThoughtRehearsalState (ResetAiThoughtRehearsalStateReq) returns (EmptyRes);
+  /** 设备 MQTT 连断 — 推送 device_link 思维流（device stream，可无 session） */
+  rpc EmitDeviceLinkAiThought (EmitDeviceLinkAiThoughtReq) returns (EmptyRes);
 
   // ----- 对话记录查询 -----
   rpc GetChatMessages (GetChatMessagesReq)                returns (ChatMessageListRes);
@@ -172,11 +182,17 @@ service SomniService {
   rpc GetSleepMapCityOverview (SomniGetSleepMapCityOverviewReq) returns (SomniGetSleepMapCityOverviewRes);
   rpc GetSleepMapHighlights (SomniGetSleepMapHighlightsReq) returns (SomniGetSleepMapHighlightsRes);
   rpc GetSleepMapCityRanking (SomniGetSleepMapCityRankingReq) returns (SomniGetSleepMapCityRankingRes);
+
+  // ----- DPH 控制台专用 -----
+  /** 为 DPH 方案创建独立会话 + 方案记录（admin 控制台调用） */
+  rpc CreateDphConsoleSession (CreateDphConsoleSessionReq) returns (CreateDphConsoleSessionRes);
 }
 
 // ==================== AudioMaterialService ====================
 // 音频原料 & 分类管理
-// 对应表: audio_material_categories, audio_materials
+// 原料表: somni_audio_materials（Create/Update/Delete/Get/ListAudioMaterial*）
+// 分类表: audio_material_categories
+// （H5 enrich 仍可能内部读取旧表 audio_materials，不暴露 Legacy RPC）
 
 service AudioMaterialService {
   // ----- 分类 -----
@@ -186,7 +202,7 @@ service AudioMaterialService {
   rpc UpdateAudioMaterialCategory (UpdateAudioMaterialCategoryReq) returns (EmptyRes);
   rpc DeleteAudioMaterialCategory (IdReq)                          returns (EmptyRes);
 
-  // ----- 原料 -----
+  // ----- 原料 somni_audio_materials -----
   rpc ListAudioMaterials (ListAudioMaterialsReq)                  returns (AudioMaterialListRes);
   rpc GetAudioMaterial (IdReq)                                    returns (AudioMaterialRes);
   rpc GetDistinctTags (EmptyReq)                                  returns (DistinctTagsRes);
@@ -323,6 +339,10 @@ message UpdateQuestionStatusReq {
   int32  status = 2;
 }
 
+message GetQuestionsByIdsRequest {
+  repeated string ids = 1;
+}
+
 message QuestionRes {
   QuestionInfo question = 1;
 }
@@ -378,6 +398,7 @@ message ThresholdItem {
   int32  min   = 1;
   int32  max   = 2;
   string label = 3;
+  string desc  = 4;  // 命中该阈值时的结果说明（用于评估报告展示）
 }
 
 message CodeRule {
@@ -387,6 +408,21 @@ message CodeRule {
   repeated CodeRuleQuestion questions      = 4;
   repeated ThresholdItem thresholds        = 5;
   string default_label                     = 6;
+  string rule_name                         = 7;  // 规则中文名（用于后台展示）
+  double score_multiplier                  = 8;  // 该规则汇总分倍率（如 SDS/SAS 的 1.25），未设置默认 1
+}
+
+message ResultGuideItem {
+  int32  min   = 1;
+  int32  max   = 2;
+  string label = 3;
+}
+
+// 问卷级结果解释（H5 评估报告用于展示评分标准说明）
+message ResultGuide {
+  string title                       = 1;
+  string content                     = 2;
+  repeated ResultGuideItem items     = 3;
 }
 
 message SurveyInfo {
@@ -404,6 +440,7 @@ message SurveyInfo {
   int32  status                   = 12;
   string create_time              = 13;
   string update_time              = 14;
+  ResultGuide result_guide        = 15;  // 问卷级结果解释（评估报告展示）
 }
 
 message GetSurveyReq {
@@ -432,6 +469,7 @@ message CreateSurveyReq {
   SurveySettings settings         = 7;
   string language                 = 8;
   repeated CodeRule rule_config   = 9;
+  ResultGuide result_guide        = 10;
 }
 
 message UpdateSurveyReq {
@@ -446,6 +484,7 @@ message UpdateSurveyReq {
   string language                 = 9;
   int32  status                   = 10;
   repeated CodeRule rule_config   = 11;
+  ResultGuide result_guide        = 12;
 }
 
 message UpdateSurveyStatusReq {
@@ -537,6 +576,10 @@ message GetAnswerProgressReq {
   string survey_code = 2;
 }
 
+message GetAnswerByIdReq {
+  string answer_id = 1;
+}
+
 message AnswerRes {
   AnswerInfo answer = 1;
 }
@@ -619,6 +662,7 @@ message QuizResultInfo {
 message ComputeMhrCodesReq {
   string survey_code              = 1;
   repeated AnswerDetail answers   = 2;
+  string language                 = 3;
 }
 
 message ComputeMhrCodesRes {
@@ -630,6 +674,15 @@ message SubmitQuizReq {
   string survey_code = 2;
   string answer_id   = 3;
   string language    = 4;  // 语言标识（zh/en），用于查询对应语言的人格配置
+}
+
+message SubmitScaleQuizReq {
+  string uid         = 1;
+  string survey_code = 2;
+  string answer_id   = 3;
+  string scale_uid   = 4;
+  string language    = 5;
+  string timepoint   = 6;
 }
 
 message GetLatestResultReq {
@@ -688,12 +741,28 @@ message SchemeColorStop {
   bool  enabled    = 7;
 }
 
+message LightExitEffectTarget {
+  int32 r   = 1;
+  int32 g   = 2;
+  int32 b   = 3;
+  int32 cw  = 4;
+  int32 ww  = 5;
+  int32 lux = 6;
+}
+
+message LightExitEffect {
+  string type                    = 1;  // fade_out | fade_to | none
+  int32  duration_ms             = 2;
+  LightExitEffectTarget target   = 3;
+}
+
 message SchemeLight {
   string mode                          = 1;
   repeated SchemeColorStop color_stops = 2;
   repeated int32 transition_durations  = 3;
   bool  enabled                        = 4;
   string description                   = 5;
+  LightExitEffect exit_effect          = 6;
 }
 
 message SchemeTrack {
@@ -736,11 +805,12 @@ message SchemeTemp {
 }
 
 message SchemeItem {
-  string      name  = 1;
-  SchemeLight light = 2;
-  SchemeSound sound = 3;
-  SchemeScent scent = 4;
-  SchemeTemp  temp  = 5;
+  string      name          = 1;
+  SchemeLight light         = 2;
+  SchemeSound sound         = 3;
+  SchemeScent scent         = 4;
+  SchemeTemp  temp          = 5;
+  int32       duration_sec  = 6;  // 节点时长（秒）；多节点之和应等于阶段 duration_sec
 }
 
 message Period {
@@ -1198,24 +1268,61 @@ message DistinctTagsRes {
   repeated string tags = 1;
 }
 
+// 音频原料标签（覆盖 sleep_stage / content_form / mechanism / engineering 等形态）
+message AudioMaterialTagValue {
+  string tag_id = 1;
+  string code = 2;
+  string name = 3;
+}
+
+message AudioMaterialTag {
+  string tag_id = 1;
+  string code = 2;
+  string name = 3;
+  optional string en_name = 4;
+  optional string parent_tag_id = 5;
+  optional string parent_tag_code = 6;
+  optional AudioMaterialTagValue value = 7;
+  repeated double band_values = 8;
+  optional double relative_loudness = 9;
+}
+
 message CreateAudioMaterialReq {
-  int32  category_code     = 1;
-  string noise_color       = 2;
-  string name              = 3;
-  string description       = 4;
-  repeated string tags     = 5;
-  AudioMetaInfo audio_info = 6;
+  reserved 1, 2, 3, 5, 6, 20;
+  reserved "category_code", "noise_color", "tags", "name", "audio_info", "document_json";
+  string description = 4;
+  string audio_name = 7; // 必填
+  string audio_url = 8;
+  int32 operation_type = 9;
+  string created_by = 10;
+  string updated_by = 11;
+  repeated AudioMaterialTag sleep_stage_tags = 12;
+  repeated AudioMaterialTag content_form_tags = 13;
+  repeated AudioMaterialTag mechanism_tags = 14;
+  repeated AudioMaterialTag audio_engineering_tags = 15;
+  repeated AudioMaterialTag medical_risk_tags = 16;
+  repeated AudioMaterialTag evidence_level_tags = 17;
+  repeated double embedding = 18;
 }
 
 message UpdateAudioMaterialReq {
-  string id                = 1;
-  int32  category_code     = 2;
-  string noise_color       = 3;
-  string name              = 4;
-  string description       = 5;
-  repeated string tags     = 6;
-  AudioMetaInfo audio_info = 7;
-  int32  status            = 8;
+  reserved 2, 3, 4, 6, 7, 20;
+  reserved "category_code", "noise_color", "tags", "name", "audio_info", "document_json";
+  string id = 1; // 必填（对应文档 _id）
+  optional string description = 5;
+  optional int32 status = 8; // 1=启用 0=禁用；未设置则不改
+  optional string audio_name = 9; // 可选；设置时不能为空
+  optional string audio_url = 10;
+  optional int32 operation_type = 11;
+  optional string created_by = 12;
+  optional string updated_by = 13;
+  repeated AudioMaterialTag sleep_stage_tags = 14;
+  repeated AudioMaterialTag content_form_tags = 15;
+  repeated AudioMaterialTag mechanism_tags = 16;
+  repeated AudioMaterialTag audio_engineering_tags = 17;
+  repeated AudioMaterialTag medical_risk_tags = 18;
+  repeated AudioMaterialTag evidence_level_tags = 19;
+  repeated double embedding = 21;
 }
 
 message UpdateAudioMaterialStatusReq {
@@ -1678,6 +1785,16 @@ message StopInterventionReq {
   string session_id = 1;
 }
 
+message ResetAiThoughtRehearsalStateReq {
+  string session_id = 1;
+}
+
+message EmitDeviceLinkAiThoughtReq {
+  string device_id = 1;
+  bool online = 2;
+  string reason = 3;
+}
+
 // ============================================================
 //  Somni — 监控页查询接口 Message
 // ============================================================
@@ -1890,6 +2007,16 @@ message SomniSessionContextPlanPhase {
 message SomniGetSessionContextRes {
   repeated string mhr_codes                        = 1;
   repeated SomniSessionContextPlanPhase plan_phases = 2;
+  string survey_code                               = 3;  // somni_sessions.survey_code，控制台会话为 console
+}
+
+message SomniConsoleStopDeviceSessionReq {
+  string session_id = 1;
+}
+
+message SomniConsoleStopDeviceSessionRes {
+  bool   ok  = 1;
+  string msg = 2;
 }
 
 // ============================================================
@@ -2108,4 +2235,19 @@ message SomniGetSleepMapCityRankingRes {
   SomniSleepMapRegion filter_region           = 2;
   repeated SomniSleepMapLeaderboardRowGrpc leaderboard = 3;
   SomniSleepMapCurrentUserSummaryGrpc current_user_summary = 4;
+}
+
+// ============================================================
+//  DPH 控制台专用
+// ============================================================
+
+message CreateDphConsoleSessionReq {
+  string uid         = 1;  // fl_users uid（受试者 linked_accounts.uid）
+  string scale_uid   = 2;  // 量表用户 ID（溯源）
+  string record_date = 3;  // 方案日期 YYYY-MM-DD
+  string phases_json = 4;  // JSON 序列化的 phases 数组
+}
+
+message CreateDphConsoleSessionRes {
+  string session_id = 1;
 }
