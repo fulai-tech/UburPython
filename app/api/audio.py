@@ -33,7 +33,7 @@ async def create_audio(
     body: CreateAudioRequest,
     service: AudioService = Depends(get_audio_service),
 ) -> ApiResponse:
-    """创建音频：写 Mongo somni_audio_materials，有 audio_url 时 upsert ES。"""
+    """创建音频：经 comm gRPC 落库，有 audio_url 时 upsert ES。"""
     result = await service.create_audio(body)
     return success(data=result, msg="创建成功")
 

@@ -79,6 +79,11 @@ class QuizServiceStub:
                 request_serializer=bionode__comm__pb2.IdReq.SerializeToString,
                 response_deserializer=bionode__comm__pb2.EmptyRes.FromString,
                 _registered_method=True)
+        self.GetQuestionsByIds = channel.unary_unary(
+                '/bionode.comm.v1.QuizService/GetQuestionsByIds',
+                request_serializer=bionode__comm__pb2.GetQuestionsByIdsRequest.SerializeToString,
+                response_deserializer=bionode__comm__pb2.QuestionListRes.FromString,
+                _registered_method=True)
         self.GetPersonality = channel.unary_unary(
                 '/bionode.comm.v1.QuizService/GetPersonality',
                 request_serializer=bionode__comm__pb2.GetPersonalityReq.SerializeToString,
@@ -181,6 +186,12 @@ class QuizServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def GetQuestionsByIds(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def GetPersonality(self, request, context):
         """----- 人格配置 -----
         """
@@ -273,6 +284,11 @@ def add_QuizServiceServicer_to_server(servicer, server):
                     servicer.DeleteQuestion,
                     request_deserializer=bionode__comm__pb2.IdReq.FromString,
                     response_serializer=bionode__comm__pb2.EmptyRes.SerializeToString,
+            ),
+            'GetQuestionsByIds': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetQuestionsByIds,
+                    request_deserializer=bionode__comm__pb2.GetQuestionsByIdsRequest.FromString,
+                    response_serializer=bionode__comm__pb2.QuestionListRes.SerializeToString,
             ),
             'GetPersonality': grpc.unary_unary_rpc_method_handler(
                     servicer.GetPersonality,
@@ -519,6 +535,33 @@ class QuizService:
             '/bionode.comm.v1.QuizService/DeleteQuestion',
             bionode__comm__pb2.IdReq.SerializeToString,
             bionode__comm__pb2.EmptyRes.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetQuestionsByIds(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/bionode.comm.v1.QuizService/GetQuestionsByIds',
+            bionode__comm__pb2.GetQuestionsByIdsRequest.SerializeToString,
+            bionode__comm__pb2.QuestionListRes.FromString,
             options,
             channel_credentials,
             insecure,
@@ -846,6 +889,11 @@ class SurveyServiceStub:
                 request_serializer=bionode__comm__pb2.ListAnswersReq.SerializeToString,
                 response_deserializer=bionode__comm__pb2.AnswerListRes.FromString,
                 _registered_method=True)
+        self.GetAnswerById = channel.unary_unary(
+                '/bionode.comm.v1.SurveyService/GetAnswerById',
+                request_serializer=bionode__comm__pb2.GetAnswerByIdReq.SerializeToString,
+                response_deserializer=bionode__comm__pb2.AnswerRes.FromString,
+                _registered_method=True)
         self.ComputeMhrCodes = channel.unary_unary(
                 '/bionode.comm.v1.SurveyService/ComputeMhrCodes',
                 request_serializer=bionode__comm__pb2.ComputeMhrCodesReq.SerializeToString,
@@ -854,6 +902,16 @@ class SurveyServiceStub:
         self.SubmitQuiz = channel.unary_unary(
                 '/bionode.comm.v1.SurveyService/SubmitQuiz',
                 request_serializer=bionode__comm__pb2.SubmitQuizReq.SerializeToString,
+                response_deserializer=bionode__comm__pb2.QuizResultRes.FromString,
+                _registered_method=True)
+        self.H5SubmitQuiz = channel.unary_unary(
+                '/bionode.comm.v1.SurveyService/H5SubmitQuiz',
+                request_serializer=bionode__comm__pb2.SubmitQuizReq.SerializeToString,
+                response_deserializer=bionode__comm__pb2.QuizResultRes.FromString,
+                _registered_method=True)
+        self.SubmitScaleQuiz = channel.unary_unary(
+                '/bionode.comm.v1.SurveyService/SubmitScaleQuiz',
+                request_serializer=bionode__comm__pb2.SubmitScaleQuizReq.SerializeToString,
                 response_deserializer=bionode__comm__pb2.QuizResultRes.FromString,
                 _registered_method=True)
         self.GetLatestResult = channel.unary_unary(
@@ -956,6 +1014,12 @@ class SurveyServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def GetAnswerById(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def ComputeMhrCodes(self, request, context):
         """----- 测评结果 -----
         仅计算人格编码，不落库（Somni 匿名提交用）
@@ -965,6 +1029,19 @@ class SurveyServiceServicer:
         raise NotImplementedError('Method not implemented!')
 
     def SubmitQuiz(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def H5SubmitQuiz(self, request, context):
+        """H5：三位人格精确匹配
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SubmitScaleQuiz(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -1051,6 +1128,11 @@ def add_SurveyServiceServicer_to_server(servicer, server):
                     request_deserializer=bionode__comm__pb2.ListAnswersReq.FromString,
                     response_serializer=bionode__comm__pb2.AnswerListRes.SerializeToString,
             ),
+            'GetAnswerById': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetAnswerById,
+                    request_deserializer=bionode__comm__pb2.GetAnswerByIdReq.FromString,
+                    response_serializer=bionode__comm__pb2.AnswerRes.SerializeToString,
+            ),
             'ComputeMhrCodes': grpc.unary_unary_rpc_method_handler(
                     servicer.ComputeMhrCodes,
                     request_deserializer=bionode__comm__pb2.ComputeMhrCodesReq.FromString,
@@ -1059,6 +1141,16 @@ def add_SurveyServiceServicer_to_server(servicer, server):
             'SubmitQuiz': grpc.unary_unary_rpc_method_handler(
                     servicer.SubmitQuiz,
                     request_deserializer=bionode__comm__pb2.SubmitQuizReq.FromString,
+                    response_serializer=bionode__comm__pb2.QuizResultRes.SerializeToString,
+            ),
+            'H5SubmitQuiz': grpc.unary_unary_rpc_method_handler(
+                    servicer.H5SubmitQuiz,
+                    request_deserializer=bionode__comm__pb2.SubmitQuizReq.FromString,
+                    response_serializer=bionode__comm__pb2.QuizResultRes.SerializeToString,
+            ),
+            'SubmitScaleQuiz': grpc.unary_unary_rpc_method_handler(
+                    servicer.SubmitScaleQuiz,
+                    request_deserializer=bionode__comm__pb2.SubmitScaleQuizReq.FromString,
                     response_serializer=bionode__comm__pb2.QuizResultRes.SerializeToString,
             ),
             'GetLatestResult': grpc.unary_unary_rpc_method_handler(
@@ -1416,6 +1508,33 @@ class SurveyService:
             _registered_method=True)
 
     @staticmethod
+    def GetAnswerById(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/bionode.comm.v1.SurveyService/GetAnswerById',
+            bionode__comm__pb2.GetAnswerByIdReq.SerializeToString,
+            bionode__comm__pb2.AnswerRes.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
     def ComputeMhrCodes(request,
             target,
             options=(),
@@ -1458,6 +1577,60 @@ class SurveyService:
             target,
             '/bionode.comm.v1.SurveyService/SubmitQuiz',
             bionode__comm__pb2.SubmitQuizReq.SerializeToString,
+            bionode__comm__pb2.QuizResultRes.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def H5SubmitQuiz(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/bionode.comm.v1.SurveyService/H5SubmitQuiz',
+            bionode__comm__pb2.SubmitQuizReq.SerializeToString,
+            bionode__comm__pb2.QuizResultRes.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SubmitScaleQuiz(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/bionode.comm.v1.SurveyService/SubmitScaleQuiz',
+            bionode__comm__pb2.SubmitScaleQuizReq.SerializeToString,
             bionode__comm__pb2.QuizResultRes.FromString,
             options,
             channel_credentials,
@@ -2470,6 +2643,11 @@ class SomniServiceStub:
                 request_serializer=bionode__comm__pb2.SomniGetSessionContextReq.SerializeToString,
                 response_deserializer=bionode__comm__pb2.SomniGetSessionContextRes.FromString,
                 _registered_method=True)
+        self.ConsoleStopDeviceSession = channel.unary_unary(
+                '/bionode.comm.v1.SomniService/ConsoleStopDeviceSession',
+                request_serializer=bionode__comm__pb2.SomniConsoleStopDeviceSessionReq.SerializeToString,
+                response_deserializer=bionode__comm__pb2.SomniConsoleStopDeviceSessionRes.FromString,
+                _registered_method=True)
         self.TriggerIntervention = channel.unary_unary(
                 '/bionode.comm.v1.SomniService/TriggerIntervention',
                 request_serializer=bionode__comm__pb2.TriggerInterventionReq.SerializeToString,
@@ -2478,6 +2656,16 @@ class SomniServiceStub:
         self.StopIntervention = channel.unary_unary(
                 '/bionode.comm.v1.SomniService/StopIntervention',
                 request_serializer=bionode__comm__pb2.StopInterventionReq.SerializeToString,
+                response_deserializer=bionode__comm__pb2.EmptyRes.FromString,
+                _registered_method=True)
+        self.ResetAiThoughtRehearsalState = channel.unary_unary(
+                '/bionode.comm.v1.SomniService/ResetAiThoughtRehearsalState',
+                request_serializer=bionode__comm__pb2.ResetAiThoughtRehearsalStateReq.SerializeToString,
+                response_deserializer=bionode__comm__pb2.EmptyRes.FromString,
+                _registered_method=True)
+        self.EmitDeviceLinkAiThought = channel.unary_unary(
+                '/bionode.comm.v1.SomniService/EmitDeviceLinkAiThought',
+                request_serializer=bionode__comm__pb2.EmitDeviceLinkAiThoughtReq.SerializeToString,
                 response_deserializer=bionode__comm__pb2.EmptyRes.FromString,
                 _registered_method=True)
         self.GetChatMessages = channel.unary_unary(
@@ -2524,6 +2712,11 @@ class SomniServiceStub:
                 '/bionode.comm.v1.SomniService/GetSleepMapCityRanking',
                 request_serializer=bionode__comm__pb2.SomniGetSleepMapCityRankingReq.SerializeToString,
                 response_deserializer=bionode__comm__pb2.SomniGetSleepMapCityRankingRes.FromString,
+                _registered_method=True)
+        self.CreateDphConsoleSession = channel.unary_unary(
+                '/bionode.comm.v1.SomniService/CreateDphConsoleSession',
+                request_serializer=bionode__comm__pb2.CreateDphConsoleSessionReq.SerializeToString,
+                response_deserializer=bionode__comm__pb2.CreateDphConsoleSessionRes.FromString,
                 _registered_method=True)
 
 
@@ -2709,6 +2902,13 @@ class SomniServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ConsoleStopDeviceSession(self, request, context):
+        """* 控制台结束会话：停设备与调度；有 somni_plans 时同步 is_started=false 
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def TriggerIntervention(self, request, context):
         """----- 控制台手动干预 -----
         """
@@ -2718,6 +2918,20 @@ class SomniServiceServicer:
 
     def StopIntervention(self, request, context):
         """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ResetAiThoughtRehearsalState(self, request, context):
+        """* 联调：清空 AI 思维滑动窗/冷却/patrol/序列（不抑制 patrol，不清 current_phase） 
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def EmitDeviceLinkAiThought(self, request, context):
+        """* 设备 MQTT 连断 — 推送 device_link 思维流（device stream，可无 session） 
+        """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
@@ -2777,6 +2991,15 @@ class SomniServiceServicer:
 
     def GetSleepMapCityRanking(self, request, context):
         """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CreateDphConsoleSession(self, request, context):
+        """----- DPH 控制台专用 -----
+
+        * 为 DPH 方案创建独立会话 + 方案记录（admin 控制台调用） 
+        """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
@@ -2919,6 +3142,11 @@ def add_SomniServiceServicer_to_server(servicer, server):
                     request_deserializer=bionode__comm__pb2.SomniGetSessionContextReq.FromString,
                     response_serializer=bionode__comm__pb2.SomniGetSessionContextRes.SerializeToString,
             ),
+            'ConsoleStopDeviceSession': grpc.unary_unary_rpc_method_handler(
+                    servicer.ConsoleStopDeviceSession,
+                    request_deserializer=bionode__comm__pb2.SomniConsoleStopDeviceSessionReq.FromString,
+                    response_serializer=bionode__comm__pb2.SomniConsoleStopDeviceSessionRes.SerializeToString,
+            ),
             'TriggerIntervention': grpc.unary_unary_rpc_method_handler(
                     servicer.TriggerIntervention,
                     request_deserializer=bionode__comm__pb2.TriggerInterventionReq.FromString,
@@ -2927,6 +3155,16 @@ def add_SomniServiceServicer_to_server(servicer, server):
             'StopIntervention': grpc.unary_unary_rpc_method_handler(
                     servicer.StopIntervention,
                     request_deserializer=bionode__comm__pb2.StopInterventionReq.FromString,
+                    response_serializer=bionode__comm__pb2.EmptyRes.SerializeToString,
+            ),
+            'ResetAiThoughtRehearsalState': grpc.unary_unary_rpc_method_handler(
+                    servicer.ResetAiThoughtRehearsalState,
+                    request_deserializer=bionode__comm__pb2.ResetAiThoughtRehearsalStateReq.FromString,
+                    response_serializer=bionode__comm__pb2.EmptyRes.SerializeToString,
+            ),
+            'EmitDeviceLinkAiThought': grpc.unary_unary_rpc_method_handler(
+                    servicer.EmitDeviceLinkAiThought,
+                    request_deserializer=bionode__comm__pb2.EmitDeviceLinkAiThoughtReq.FromString,
                     response_serializer=bionode__comm__pb2.EmptyRes.SerializeToString,
             ),
             'GetChatMessages': grpc.unary_unary_rpc_method_handler(
@@ -2973,6 +3211,11 @@ def add_SomniServiceServicer_to_server(servicer, server):
                     servicer.GetSleepMapCityRanking,
                     request_deserializer=bionode__comm__pb2.SomniGetSleepMapCityRankingReq.FromString,
                     response_serializer=bionode__comm__pb2.SomniGetSleepMapCityRankingRes.SerializeToString,
+            ),
+            'CreateDphConsoleSession': grpc.unary_unary_rpc_method_handler(
+                    servicer.CreateDphConsoleSession,
+                    request_deserializer=bionode__comm__pb2.CreateDphConsoleSessionReq.FromString,
+                    response_serializer=bionode__comm__pb2.CreateDphConsoleSessionRes.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -3719,6 +3962,33 @@ class SomniService:
             _registered_method=True)
 
     @staticmethod
+    def ConsoleStopDeviceSession(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/bionode.comm.v1.SomniService/ConsoleStopDeviceSession',
+            bionode__comm__pb2.SomniConsoleStopDeviceSessionReq.SerializeToString,
+            bionode__comm__pb2.SomniConsoleStopDeviceSessionRes.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
     def TriggerIntervention(request,
             target,
             options=(),
@@ -3761,6 +4031,60 @@ class SomniService:
             target,
             '/bionode.comm.v1.SomniService/StopIntervention',
             bionode__comm__pb2.StopInterventionReq.SerializeToString,
+            bionode__comm__pb2.EmptyRes.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ResetAiThoughtRehearsalState(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/bionode.comm.v1.SomniService/ResetAiThoughtRehearsalState',
+            bionode__comm__pb2.ResetAiThoughtRehearsalStateReq.SerializeToString,
+            bionode__comm__pb2.EmptyRes.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def EmitDeviceLinkAiThought(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/bionode.comm.v1.SomniService/EmitDeviceLinkAiThought',
+            bionode__comm__pb2.EmitDeviceLinkAiThoughtReq.SerializeToString,
             bionode__comm__pb2.EmptyRes.FromString,
             options,
             channel_credentials,
@@ -4015,11 +4339,40 @@ class SomniService:
             metadata,
             _registered_method=True)
 
+    @staticmethod
+    def CreateDphConsoleSession(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/bionode.comm.v1.SomniService/CreateDphConsoleSession',
+            bionode__comm__pb2.CreateDphConsoleSessionReq.SerializeToString,
+            bionode__comm__pb2.CreateDphConsoleSessionRes.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
 
 class AudioMaterialServiceStub:
     """==================== AudioMaterialService ====================
     音频原料 & 分类管理
-    对应表: audio_material_categories, audio_materials
+    原料表: somni_audio_materials（Create/Update/Delete/Get/ListAudioMaterial*）
+    分类表: audio_material_categories
+    （H5 enrich 仍可能内部读取旧表 audio_materials，不暴露 Legacy RPC）
 
     """
 
@@ -4094,7 +4447,9 @@ class AudioMaterialServiceStub:
 class AudioMaterialServiceServicer:
     """==================== AudioMaterialService ====================
     音频原料 & 分类管理
-    对应表: audio_material_categories, audio_materials
+    原料表: somni_audio_materials（Create/Update/Delete/Get/ListAudioMaterial*）
+    分类表: audio_material_categories
+    （H5 enrich 仍可能内部读取旧表 audio_materials，不暴露 Legacy RPC）
 
     """
 
@@ -4130,7 +4485,7 @@ class AudioMaterialServiceServicer:
         raise NotImplementedError('Method not implemented!')
 
     def ListAudioMaterials(self, request, context):
-        """----- 原料 -----
+        """----- 原料 somni_audio_materials -----
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -4246,7 +4601,9 @@ def add_AudioMaterialServiceServicer_to_server(servicer, server):
 class AudioMaterialService:
     """==================== AudioMaterialService ====================
     音频原料 & 分类管理
-    对应表: audio_material_categories, audio_materials
+    原料表: somni_audio_materials（Create/Update/Delete/Get/ListAudioMaterial*）
+    分类表: audio_material_categories
+    （H5 enrich 仍可能内部读取旧表 audio_materials，不暴露 Legacy RPC）
 
     """
 

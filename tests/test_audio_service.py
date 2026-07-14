@@ -1,4 +1,4 @@
-"""AudioService 创建/更新写 Mongo + ES 编排测试。"""
+"""AudioService 创建/更新走 comm gRPC + ES 编排测试。"""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.bionode_grpc_clients.comm.grpc_gen import bionode_comm_pb2
 from app.schemas.audio import CreateAudioRequest, SearchAudioRequest, UpdateAudioRequest
 from app.services.audio import AudioService
 
@@ -28,20 +29,16 @@ def _service(
 
 
 @pytest.mark.asyncio
-async def test_create_audio_writes_mongo_then_es() -> None:
-    materials = MagicMock()
-    materials.insert_material = AsyncMock(
-        return_value={
-            "id": "abc123",
-            "audio_name": "雨声",
-            "audio_url": "https://cdn.example.com/a.mp3",
-        }
-    )
+async def test_create_audio_calls_grpc_then_es() -> None:
+    created = bionode_comm_pb2.AudioMaterialInfo(id="abc123", name="雨声")
+    comm = MagicMock()
+    comm.create_audio_material = AsyncMock()
+    comm.list_audio_materials_by_name = AsyncMock(return_value=[created])
     es_sync = MagicMock()
     es_sync.upsert_somni_material = AsyncMock()
     search_cache = MagicMock()
     search_cache.clear_all = AsyncMock()
-    service = _service(materials=materials, es_sync=es_sync, search_cache=search_cache)
+    service = _service(comm=comm, es_sync=es_sync, search_cache=search_cache)
 
     result = await service.create_audio(
         CreateAudioRequest.model_validate(
@@ -50,42 +47,39 @@ async def test_create_audio_writes_mongo_then_es() -> None:
     )
 
     assert result["id"] == "abc123"
-    materials.insert_material.assert_awaited_once()
-    es_sync.upsert_somni_material.assert_awaited_once_with(
-        "abc123",
-        {
-            "id": "abc123",
-            "audio_name": "雨声",
-            "audio_url": "https://cdn.example.com/a.mp3",
-        },
-    )
+    assert result["audio_name"] == "雨声"
+    assert result["audio_url"] == "https://cdn.example.com/a.mp3"
+    comm.create_audio_material.assert_awaited_once()
+    create_req = comm.create_audio_material.await_args.args[0]
+    assert create_req.audio_name == "雨声"
+    assert create_req.audio_url == "https://cdn.example.com/a.mp3"
+    comm.list_audio_materials_by_name.assert_awaited_once_with("雨声")
+    es_sync.upsert_somni_material.assert_awaited_once()
+    assert es_sync.upsert_somni_material.await_args.args[0] == "abc123"
     search_cache.clear_all.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_update_audio_partial_fields() -> None:
-    materials = MagicMock()
-    materials.update_material = AsyncMock(
-        return_value={
-            "id": "abc123",
-            "audio_name": "雨声",
-            "description": "新描述",
-            "audio_url": "https://cdn.example.com/a.mp3",
-        }
-    )
+async def test_update_audio_calls_grpc_then_es() -> None:
+    comm = MagicMock()
+    comm.update_audio_material = AsyncMock()
     es_sync = MagicMock()
     es_sync.upsert_somni_material = AsyncMock()
     search_cache = MagicMock()
     search_cache.clear_all = AsyncMock()
-    service = _service(materials=materials, es_sync=es_sync, search_cache=search_cache)
+    service = _service(comm=comm, es_sync=es_sync, search_cache=search_cache)
 
     await service.update_audio(
         "abc123",
         UpdateAudioRequest.model_validate({"description": "新描述"}),
     )
 
-    materials.update_material.assert_awaited_once_with("abc123", {"description": "新描述"})
+    comm.update_audio_material.assert_awaited_once()
+    material_id_arg, update_body = comm.update_audio_material.await_args.args
+    assert material_id_arg == "abc123"
+    assert update_body.description == "新描述"
     es_sync.upsert_somni_material.assert_awaited_once()
+    assert es_sync.upsert_somni_material.await_args.args[0] == "abc123"
     search_cache.clear_all.assert_awaited_once()
 
 
@@ -139,12 +133,3 @@ async def test_search_audio_miss_runs_retrieval_and_sets_cache() -> None:
     assert result.materials == [{"id": "fresh"}]
     retrieval.search.assert_awaited_once_with(request)
     search_cache.set.assert_awaited_once_with(request, [{"id": "fresh"}])
-
-
-@pytest.mark.asyncio
-async def test_create_audio_without_mongo_raises() -> None:
-    from app.core.exceptions import MongoNotConfiguredError
-
-    service = _service(materials=None)
-    with pytest.raises(MongoNotConfiguredError):
-        await service.create_audio(CreateAudioRequest.model_validate({"audio_name": "x"}))

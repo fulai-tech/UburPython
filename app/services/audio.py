@@ -1,7 +1,6 @@
 """音频业务编排层（AudioService）。
 
-创建/更新写路径：HTTP → Mongo somni_audio_materials → EsSync（有 audio_url 时）
-删除：仍走 comm gRPC + ES delete
+写路径：HTTP → comm gRPC（Create/Update/Delete）→ EsSync
 读路径：HTTP → 检索缓存 → RetrievalService → ES
 """
 
@@ -13,7 +12,7 @@ from loguru import logger
 
 from app.bionode_grpc_clients import CommClient
 from app.cache.audio_search_cache import AudioSearchCache
-from app.core.exceptions import MongoNotConfiguredError
+from app.core.exceptions import CommMaterialNotFoundError
 from app.es.sync import EsSync
 from app.mongo.materials import MaterialsStore
 from app.schemas.audio import (
@@ -23,6 +22,19 @@ from app.schemas.audio import (
     UpdateAudioRequest,
 )
 from app.services.retrieval import RetrievalService
+
+# 与 Mongo 写入默认对齐，保证创建 HTTP 响应字段形状不变
+_CREATE_RESPONSE_DEFAULTS: dict[str, Any] = {
+    "status": True,
+    "audio_url": "",
+    "operation_type": 0,
+    "sleep_stage_tags": [],
+    "content_form_tags": [],
+    "mechanism_tags": [],
+    "audio_engineering_tags": [],
+    "medical_risk_tags": [],
+    "evidence_level_tags": [],
+}
 
 
 class AudioService:
@@ -43,17 +55,17 @@ class AudioService:
         self._search_cache = search_cache
 
     async def create_audio(self, request: CreateAudioRequest) -> dict[str, Any]:
-        store = self._require_materials()
-        saved = await store.insert_material(request.to_mongo_doc())
-        await self._es_sync.upsert_somni_material(saved["id"], saved)
+        await self._comm.create_audio_material(request)
+        material_id = await self._resolve_created_id(request.audio_name)
+        saved = _create_response_doc(material_id, request)
+        await self._es_sync.upsert_somni_material(material_id, saved)
         await self._clear_search_cache()
-        logger.info("已创建音频原料，id={}", saved["id"])
+        logger.info("已创建音频原料，id={}", material_id)
         return saved
 
     async def update_audio(self, material_id: str, request: UpdateAudioRequest) -> None:
-        store = self._require_materials()
-        fields = request.to_update_fields()
-        saved = await store.update_material(material_id, fields)
+        await self._comm.update_audio_material(material_id, request)
+        saved = {"id": material_id, **request.model_dump(exclude_unset=True)}
         await self._es_sync.upsert_somni_material(material_id, saved)
         await self._clear_search_cache()
 
@@ -69,6 +81,12 @@ class AudioService:
         results = await self._retrieval.search(request)
         await self._set_cached_materials(request, results)
         return SearchAudioData(materials=results)
+
+    async def _resolve_created_id(self, audio_name: str) -> str:
+        materials = await self._comm.list_audio_materials_by_name(audio_name)
+        if not materials:
+            raise CommMaterialNotFoundError(audio_name)
+        return materials[0].id
 
     async def _get_cached_materials(
         self, request: SearchAudioRequest
@@ -99,7 +117,8 @@ class AudioService:
         except Exception as exc:
             logger.error("清除检索缓存失败：{}", exc)
 
-    def _require_materials(self) -> MaterialsStore:
-        if self._materials is None:
-            raise MongoNotConfiguredError()
-        return self._materials
+
+def _create_response_doc(material_id: str, request: CreateAudioRequest) -> dict[str, Any]:
+    payload = {**_CREATE_RESPONSE_DEFAULTS, **request.to_mongo_doc()}
+    payload["id"] = material_id
+    return payload
