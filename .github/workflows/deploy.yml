@@ -54,10 +54,11 @@ jobs:
             fi
 
             cd "$DEPLOY_DIR"
-            # 统一为 SSH remote；本地有冲突时一律以远程 DEPLOY_BRANCH 为准
+            # 统一为 SSH remote；本地改动一律丢弃，强制对齐远程 DEPLOY_BRANCH
             git remote set-url origin "$GIT_REPO"
             git fetch --all --prune
-            git checkout -B "$DEPLOY_BRANCH" "origin/$DEPLOY_BRANCH"
+            # -f 必须：否则工作区有改动（如 docker-compose.yml）时 checkout 会直接失败
+            git checkout -f -B "$DEPLOY_BRANCH" "origin/$DEPLOY_BRANCH"
             git reset --hard "origin/$DEPLOY_BRANCH"
             # 清理会挡住检出的未跟踪文件，但保留 .env / logs（部署机本地配置与日志）
             git clean -fd -e .env -e .env.* -e logs -e logs/
