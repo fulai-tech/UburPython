@@ -11,7 +11,8 @@ permissions:
 
 env:
   DEPLOY_DIR: /opt/uburnode
-  GIT_REPO: https://github.com/fulai-tech/UburPython.git
+  # 服务器侧用 SSH 拉代码（需已配置 ~/.ssh/config 或默认可用的 GitHub 部署钥）
+  GIT_REPO: git@github.com:fulai-tech/UburPython.git
   DEPLOY_BRANCH: main
 
 jobs:
@@ -53,9 +54,13 @@ jobs:
             fi
 
             cd "$DEPLOY_DIR"
+            # 统一为 SSH remote；本地有冲突时一律以远程 DEPLOY_BRANCH 为准
+            git remote set-url origin "$GIT_REPO"
             git fetch --all --prune
-            git checkout "$DEPLOY_BRANCH"
-            git pull --ff-only origin "$DEPLOY_BRANCH"
+            git checkout -B "$DEPLOY_BRANCH" "origin/$DEPLOY_BRANCH"
+            git reset --hard "origin/$DEPLOY_BRANCH"
+            # 清理会挡住检出的未跟踪文件，但保留 .env / logs（部署机本地配置与日志）
+            git clean -fd -e .env -e .env.* -e logs -e logs/
 
             if [ ! -f .env ]; then
               echo "缺少 $DEPLOY_DIR/.env，请从 .env.example 复制并填写后重试"
