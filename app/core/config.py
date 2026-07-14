@@ -59,6 +59,11 @@ class Settings(BaseSettings):
     sync_backup_filename: str = "somni_audio_materials_backup.json"
     sync_tag_dictionary_backup_filename: str = "somni_audio_tag_dictionary_backup.json"
 
+    # 音频检索 Redis 缓存（空 URL 表示关闭）
+    redis_url: str = ""
+    search_cache_max_size: int = 2048
+    search_cache_ttl_sec: int = 604800  # 7 天
+
     @property
     def embedding_onnx_path(self) -> Path:
         return Path(self.embedding_onnx_dir) / "model.onnx"

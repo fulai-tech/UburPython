@@ -41,6 +41,11 @@ from loguru import logger
 
 from app.api.audio import router as audio_router
 from app.bionode_grpc_clients import CommClient
+from app.cache.audio_search_cache import (
+    AudioSearchCache,
+    create_audio_search_cache,
+    shutdown_audio_search_cache,
+)
 from app.core.config import Settings, get_settings
 from app.core.exception_handlers import register_exception_handlers
 from app.core.logging import setup_logging
@@ -67,6 +72,7 @@ class AppState:
     es_sync: EsSync | None = None
     retrieval_service: RetrievalService | None = None
     audio_service: AudioService | None = None
+    search_cache: AudioSearchCache | None = None
 
 
 _app_state = AppState(settings=get_settings())
@@ -119,11 +125,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if materials_store is None:
         logger.warning("未配置 MONGO_URI，创建/更新音频将返回 503")
 
+    search_cache = await create_audio_search_cache(settings)
+    _app_state.search_cache = search_cache
+
     _app_state.audio_service = AudioService(
         comm_client,
         es_sync,
         retrieval,
         materials=materials_store,
+        search_cache=search_cache,
     )
 
     start_sync_scheduler(_app_state, settings)
@@ -133,6 +143,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     logger.info("正在关闭 UburNode 音频检索服务")
     shutdown_sync_scheduler()
+    await shutdown_audio_search_cache(search_cache)
     if materials_store is not None:
         materials_store.close()
     await comm_client.close()
