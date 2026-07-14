@@ -33,6 +33,10 @@ from elasticsearch import AsyncElasticsearch  # noqa: E402
 from loguru import logger  # noqa: E402
 from motor.motor_asyncio import AsyncIOMotorClient  # noqa: E402
 
+from app.cache.audio_search_cache import (  # noqa: E402
+    create_audio_search_cache,
+    shutdown_audio_search_cache,
+)
 from app.core.config import Settings, get_settings  # noqa: E402
 from app.core.logging import setup_logging  # noqa: E402
 from app.embedding.encoder import Encoder, create_encoder  # noqa: E402
@@ -429,10 +433,17 @@ async def run_scheduled_sync(state: AppState, settings: Settings) -> None:
     job = MongoEsSyncJob(mongo, state.es_search, es_client, state.encoder, settings)
     try:
         result = await job.run()
+        await _clear_search_cache_after_material_sync(state, result)
     finally:
         await mongo.close()
 
 
+async def _clear_search_cache_after_material_sync(state: AppState, result: SyncJobResult) -> None:
+    if state.search_cache is None:
+        return
+    if not (result.material_created or result.material_updated or result.material_deleted):
+        return
+    await state.search_cache.clear_all()
 
 
 def start_sync_scheduler(state: AppState, settings: Settings) -> None:
@@ -483,11 +494,19 @@ async def _run_cli(*, dry_run: bool) -> int:
     encoder = create_encoder(settings)
     encoder.load()
     mongo = MongoSource(settings)
+    search_cache = None
     try:
         es_search = EsSearch(es_client, settings)
         job = MongoEsSyncJob(mongo, es_search, es_client, encoder, settings)
         result = await job.run(dry_run=dry_run)
+        if not dry_run and (
+            result.material_created or result.material_updated or result.material_deleted
+        ):
+            search_cache = await create_audio_search_cache(settings)
+            if search_cache is not None:
+                await search_cache.clear_all()
     finally:
+        await shutdown_audio_search_cache(search_cache)
         await mongo.close()
         await es_client.close()
     return 1 if result.failed > 0 else 0
