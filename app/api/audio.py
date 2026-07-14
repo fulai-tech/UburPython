@@ -33,9 +33,9 @@ async def create_audio(
     body: CreateAudioRequest,
     service: AudioService = Depends(get_audio_service),
 ) -> ApiResponse:
-    """创建音频：comm-service 写 Mongo → EsSync 同步 ES（含 embedding）。"""
+    """创建音频：写 Mongo somni_audio_materials，有 audio_url 时 upsert ES。"""
     result = await service.create_audio(body)
-    return success(data=result.model_dump(), msg="创建成功")
+    return success(data=result, msg="创建成功")
 
 
 @router.put("/{material_id}", response_model=ApiResponse)
@@ -44,7 +44,7 @@ async def update_audio(
     body: UpdateAudioRequest,
     service: AudioService = Depends(get_audio_service),
 ) -> ApiResponse:
-    """更新音频；material_id 走路径参数，不进请求体（规范 §四）。"""
+    """更新音频（字段全选填）；material_id 走路径参数。"""
     await service.update_audio(material_id, body)
     return success(msg="更新成功")
 

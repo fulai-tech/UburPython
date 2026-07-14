@@ -1,20 +1,24 @@
 """Elasticsearch 写路径（EsSync）。
 
-Somni 数据以 Mongo 同步为准；HTTP CUD 经 comm 写 Mongo 后不再 upsert ES（避免破坏新索引结构）。
-删除操作仍从 somni_audio_materials 索引移除对应文档。
+创建/更新：按 Somni 文档 upsert（补 description_text / description_vector）。
+删除：从 somni_audio_materials 移除文档。
+遗留 upsert_audio（扁平 tags）保留为空操作，避免旧调用破坏索引。
 """
 
 from __future__ import annotations
+
+from typing import Any
 
 from elasticsearch import AsyncElasticsearch, NotFoundError
 from loguru import logger
 
 from app.core.config import Settings
 from app.embedding.encoder import Encoder
+from app.es.somni_docs import material_source_for_es
 
 
 class EsSync:
-    """写路径：HTTP CUD 触发的 ES 删除；upsert 由 Mongo 同步脚本维护。"""
+    """HTTP CUD 触发的 ES 写入与删除。"""
 
     def __init__(
         self,
@@ -30,6 +34,18 @@ class EsSync:
     def audio_index(self) -> str:
         return self._settings.es_audio_index
 
+    async def upsert_somni_material(self, doc_id: str, doc: dict[str, Any]) -> None:
+        """写入 Somni 索引；无 audio_url 则跳过。"""
+        payload = material_source_for_es(doc)
+        if payload is None:
+            logger.info("跳过 ES upsert：audio_url 缺失，id={}", doc_id)
+            return
+        payload["description_vector"] = await self._encoder.encode_one(
+            str(payload.get("description_text", ""))
+        )
+        await self._client.index(index=self.audio_index, id=doc_id, document=payload)
+        logger.info("ES 已 upsert 原料，id={}", doc_id)
+
     async def upsert_audio(
         self,
         doc_id: str,
@@ -41,9 +57,9 @@ class EsSync:
         recommend_weight: float,
         description: str = "",
     ) -> None:
-        """Somni 索引由 Mongo 同步维护，HTTP CUD 跳过 ES upsert。"""
+        """遗留扁平 upsert：空操作。"""
         logger.warning(
-            "HTTP CUD 跳过 ES upsert（id={}，name={}），请使用 Mongo 同步脚本写入 Somni 索引",
+            "HTTP CUD 跳过遗留 ES upsert（id={}，name={}）",
             doc_id,
             audio_name,
         )

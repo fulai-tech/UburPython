@@ -29,7 +29,6 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler  # noqa: E402
-from bson import ObjectId  # noqa: E402
 from elasticsearch import AsyncElasticsearch  # noqa: E402
 from loguru import logger  # noqa: E402
 from motor.motor_asyncio import AsyncIOMotorClient  # noqa: E402
@@ -38,6 +37,19 @@ from app.core.config import Settings, get_settings  # noqa: E402
 from app.core.logging import setup_logging  # noqa: E402
 from app.embedding.encoder import Encoder, create_encoder  # noqa: E402
 from app.es.search import EsSearch  # noqa: E402
+from app.es.somni_docs import (  # noqa: E402
+    build_material_description_text,
+    material_source_for_es,
+)
+from app.mongo.materials import bson_to_jsonable  # noqa: E402
+
+# 供测试与外部脚本复用
+__all__ = (
+    "bson_to_jsonable",
+    "build_material_description_text",
+    "material_doc_to_es",
+    "material_source_for_es",
+)
 
 if TYPE_CHECKING:
     from app.main import AppState
@@ -45,14 +57,6 @@ if TYPE_CHECKING:
 _scheduler: AsyncIOScheduler | None = None
 TAG_STATUS_ACTIVE = "启用"
 MATERIAL_STATUS_ACTIVE = True
-DESCRIPTION_TAG_FIELDS = (
-    "sleep_stage_tags",
-    "content_form_tags",
-    "mechanism_tags",
-    "audio_engineering_tags",
-    "medical_risk_tags",
-    "evidence_level_tags",
-)
 
 
 @dataclass(frozen=True)
@@ -76,54 +80,16 @@ class SyncJobResult:
         return self.tag_failed + self.material_failed
 
 
-def bson_to_jsonable(value: Any) -> Any:
-    """BSON 值 → JSON/ES 可序列化类型。"""
-    if isinstance(value, ObjectId):
-        return str(value)
-    if isinstance(value, datetime):
-        return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
-    if isinstance(value, dict):
-        return {k: bson_to_jsonable(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [bson_to_jsonable(v) for v in value]
-    return value
-
-
 def mongo_doc_id(doc: dict[str, Any]) -> str:
     return str(doc.get("_id", "")).strip()
 
 
 def material_doc_to_es(doc: dict[str, Any]) -> dict[str, Any] | None:
-    """Mongo 原料文档 → ES 文档（去掉 _id）。"""
+    """Mongo 原料文档 → ES 文档（去掉 _id）；无 _id 或无 audio_url 则跳过。"""
     doc_id = mongo_doc_id(doc)
-    audio_url = str(doc.get("audio_url", "")).strip()
-    if not doc_id or not audio_url:
+    if not doc_id:
         return None
-    payload = bson_to_jsonable(doc)
-    payload.pop("_id", None)
-    payload["description_text"] = build_material_description_text(payload)
-    return payload
-
-
-def build_material_description_text(doc: dict[str, Any]) -> str:
-    labels: list[str] = []
-    for field in DESCRIPTION_TAG_FIELDS:
-        items = doc.get(field) or []
-        if not isinstance(items, list):
-            continue
-        for item in items:
-            if isinstance(item, dict):
-                labels.extend(
-                    str(item.get(key, "")).strip()
-                    for key in ("name", "code", "en_name")
-                    if item.get(key)
-                )
-    parts = [
-        str(doc.get("audio_name", "")).strip(),
-        str(doc.get("description", "")).strip(),
-        " ".join(label for label in labels if label).strip(),
-    ]
-    return " ".join(part for part in parts if part)
+    return material_source_for_es(bson_to_jsonable(doc))
 
 
 def tag_dictionary_compare_snapshot(doc: dict[str, Any]) -> dict[str, Any]:
@@ -462,9 +428,11 @@ async def run_scheduled_sync(state: AppState, settings: Settings) -> None:
         return
     job = MongoEsSyncJob(mongo, state.es_search, es_client, state.encoder, settings)
     try:
-        await job.run()
+        result = await job.run()
     finally:
         await mongo.close()
+
+
 
 
 def start_sync_scheduler(state: AppState, settings: Settings) -> None:

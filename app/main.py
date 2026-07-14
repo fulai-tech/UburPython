@@ -48,6 +48,7 @@ from app.embedding.encoder import Encoder, create_encoder
 from app.es.search import EsSearch
 from app.es.sync import EsSync
 from app.middleware.request_log import register_request_log_middleware
+from app.mongo.materials import MaterialsStore, create_materials_store
 from app.services.audio import AudioService
 from app.services.retrieval import RetrievalService
 from scripts.sync_es_from_comm import shutdown_sync_scheduler, start_sync_scheduler
@@ -61,6 +62,7 @@ class AppState:
     es_client: AsyncElasticsearch | None = None
     encoder: Encoder | None = None
     comm_client: CommClient | None = None
+    materials_store: MaterialsStore | None = None
     es_search: EsSearch | None = None
     es_sync: EsSync | None = None
     retrieval_service: RetrievalService | None = None
@@ -112,7 +114,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     retrieval = RetrievalService(es_search, encoder, settings)
     _app_state.retrieval_service = retrieval
 
-    _app_state.audio_service = AudioService(comm_client, es_sync, retrieval)
+    materials_store = create_materials_store(settings)
+    _app_state.materials_store = materials_store
+    if materials_store is None:
+        logger.warning("未配置 MONGO_URI，创建/更新音频将返回 503")
+
+    _app_state.audio_service = AudioService(
+        comm_client,
+        es_sync,
+        retrieval,
+        materials=materials_store,
+    )
 
     start_sync_scheduler(_app_state, settings)
 
@@ -121,6 +133,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     logger.info("正在关闭 UburNode 音频检索服务")
     shutdown_sync_scheduler()
+    if materials_store is not None:
+        materials_store.close()
     await comm_client.close()
     await es_client.close()
 

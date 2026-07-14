@@ -1,6 +1,7 @@
 """Pydantic 对外契约模型（替代 uburnode_audio.proto）。
 
 字段 snake_case；检索出参直接返回 somni_audio_materials 索引文档（materials 列表）。
+创建/更新入参对齐 Mongo Somni 文档结构。
 """
 
 from enum import StrEnum
@@ -100,55 +101,80 @@ class AudioTags(BaseModel):
 
 
 class AudioMetaDataIn(BaseModel):
-    """创建/更新入参，与 comm AudioMetaData 同构。"""
+    """comm AudioMetaData 同构（删除等遗留路径仍可能使用）。"""
 
     url: str
     duration_sec: int = 0
 
 
 class AudioMetaInfoIn(BaseModel):
-    """创建/更新入参，与 comm AudioMetaInfo 同构。"""
+    """comm AudioMetaInfo 同构（删除等遗留路径仍可能使用）。"""
 
     meta_data: AudioMetaDataIn
     is_loopable: bool = False
     is_voice: bool = False
 
 
-class WriteAudioRequest(BaseModel):
-    """创建/更新音频共用请求体；tags 六维对象，服务端转扁平 string[] 写 comm / ES。"""
+class SomniTagRef(BaseModel):
+    """嵌套标签通用字段（tag_id / code / name）。"""
 
-    category_code: int = 0
-    noise_color: str | None = None
-    level: int = 0
-    name: str
-    description: str = ""
-    tags: AudioTagsInput = Field(default_factory=AudioTagsInput)
-    audio_info: AudioMetaInfoIn
-    evidence_level: EvidenceLevel = EvidenceLevel.C
-    recommend_weight: float | None = None
-
-    def flat_tags(self) -> list[str]:
-        return self.tags.to_flat_tags()
-
-    def resolved_noise_color(self) -> str:
-        return self.noise_color or ""
-
-    def resolved_recommend_weight(self) -> float:
-        if self.recommend_weight is not None:
-            return self.recommend_weight
-        return EVIDENCE_WEIGHT_MAP[self.evidence_level]
-
-    @property
-    def audio_url(self) -> str:
-        return self.audio_info.meta_data.url
+    tag_id: str | None = None
+    code: str | None = None
+    name: str | None = None
 
 
-class CreateAudioRequest(WriteAudioRequest):
-    """POST /audio 请求体。"""
+class ContentFormTag(SomniTagRef):
+    """内容形态标签（可含英文名与父级）。"""
+
+    en_name: str | None = None
+    parent_tag_id: str | None = None
+    parent_tag_code: str | None = None
 
 
-class UpdateAudioRequest(WriteAudioRequest):
-    """PUT /audio/{material_id} 请求体，字段与创建一致；id 走路径参数。"""
+class AudioEngineeringTag(SomniTagRef):
+    """音频工程特征（可含取值与频谱附加字段）。"""
+
+    value: SomniTagRef | None = None
+    band_values: list[float] | None = None
+    relative_loudness: float | None = None
+
+
+class SomniAudioBody(BaseModel):
+    """somni_audio_materials 文档写字段（不含 id）；创建/更新共用形状。"""
+
+    audio_url: str | None = None
+    description: str | None = None
+    operation_type: int | None = None
+    created_by: str | None = None
+    updated_by: str | None = None
+    status: bool | None = None
+    sleep_stage_tags: list[SomniTagRef] = Field(default_factory=list)
+    content_form_tags: list[ContentFormTag] = Field(default_factory=list)
+    mechanism_tags: list[SomniTagRef] = Field(default_factory=list)
+    audio_engineering_tags: list[AudioEngineeringTag] = Field(default_factory=list)
+    medical_risk_tags: list[SomniTagRef] = Field(default_factory=list)
+    evidence_level_tags: list[SomniTagRef] = Field(default_factory=list)
+    embedding: list[float] = Field(default_factory=list)
+
+
+class CreateAudioRequest(SomniAudioBody):
+    """POST /audio：仅 audio_name 必填，其余选填。"""
+
+    audio_name: str = Field(min_length=1)
+
+    def to_mongo_doc(self) -> dict[str, Any]:
+        """转 Mongo 插入文档（去掉值为 None 的标量字段）。"""
+        return {k: v for k, v in self.model_dump().items() if v is not None}
+
+
+class UpdateAudioRequest(SomniAudioBody):
+    """PUT /audio/{material_id}：全部字段可选（含 audio_name）。"""
+
+    audio_name: str | None = None
+
+    def to_update_fields(self) -> dict[str, Any]:
+        """仅包含请求中出现的字段，供 Mongo `$set`。"""
+        return self.model_dump(exclude_unset=True)
 
 
 class SearchAudioRequest(BaseModel):
@@ -183,7 +209,7 @@ class AudioMetaInfoOut(BaseModel):
 
 
 class AudioMaterialData(BaseModel):
-    """创建成功时 data，与 comm-service AudioMaterialInfo 同构。"""
+    """创建成功时 data，与 comm-service AudioMaterialInfo 同构（遗留）。"""
 
     id: str
     category_code: int = 0
@@ -222,4 +248,3 @@ class AudioMaterialData(BaseModel):
             create_time=material.create_time,
             update_time=material.update_time,
         )
-
