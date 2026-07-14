@@ -123,7 +123,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     materials_store = create_materials_store(settings)
     _app_state.materials_store = materials_store
     if materials_store is None:
-        logger.warning("未配置 MONGO_URI，创建/更新音频将返回 503")
+        logger.warning("未配置 MONGO_URI，定时同步等读 Mongo 路径将不可用")
 
     search_cache = await create_audio_search_cache(settings)
     _app_state.search_cache = search_cache
