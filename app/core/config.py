@@ -47,8 +47,7 @@ class Settings(BaseSettings):
 
     log_level: str = "INFO"
     log_dir: str = "logs"
-    log_file_name: str = "uburnode.log"
-    log_rotation: str = "10 MB"
+    # 按日滚动：文件名为 YYYY-MM-DD_ubur_log，见 app.core.logging
     log_retention: str = "7 days"
 
     # Mongo → ES 差异同步（服务内定时 + scripts/sync_es_from_comm.py 手动）

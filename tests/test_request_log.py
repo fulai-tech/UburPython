@@ -1,4 +1,4 @@
-"""请求日志中间件：应记录方法/路径，并记录可截断的请求体。"""
+"""请求日志中间件：应记录方法/路径，并完整记录请求体（不截断）。"""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from loguru import logger
 
-from app.middleware.request_log import MAX_LOG_BODY_LEN, register_request_log_middleware
+from app.middleware.request_log import register_request_log_middleware
 
 
 def _app_with_echo() -> FastAPI:
@@ -57,10 +57,10 @@ def test_get_request_logs_empty_body() -> None:
     assert "请求体=" in start_lines[0]
 
 
-def test_long_body_is_truncated_in_log() -> None:
+def test_long_body_is_logged_in_full() -> None:
     messages: list[str] = []
     handler_id = logger.add(lambda m: messages.append(str(m)))
-    huge = "x" * (MAX_LOG_BODY_LEN + 200)
+    huge = "x" * 4096
     try:
         client = TestClient(_app_with_echo())
         response = client.post("/echo", content=huge.encode("utf-8"))
@@ -71,5 +71,5 @@ def test_long_body_is_truncated_in_log() -> None:
     assert response.json()["len"] == len(huge)
     start_lines = [m for m in messages if "请求开始" in m]
     assert start_lines
-    assert "已截断" in start_lines[0]
-    assert huge not in start_lines[0]
+    assert "已截断" not in start_lines[0]
+    assert huge in start_lines[0]

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""检索召回率 + 流水线顺序评测（HTTP 打真实服务，读 uburnode.log 校验步骤日志）。
+"""检索召回率 + 流水线顺序评测（HTTP 打真实服务，读当日 YYYY-MM-DD_ubur_log 校验步骤日志）。
 
 用法:
   .venv/bin/python scripts/eval_search_recall.py
@@ -217,7 +217,9 @@ async def main() -> None:
     parser.add_argument("--base-url", default="http://127.0.0.1:8080")
     args = parser.parse_args()
     settings = get_settings()
-    log_path = settings.log_dir_path / settings.log_file_name
+    from app.core.logging import current_log_path
+
+    log_path = current_log_path(settings.log_dir_path)
 
     total_exp = 0
     total_hit = 0
