@@ -222,11 +222,10 @@ uv run python scripts/sync_es_from_comm.py --dry-run # 仅比对统计
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
-| `LOG_DIR` | `logs` | 日志目录 |
-| `LOG_FILE_NAME` | `uburnode.log` | 日志文件名 |
-| `LOG_ROTATION` | `10 MB` | 单文件滚动大小 |
-| `LOG_RETENTION` | `7 days` | 历史日志保留 |
+| `LOG_DIR` | `logs` | 日志目录（部署时挂载到宿主机项目 `logs/`） |
+| `LOG_RETENTION` | `7 days` | 历史按日日志保留时长 |
 
+文件命名为 `YYYY-MM-DD_ubur_log`（如 `2026-07-15_ubur_log`），每天一个明文文件，零点滚动。  
 响应头回传 `X-Request-Id` 便于链路追踪。
 
 ## Docker 部署

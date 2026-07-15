@@ -29,7 +29,7 @@ services:
       REDIS_URL: redis://redis:6379/0
     volumes:
       - hf_cache:/data/huggingface
-      - ./logs:/app/logs  # 宿主机可直接看项目目录 logs/uburnode.log
+      - ./logs:/app/logs  # 宿主机可直接看项目目录 logs/YYYY-MM-DD_ubur_log
     deploy:
       resources:
         limits:

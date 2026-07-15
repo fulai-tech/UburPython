@@ -1,6 +1,6 @@
 """HTTP 请求日志中间件。
 
-每次请求写入 logs/uburnode.log：入站 / 出站 / 耗时 / 状态码 / 请求体。
+每次请求写入 logs/YYYY-MM-DD_ubur_log：入站 / 出站 / 耗时 / 状态码 / 请求体（完整，不截断）。
 使用 @app.middleware("http") 而非 BaseHTTPMiddleware，避免异常绕过 FastAPI handler。
 """
 
@@ -13,7 +13,8 @@ from fastapi import FastAPI, Request, Response
 from loguru import logger
 from starlette.types import Message
 
-MAX_LOG_BODY_LEN = 2048
+# 仅限制查询串长度，避免异常超长 URL 撑爆单行日志；请求体保持完整
+MAX_LOG_QUERY_LEN = 2048
 
 
 def register_request_log_middleware(app: FastAPI) -> None:
@@ -29,8 +30,8 @@ def register_request_log_middleware(app: FastAPI) -> None:
             "请求开始，方法={}，路径={}，查询参数={}，请求体={}，客户端={}",
             request.method,
             request.url.path,
-            _truncate(request.url.query),
-            _truncate(body_text),
+            _truncate(request.url.query, MAX_LOG_QUERY_LEN),
+            body_text,
             client_host,
         )
 
@@ -78,7 +79,7 @@ def _elapsed_ms(started_at: float) -> int:
     return int((time.perf_counter() - started_at) * 1000)
 
 
-def _truncate(value: str, max_len: int = MAX_LOG_BODY_LEN) -> str:
+def _truncate(value: str, max_len: int) -> str:
     if len(value) <= max_len:
         return value
     return f"{value[:max_len]}…（已截断）"
