@@ -4369,9 +4369,9 @@ class SomniService:
 
 class AudioMaterialServiceStub:
     """==================== AudioMaterialService ====================
-    音频原料 & 分类管理
+    音频原料 & 分类/标签管理
     原料表: somni_audio_materials（Create/Update/Delete/Get/ListAudioMaterial*）
-    分类表: audio_material_categories
+    分类/标签字典表: somni_audio_tag_dictionary（List/Get/Create/Update/DeleteAudioMaterialCategory*）
     （H5 enrich 仍可能内部读取旧表 audio_materials，不暴露 Legacy RPC）
 
     """
@@ -4446,15 +4446,15 @@ class AudioMaterialServiceStub:
 
 class AudioMaterialServiceServicer:
     """==================== AudioMaterialService ====================
-    音频原料 & 分类管理
+    音频原料 & 分类/标签管理
     原料表: somni_audio_materials（Create/Update/Delete/Get/ListAudioMaterial*）
-    分类表: audio_material_categories
+    分类/标签字典表: somni_audio_tag_dictionary（List/Get/Create/Update/DeleteAudioMaterialCategory*）
     （H5 enrich 仍可能内部读取旧表 audio_materials，不暴露 Legacy RPC）
 
     """
 
     def ListAudioMaterialCategories(self, request, context):
-        """----- 分类 -----
+        """----- 分类/标签字典 somni_audio_tag_dictionary -----
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -4600,9 +4600,9 @@ def add_AudioMaterialServiceServicer_to_server(servicer, server):
  # This class is part of an EXPERIMENTAL API.
 class AudioMaterialService:
     """==================== AudioMaterialService ====================
-    音频原料 & 分类管理
+    音频原料 & 分类/标签管理
     原料表: somni_audio_materials（Create/Update/Delete/Get/ListAudioMaterial*）
-    分类表: audio_material_categories
+    分类/标签字典表: somni_audio_tag_dictionary（List/Get/Create/Update/DeleteAudioMaterialCategory*）
     （H5 enrich 仍可能内部读取旧表 audio_materials，不暴露 Legacy RPC）
 
     """

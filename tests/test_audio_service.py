@@ -30,7 +30,7 @@ def _service(
 
 @pytest.mark.asyncio
 async def test_create_audio_calls_grpc_then_es() -> None:
-    created = bionode_comm_pb2.AudioMaterialInfo(id="abc123", name="雨声")
+    created = bionode_comm_pb2.AudioMaterialInfo(id="abc123", audio_name="雨声")
     comm = MagicMock()
     comm.create_audio_material = AsyncMock()
     comm.list_audio_materials_by_name = AsyncMock(return_value=[created])
