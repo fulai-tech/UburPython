@@ -9,8 +9,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import math
 import re
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -32,6 +34,7 @@ AUTO_DISLIKE_SIM_THRESHOLD = 0.65
 STRONG_DISLIKE_SIM_THRESHOLD = 0.78
 WEAK_DISLIKE_PENALTY = 0.2
 NEGATIVE_MARKERS = ("不要", "避免", "讨厌", "不喜欢", "别")
+DictionaryVectors = dict[str, list[float]]
 
 
 @dataclass
@@ -90,13 +93,28 @@ class RetrievalService:
                 logger.info("检索：睡眠阶段无匹配，短路返回空结果")
             return []
 
-        admitted = await self._apply_content_admission(candidates_raw, request.content_tags)
+        dictionary_vectors = await self._prefetch_dictionary_vectors(
+            candidates_raw,
+            required=(
+                bool(request.disliked_tags)
+                or self._has_non_exact_content_candidate(candidates_raw, request.content_tags)
+            ),
+        )
+        admitted = await self._apply_content_admission(
+            candidates_raw,
+            request.content_tags,
+            dictionary_vectors,
+        )
         logger.info("检索步骤2/4 内容形态准入：通过数={}", len(admitted))
         if not admitted:
             logger.info("检索：内容形态准入无匹配，短路返回空结果")
             return []
 
-        filtered = await self._apply_dislike_and_coarse_rank(admitted, request.disliked_tags)
+        filtered = await self._apply_dislike_and_coarse_rank(
+            admitted,
+            request.disliked_tags,
+            dictionary_vectors,
+        )
         logger.info("检索步骤3/4 厌恶剔除+粗排：剩余数={}", len(filtered))
 
         ranked = sorted(filtered, key=lambda c: c.tag_score, reverse=True)
@@ -134,28 +152,37 @@ class RetrievalService:
             top_k_label,
         )
 
-        recall_size = _recall_size(request.top_k)
-        desc_docs = await self._es_search.search_by_description_vector(
-            query_vector,
-            sleep_stage_tags=(
-                request.sleep_stage_tags if self._settings.search_sleep_stage_filter_enabled else []
-            ),
-            size=recall_size,
+        desc_docs, tag_docs = await self._recall_text_routes(
+            request=request,
+            query_vector=query_vector,
+            has_content_tags=bool(content_tags),
         )
         desc_candidates = [
             self._candidate_from_doc(doc, desc_score=_parse_desc_score(doc)) for doc in desc_docs
         ]
 
+        vector_docs = [*tag_docs, *desc_docs] if disliked_tags else tag_docs
+        dictionary_vectors = await self._prefetch_dictionary_vectors(
+            vector_docs,
+            required=(
+                bool(disliked_tags) or self._has_non_exact_content_candidate(tag_docs, content_tags)
+            ),
+        )
+
         tag_candidates: list[ScoredCandidate] = []
         if content_tags:
-            tag_docs = await self._fetch_step1_candidates(request.sleep_stage_tags)
-            tag_candidates = await self._score_content_candidates(tag_docs, content_tags)
+            tag_candidates = await self._score_content_candidates(
+                tag_docs,
+                content_tags,
+                dictionary_vectors,
+            )
 
         merged = await self._merge_and_rank_text_candidates(
             tag_candidates=tag_candidates,
             desc_candidates=desc_candidates,
             content_tags=content_tags,
             disliked_tags=disliked_tags,
+            dictionary_vectors=dictionary_vectors,
             top_k=request.top_k,
         )
         logger.info(
@@ -178,10 +205,89 @@ class RetrievalService:
         logger.info("检索步骤1/4 睡眠阶段过滤：候选数={}", len(candidates))
         return candidates
 
+    async def _recall_text_routes(
+        self,
+        *,
+        request: SearchAudioRequest,
+        query_vector: list[float],
+        has_content_tags: bool,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """并发执行相互独立的描述 KNN 与标签候选召回。"""
+        description_recall = self._es_search.search_by_description_vector(
+            query_vector,
+            sleep_stage_tags=(
+                request.sleep_stage_tags if self._settings.search_sleep_stage_filter_enabled else []
+            ),
+            size=_recall_size(request.top_k),
+        )
+        if not has_content_tags:
+            return await description_recall, []
+
+        desc_task = asyncio.create_task(description_recall)
+        tag_task = asyncio.create_task(self._fetch_step1_candidates(request.sleep_stage_tags))
+        try:
+            desc_docs, tag_docs = await asyncio.gather(desc_task, tag_task)
+            return desc_docs, tag_docs
+        except BaseException:
+            desc_task.cancel()
+            tag_task.cancel()
+            await asyncio.gather(desc_task, tag_task, return_exceptions=True)
+            raise
+
+    def _has_non_exact_content_candidate(
+        self,
+        candidates: list[dict[str, Any]],
+        content_tags: list[str],
+    ) -> bool:
+        """存在精确标签未命中的候选时，才需要内容标签向量。"""
+        if not candidates or not content_tags:
+            return False
+        requested = set(content_tags)
+        return any(
+            not self._es_search.parse_tags(doc).content_labels().intersection(requested)
+            for doc in candidates
+        )
+
+    async def _prefetch_dictionary_vectors(
+        self,
+        candidates: list[dict[str, Any]],
+        *,
+        required: bool,
+    ) -> DictionaryVectors:
+        """一次请求内去重预取候选标签向量，供内容与厌恶计算共同复用。"""
+        if not required or not candidates:
+            return {}
+
+        candidate_keys: set[str] = set()
+        unique_tag_ids: set[str] = set()
+        for doc in candidates:
+            candidate_keys.add(_candidate_key(doc))
+            tags = self._es_search.parse_tags(doc)
+            unique_tag_ids.update(EsSearch.content_tag_ids(tags))
+        if not unique_tag_ids:
+            return {}
+
+        started_at = time.perf_counter()
+        vectors = await self._es_search.get_dictionary_vectors(sorted(unique_tag_ids))
+        elapsed_ms = (time.perf_counter() - started_at) * 1000
+        batch_size = max(1, self._settings.es_dictionary_mget_batch_size)
+        batch_count = math.ceil(len(unique_tag_ids) / batch_size)
+        logger.info(
+            "标签向量请求级预取：候选数={}，唯一标签数={}，批次数={}，"
+            "命中向量数={}，耗时={:.2f}毫秒",
+            len(candidate_keys),
+            len(unique_tag_ids),
+            batch_count,
+            len(vectors),
+            elapsed_ms,
+        )
+        return vectors
+
     async def _apply_content_admission(
         self,
         candidates: list[dict[str, Any]],
         content_tags: list[str],
+        dictionary_vectors: DictionaryVectors,
     ) -> list[ScoredCandidate]:
         """步骤 2：无 content_tags 时跳过准入，保留睡眠阶段候选全集。"""
         if not content_tags:
@@ -218,7 +324,11 @@ class RetrievalService:
                 )
                 continue
 
-            vector_hits = await self._count_fuzzy_vector_matches(tags, request_vectors)
+            vector_hits = self._count_fuzzy_vector_matches(
+                tags,
+                request_vectors,
+                dictionary_vectors,
+            )
             if vector_hits > 0:
                 admitted.append(
                     ScoredCandidate(
@@ -237,6 +347,7 @@ class RetrievalService:
         self,
         candidates: list[dict[str, Any]],
         content_tags: list[str],
+        dictionary_vectors: DictionaryVectors,
     ) -> list[ScoredCandidate]:
         """文本多路检索里的标签路：产出分数，不决定整体短路。"""
         if not candidates or not content_tags:
@@ -251,7 +362,11 @@ class RetrievalService:
             exact_hits = content_labels.intersection(content_tags)
             vector_hits = 0
             if not exact_hits:
-                vector_hits = await self._count_fuzzy_vector_matches(tags, request_vectors)
+                vector_hits = self._count_fuzzy_vector_matches(
+                    tags,
+                    request_vectors,
+                    dictionary_vectors,
+                )
             match_count = len(exact_hits) if exact_hits else vector_hits
             if match_count <= 0:
                 continue
@@ -270,23 +385,23 @@ class RetrievalService:
             )
         return scored
 
-    async def _count_fuzzy_vector_matches(
+    def _count_fuzzy_vector_matches(
         self,
         tags: AudioTags,
         request_vectors: list[list[float]],
+        dictionary_vectors: DictionaryVectors,
     ) -> int:
-        """每个请求标签向量独立计分：与文档 tag_dictionary name_vector ≥ SIM_THRESHOLD 则 +1。"""
+        """使用请求级向量快照计分；候选循环内不再访问 ES。"""
         tag_ids = EsSearch.content_tag_ids(tags)
         if not tag_ids or not request_vectors:
             return 0
 
-        stored = await self._es_search.get_dictionary_vectors(tag_ids)
         threshold = self._settings.sim_threshold
         matched = 0
 
         for req_vec in request_vectors:
             for tid in tag_ids:
-                doc_vec = stored.get(tid)
+                doc_vec = dictionary_vectors.get(tid)
                 if doc_vec and _cosine_similarity(req_vec, doc_vec) >= threshold:
                     matched += 1
                     break
@@ -297,6 +412,7 @@ class RetrievalService:
         self,
         candidates: list[ScoredCandidate],
         disliked_tags: list[str],
+        dictionary_vectors: DictionaryVectors,
     ) -> list[ScoredCandidate]:
         """步骤 3：厌恶标签向量 vs 文档内容标签向量，余弦 ≥ SIM_THRESHOLD 则剔除。"""
         if not disliked_tags:
@@ -305,7 +421,14 @@ class RetrievalService:
         dislike_vectors = await self._encoder.encode(disliked_tags)
         result: list[ScoredCandidate] = []
         for candidate in candidates:
-            if await self._count_fuzzy_vector_matches(candidate.tags, dislike_vectors) > 0:
+            if (
+                self._count_fuzzy_vector_matches(
+                    candidate.tags,
+                    dislike_vectors,
+                    dictionary_vectors,
+                )
+                > 0
+            ):
                 continue
             result.append(candidate)
         return result
@@ -317,6 +440,7 @@ class RetrievalService:
         desc_candidates: list[ScoredCandidate],
         content_tags: list[str],
         disliked_tags: list[str],
+        dictionary_vectors: DictionaryVectors,
         top_k: int | None,
     ) -> list[ScoredCandidate]:
         merged: dict[str, ScoredCandidate] = {}
@@ -333,7 +457,12 @@ class RetrievalService:
         dislike_vectors = await self._encoder.encode(disliked_tags) if disliked_tags else []
         ranked: list[ScoredCandidate] = []
         for candidate in merged.values():
-            penalty = await self._dislike_penalty(candidate.tags, disliked_tags, dislike_vectors)
+            penalty = self._dislike_penalty(
+                candidate.tags,
+                disliked_tags,
+                dislike_vectors,
+                dictionary_vectors,
+            )
             if penalty >= 1.0:
                 continue
             candidate.dislike_penalty = penalty
@@ -391,11 +520,12 @@ class RetrievalService:
             disliked_tags=_unique_preserve_order(disliked_tags)[:AUTO_TAG_TOP_K],
         )
 
-    async def _dislike_penalty(
+    def _dislike_penalty(
         self,
         tags: AudioTags,
         disliked_tags: list[str],
         dislike_vectors: list[list[float]],
+        dictionary_vectors: DictionaryVectors,
     ) -> float:
         if not disliked_tags:
             return 0.0
@@ -403,27 +533,31 @@ class RetrievalService:
         if tags.content_labels().intersection(disliked_tags):
             return 1.0
 
-        max_similarity = await self._max_fuzzy_vector_similarity(tags, dislike_vectors)
+        max_similarity = self._max_fuzzy_vector_similarity(
+            tags,
+            dislike_vectors,
+            dictionary_vectors,
+        )
         if max_similarity >= STRONG_DISLIKE_SIM_THRESHOLD:
             return 1.0
         if max_similarity >= AUTO_DISLIKE_SIM_THRESHOLD:
             return WEAK_DISLIKE_PENALTY
         return 0.0
 
-    async def _max_fuzzy_vector_similarity(
-        self,
+    @staticmethod
+    def _max_fuzzy_vector_similarity(
         tags: AudioTags,
         request_vectors: list[list[float]],
+        dictionary_vectors: DictionaryVectors,
     ) -> float:
         tag_ids = EsSearch.content_tag_ids(tags)
         if not tag_ids or not request_vectors:
             return 0.0
 
-        stored = await self._es_search.get_dictionary_vectors(tag_ids)
         max_similarity = 0.0
         for req_vec in request_vectors:
             for tag_id in tag_ids:
-                doc_vec = stored.get(tag_id)
+                doc_vec = dictionary_vectors.get(tag_id)
                 if doc_vec:
                     max_similarity = max(max_similarity, _cosine_similarity(req_vec, doc_vec))
         return max_similarity
@@ -453,11 +587,7 @@ class RetrievalService:
                 + 0.05 * evidence_score
             )
         else:
-            score = (
-                0.75 * candidate.desc_score
-                + 0.15 * recommend_score
-                + 0.10 * evidence_score
-            )
+            score = 0.75 * candidate.desc_score + 0.15 * recommend_score + 0.10 * evidence_score
         return score - candidate.dislike_penalty
 
     @staticmethod
@@ -493,10 +623,7 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
 
 def _candidate_key(source: dict[str, Any]) -> str:
     return str(
-        source.get("_id")
-        or source.get("id")
-        or source.get("audio_url")
-        or source.get("audio_name")
+        source.get("_id") or source.get("id") or source.get("audio_url") or source.get("audio_name")
     )
 
 

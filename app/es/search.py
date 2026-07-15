@@ -165,14 +165,32 @@ class EsSearch:
             return None
 
     async def get_dictionary_vectors(self, tag_ids: list[str]) -> dict[str, list[float]]:
-        """批量取标签词典 name_vector，供内容形态向量模糊命中。"""
-        if not tag_ids:
+        """去重并分批读取标签词典 name_vector，供请求级向量快照复用。"""
+        unique_tag_ids = list(dict.fromkeys(tag_id for tag_id in tag_ids if tag_id))
+        if not unique_tag_ids:
             return {}
-        response = await self._client.mget(index=self.tag_dictionary_index, body={"ids": tag_ids})
+
+        batch_size = max(1, self._settings.es_dictionary_mget_batch_size)
         result: dict[str, list[float]] = {}
-        for doc in response["docs"]:
-            if doc.get("found"):
-                result[doc["_id"]] = doc["_source"].get("name_vector", [])
+        batch_count = 0
+        for offset in range(0, len(unique_tag_ids), batch_size):
+            batch_count += 1
+            batch = unique_tag_ids[offset : offset + batch_size]
+            response = await self._client.mget(
+                index=self.tag_dictionary_index,
+                ids=batch,
+                source_includes=["name_vector"],
+            )
+            for doc in response["docs"]:
+                if doc.get("found"):
+                    result[doc["_id"]] = doc.get("_source", {}).get("name_vector", [])
+
+        logger.debug(
+            "标签词典向量批量读取：唯一标签数={}，批次数={}，命中向量数={}",
+            len(unique_tag_ids),
+            batch_count,
+            len(result),
+        )
         return result
 
     async def get_tag_vectors(self, vector_ids: list[str]) -> dict[str, list[float]]:

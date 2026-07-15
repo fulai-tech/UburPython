@@ -35,6 +35,7 @@ class Settings(BaseSettings):
 
     sim_threshold: float = 0.7  # 内容形态向量模糊命中阈值（规范 §五-2）
     search_sleep_stage_filter_enabled: bool = True  # 检索步骤 1 是否按睡眠阶段过滤
+    es_dictionary_mget_batch_size: int = 500  # 标签词典向量批量读取的单批最大 ID 数
 
     embedding_backend: str = "onnx"  # onnx | torch | qwen_api（DashScope/OpenAI 兼容）
     embedding_model: str = "BAAI/bge-small-zh-v1.5"
