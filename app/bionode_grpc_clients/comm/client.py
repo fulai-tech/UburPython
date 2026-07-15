@@ -16,8 +16,8 @@ from app.bionode_grpc_clients.comm.grpc_gen import bionode_comm_pb2, bionode_com
 from app.core.config import Settings
 from app.schemas.audio import CreateAudioRequest, UpdateAudioRequest
 
-# comm ListAudioMaterials：status 默认 0 时列表为空；新建原料为已发布状态 1
-AUDIO_MATERIAL_STATUS_PUBLISHED = 1
+# comm ListAudioMaterials：按启用态筛选；与 BioNode bool status 对齐
+AUDIO_MATERIAL_STATUS_PUBLISHED = True
 
 
 class CommClient:
@@ -151,7 +151,7 @@ def _to_update_req(
     if "operation_type" in fields and fields["operation_type"] is not None:
         req.operation_type = int(fields["operation_type"])
     if "status" in fields and fields["status"] is not None:
-        req.status = 1 if fields["status"] else 0
+        req.status = bool(fields["status"])
     _copy_tag_fields(req, fields)
     _copy_embedding(req, fields)
     return req

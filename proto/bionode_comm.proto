@@ -189,13 +189,13 @@ service SomniService {
 }
 
 // ==================== AudioMaterialService ====================
-// 音频原料 & 分类管理
+// 音频原料 & 分类/标签管理
 // 原料表: somni_audio_materials（Create/Update/Delete/Get/ListAudioMaterial*）
-// 分类表: audio_material_categories
+// 分类/标签字典表: somni_audio_tag_dictionary（List/Get/Create/Update/DeleteAudioMaterialCategory*）
 // （H5 enrich 仍可能内部读取旧表 audio_materials，不暴露 Legacy RPC）
 
 service AudioMaterialService {
-  // ----- 分类 -----
+  // ----- 分类/标签字典 somni_audio_tag_dictionary -----
   rpc ListAudioMaterialCategories (ListAudioMaterialCategoriesReq) returns (AudioMaterialCategoryListRes);
   rpc GetAudioMaterialCategory (IdReq)                            returns (AudioMaterialCategoryRes);
   rpc CreateAudioMaterialCategory (CreateAudioMaterialCategoryReq) returns (EmptyRes);
@@ -1178,25 +1178,27 @@ message EventFilterOptionsRes {
 // ============================================================
 
 message AudioMaterialCategoryInfo {
-  string id            = 1;
-  string name          = 2;
-  int32  parent_code   = 3;
-  int32  category_code = 4;
-  string path          = 5;
-  int32  level         = 6;
-  int32  status        = 7;
-  string create_time   = 8;
-  string update_time   = 9;
+  string id              = 1;
+  string name            = 2;
+  string status          = 3;  // 库内字符串，如「启用」
+  string create_time     = 4;
+  string update_time     = 5;
+  string type            = 6; // sleep_stage / content_form / ...
+  string code            = 7;
+  string name_en         = 8;
+  string parent_tag_id   = 9;
+  string created_by      = 10;
+  string updated_by      = 11;
+  string parent_tag_name = 12; // 列表展示用，由 parent_tag_id 解析
 }
 
 message ListAudioMaterialCategoriesReq {
   bionode.common.v1.PageRequest page = 1;
-  int32  level                   = 2;
-  int32  parent_code             = 3;
-  int32  status                  = 4;
-  string name                    = 5;
-  string path                    = 6;
-  repeated int32 category_codes  = 7;
+  optional string status             = 2; // 未设置不筛选
+  string name                        = 3;
+  string type                        = 4;
+  string code                        = 5;
+  string parent_tag_id               = 6;
 }
 
 message AudioMaterialCategoryListRes {
@@ -1210,62 +1212,24 @@ message AudioMaterialCategoryRes {
 
 message CreateAudioMaterialCategoryReq {
   string name          = 1;
-  int32  parent_code   = 2;
-  int32  category_code = 3;
+  string type          = 2; // 必填
+  string code          = 3; // 必填；与 type 组合唯一
+  string name_en       = 4;
+  string status        = 5; // 默认「启用」
+  string parent_tag_id = 6;
+  string created_by    = 7;
+  string updated_by    = 8;
 }
 
 message UpdateAudioMaterialCategoryReq {
-  string id            = 1;
-  string name          = 2;
-  int32  parent_code   = 3;
-  int32  category_code = 4;
-  int32  status        = 5;
-}
-
-message AudioMetaData {
-  string url          = 1;
-  int32  duration_sec = 2;
-}
-
-message AudioMetaInfo {
-  AudioMetaData meta_data = 1;
-  bool   is_loopable      = 2;
-  bool   is_voice         = 3;
-}
-
-message AudioMaterialInfo {
-  string id              = 1;
-  int32  category_code   = 2;
-  int32  level           = 3;
-  string noise_color     = 4;
-  string name            = 5;
-  string description     = 6;
-  repeated string tags   = 7;
-  AudioMetaInfo audio_info = 8;
-  int32  status          = 9;
-  string create_time     = 10;
-  string update_time     = 11;
-}
-
-message ListAudioMaterialsReq {
-  bionode.common.v1.PageRequest page = 1;
-  repeated int32 category_codes  = 2;
-  int32  status                  = 3;
-  string name                    = 4;
-  repeated string tags           = 5;
-}
-
-message AudioMaterialListRes {
-  repeated AudioMaterialInfo materials = 1;
-  bionode.common.v1.PageResponse page = 2;
-}
-
-message AudioMaterialRes {
-  AudioMaterialInfo material = 1;
-}
-
-message DistinctTagsRes {
-  repeated string tags = 1;
+  string id                     = 1;
+  optional string name          = 2;
+  optional string status        = 3;
+  optional string type          = 4;
+  optional string code          = 5;
+  optional string name_en       = 6;
+  optional string parent_tag_id = 7;
+  optional string updated_by    = 8;
 }
 
 // 音频原料标签（覆盖 sleep_stage / content_form / mechanism / engineering 等形态）
@@ -1287,47 +1251,82 @@ message AudioMaterialTag {
   optional double relative_loudness = 9;
 }
 
+message AudioMaterialInfo {
+  string id              = 1;
+  string description     = 2;
+  bool   status          = 3; // true=启用 false=禁用（与库 bool 一致）
+  string create_time     = 4;
+  string update_time     = 5;
+  string audio_name      = 6;
+  string audio_url       = 7;
+  int32  operation_type  = 8;
+  string created_by      = 9;
+  string updated_by      = 10;
+  repeated AudioMaterialTag sleep_stage_tags = 11;
+  repeated AudioMaterialTag content_form_tags = 12;
+  repeated AudioMaterialTag mechanism_tags = 13;
+  repeated AudioMaterialTag audio_engineering_tags = 14;
+  repeated AudioMaterialTag medical_risk_tags = 15;
+  repeated AudioMaterialTag evidence_level_tags = 16;
+}
+
+message ListAudioMaterialsReq {
+  bionode.common.v1.PageRequest page = 1;
+  optional bool status           = 2; // 未设置不筛选；true/false 按启用态筛
+  string name                    = 3;
+  repeated string tags           = 4; // 按各类 *_tags 的 name/code 匹配
+}
+
+message AudioMaterialListRes {
+  repeated AudioMaterialInfo materials = 1;
+  bionode.common.v1.PageResponse page = 2;
+}
+
+message AudioMaterialRes {
+  AudioMaterialInfo material = 1;
+}
+
+message DistinctTagsRes {
+  repeated string tags = 1;
+}
+
 message CreateAudioMaterialReq {
-  reserved 1, 2, 3, 5, 6, 20;
-  reserved "category_code", "noise_color", "tags", "name", "audio_info", "document_json";
-  string description = 4;
-  string audio_name = 7; // 必填
-  string audio_url = 8;
-  int32 operation_type = 9;
-  string created_by = 10;
-  string updated_by = 11;
-  repeated AudioMaterialTag sleep_stage_tags = 12;
-  repeated AudioMaterialTag content_form_tags = 13;
-  repeated AudioMaterialTag mechanism_tags = 14;
-  repeated AudioMaterialTag audio_engineering_tags = 15;
-  repeated AudioMaterialTag medical_risk_tags = 16;
-  repeated AudioMaterialTag evidence_level_tags = 17;
-  repeated double embedding = 18;
+  string description = 1;
+  string audio_name = 2; // 必填
+  string audio_url = 3;
+  int32 operation_type = 4;
+  string created_by = 5;
+  string updated_by = 6;
+  repeated AudioMaterialTag sleep_stage_tags = 7;
+  repeated AudioMaterialTag content_form_tags = 8;
+  repeated AudioMaterialTag mechanism_tags = 9;
+  repeated AudioMaterialTag audio_engineering_tags = 10;
+  repeated AudioMaterialTag medical_risk_tags = 11;
+  repeated AudioMaterialTag evidence_level_tags = 12;
+  repeated double embedding = 13;
 }
 
 message UpdateAudioMaterialReq {
-  reserved 2, 3, 4, 6, 7, 20;
-  reserved "category_code", "noise_color", "tags", "name", "audio_info", "document_json";
   string id = 1; // 必填（对应文档 _id）
-  optional string description = 5;
-  optional int32 status = 8; // 1=启用 0=禁用；未设置则不改
-  optional string audio_name = 9; // 可选；设置时不能为空
-  optional string audio_url = 10;
-  optional int32 operation_type = 11;
-  optional string created_by = 12;
-  optional string updated_by = 13;
-  repeated AudioMaterialTag sleep_stage_tags = 14;
-  repeated AudioMaterialTag content_form_tags = 15;
-  repeated AudioMaterialTag mechanism_tags = 16;
-  repeated AudioMaterialTag audio_engineering_tags = 17;
-  repeated AudioMaterialTag medical_risk_tags = 18;
-  repeated AudioMaterialTag evidence_level_tags = 19;
-  repeated double embedding = 21;
+  optional string description = 2;
+  optional bool status = 3; // true=启用 false=禁用；未设置则不改
+  optional string audio_name = 4; // 可选；设置时不能为空
+  optional string audio_url = 5;
+  optional int32 operation_type = 6;
+  optional string created_by = 7;
+  optional string updated_by = 8;
+  repeated AudioMaterialTag sleep_stage_tags = 9;
+  repeated AudioMaterialTag content_form_tags = 10;
+  repeated AudioMaterialTag mechanism_tags = 11;
+  repeated AudioMaterialTag audio_engineering_tags = 12;
+  repeated AudioMaterialTag medical_risk_tags = 13;
+  repeated AudioMaterialTag evidence_level_tags = 14;
+  repeated double embedding = 15;
 }
 
 message UpdateAudioMaterialStatusReq {
   string id    = 1;
-  int32  status = 2;
+  bool   status = 2; // true=启用 false=禁用
 }
 
 // ============================================================

@@ -72,7 +72,7 @@ async def test_update_audio_material_maps_partial_and_status() -> None:
     req = stub.UpdateAudioMaterial.await_args.args[0]
     assert req.id == "abc123"
     assert req.description == "新描述"
-    assert req.status == 0
+    assert req.status is False
     assert not req.HasField("audio_name")
 
 
@@ -89,7 +89,7 @@ async def test_list_audio_materials_by_name_uses_published_status() -> None:
 
     call_args = stub.ListAudioMaterials.await_args[0][0]
     assert call_args.name == "测试音频"
-    assert call_args.status == AUDIO_MATERIAL_STATUS_PUBLISHED
+    assert call_args.status is AUDIO_MATERIAL_STATUS_PUBLISHED
     assert call_args.page.order_by == "create_time desc"
 
 
@@ -97,7 +97,7 @@ async def test_list_audio_materials_by_name_uses_published_status() -> None:
 async def test_list_audio_materials_page_uses_published_and_pagination() -> None:
     client = CommClient(Settings())
     stub = MagicMock()
-    material = bionode_comm_pb2.AudioMaterialInfo(id="abc", name="海浪声白噪音")
+    material = bionode_comm_pb2.AudioMaterialInfo(id="abc", audio_name="海浪声白噪音")
     stub.ListAudioMaterials = AsyncMock(
         return_value=bionode_comm_pb2.AudioMaterialListRes(
             materials=[material],
@@ -112,7 +112,7 @@ async def test_list_audio_materials_page_uses_published_and_pagination() -> None
     assert materials[0].id == "abc"
     assert total == 1
     call_args = stub.ListAudioMaterials.await_args[0][0]
-    assert call_args.status == AUDIO_MATERIAL_STATUS_PUBLISHED
+    assert call_args.status is AUDIO_MATERIAL_STATUS_PUBLISHED
     assert call_args.page.page == 2
     assert call_args.page.page_size == 50
     assert call_args.page.order_by == "update_time desc"

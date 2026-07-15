@@ -138,31 +138,28 @@ def test_audio_material_data_from_comm_material() -> None:
 
     material = bionode_comm_pb2.AudioMaterialInfo(
         id="674a1b2c3d4e5f6789012345",
-        category_code=0,
-        level=2,
-        noise_color="",
-        name="深夜雨声",
-        description="",
-        tags=["sleep:放松", "content:雨声"],
-        audio_info=bionode_comm_pb2.AudioMetaInfo(
-            meta_data=bionode_comm_pb2.AudioMetaData(
-                url="https://cdn.example.com/a.mp3",
-                duration_sec=600,
-            ),
-            is_loopable=False,
-            is_voice=False,
-        ),
-        status=1,
+        description="夜雨",
+        status=True,
         create_time="2026-06-06T12:00:00Z",
         update_time="2026-06-06T12:00:00Z",
+        audio_name="深夜雨声",
+        audio_url="https://cdn.example.com/a.mp3",
+        operation_type=0,
+        created_by="agent",
+        sleep_stage_tags=[
+            bionode_comm_pb2.AudioMaterialTag(
+                tag_id="t1", code="unwind", name="放松"
+            )
+        ],
     )
     data = AudioMaterialData.from_comm_material(material)
     assert data.id == material.id
-    assert data.name == "深夜雨声"
-    assert data.level == 2
-    assert data.tags == ["sleep:放松", "content:雨声"]
-    assert data.audio_info.meta_data.url == "https://cdn.example.com/a.mp3"
-    assert data.audio_info.meta_data.duration_sec == 600
+    assert data.audio_name == "深夜雨声"
+    assert data.audio_url == "https://cdn.example.com/a.mp3"
+    assert data.status is True
+    assert data.sleep_stage_tags == [
+        {"tag_id": "t1", "code": "unwind", "name": "放松"}
+    ]
 
 
 def test_evidence_level_values() -> None:

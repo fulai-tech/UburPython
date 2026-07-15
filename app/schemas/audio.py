@@ -209,42 +209,52 @@ class AudioMetaInfoOut(BaseModel):
 
 
 class AudioMaterialData(BaseModel):
-    """创建成功时 data，与 comm-service AudioMaterialInfo 同构（遗留）。"""
+    """与 comm-service AudioMaterialInfo 同构（Somni）。"""
 
     id: str
-    category_code: int = 0
-    level: int = 0
-    noise_color: str = ""
-    name: str = ""
     description: str = ""
-    tags: list[str] = Field(default_factory=list)
-    audio_info: AudioMetaInfoOut = Field(default_factory=AudioMetaInfoOut)
-    status: int = 0
+    status: bool = False
     create_time: str = ""
     update_time: str = ""
+    audio_name: str = ""
+    audio_url: str = ""
+    operation_type: int = 0
+    created_by: str = ""
+    updated_by: str = ""
+    sleep_stage_tags: list[dict[str, Any]] = Field(default_factory=list)
+    content_form_tags: list[dict[str, Any]] = Field(default_factory=list)
+    mechanism_tags: list[dict[str, Any]] = Field(default_factory=list)
+    audio_engineering_tags: list[dict[str, Any]] = Field(default_factory=list)
+    medical_risk_tags: list[dict[str, Any]] = Field(default_factory=list)
+    evidence_level_tags: list[dict[str, Any]] = Field(default_factory=list)
 
     @classmethod
     def from_comm_material(cls, material: object) -> Self:
-        """bionode_comm_pb2.AudioMaterialInfo → HTTP 出参。"""
-        audio_info = getattr(material, "audio_info", None)
-        meta_data = getattr(audio_info, "meta_data", None) if audio_info else None
+        """bionode_comm_pb2.AudioMaterialInfo → HTTP/内存出参。"""
         return cls(
             id=material.id,
-            category_code=material.category_code,
-            level=material.level,
-            noise_color=material.noise_color,
-            name=material.name,
             description=material.description,
-            tags=list(material.tags),
-            audio_info=AudioMetaInfoOut(
-                meta_data=AudioMetaDataOut(
-                    url=getattr(meta_data, "url", "") or "",
-                    duration_sec=getattr(meta_data, "duration_sec", 0) or 0,
-                ),
-                is_loopable=getattr(audio_info, "is_loopable", False),
-                is_voice=getattr(audio_info, "is_voice", False),
-            ),
-            status=material.status,
+            status=bool(material.status),
             create_time=material.create_time,
             update_time=material.update_time,
+            audio_name=material.audio_name,
+            audio_url=material.audio_url,
+            operation_type=int(material.operation_type),
+            created_by=material.created_by,
+            updated_by=material.updated_by,
+            sleep_stage_tags=_tag_messages_to_dicts(material.sleep_stage_tags),
+            content_form_tags=_tag_messages_to_dicts(material.content_form_tags),
+            mechanism_tags=_tag_messages_to_dicts(material.mechanism_tags),
+            audio_engineering_tags=_tag_messages_to_dicts(
+                material.audio_engineering_tags
+            ),
+            medical_risk_tags=_tag_messages_to_dicts(material.medical_risk_tags),
+            evidence_level_tags=_tag_messages_to_dicts(material.evidence_level_tags),
         )
+
+
+def _tag_messages_to_dicts(tags: object) -> list[dict[str, Any]]:
+    return [
+        {"tag_id": tag.tag_id, "code": tag.code, "name": tag.name}
+        for tag in tags  # type: ignore[attr-defined]
+    ]
