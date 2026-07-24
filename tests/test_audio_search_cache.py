@@ -112,6 +112,7 @@ def test_build_cache_key_is_sha_of_prefix_plus_body() -> None:
         ensure_ascii=False,
         separators=(",", ":"),
     )
+    assert AUDIO_SEARCH_KEY_PREFIX == "audio_search_v2+"
     expected = hashlib.sha256(f"{AUDIO_SEARCH_KEY_PREFIX}{body}".encode()).hexdigest()
     assert build_audio_search_cache_key(request) == expected
 
@@ -127,7 +128,7 @@ async def test_set_then_get_returns_materials_without_refreshing_ttl() -> None:
     redis = _FakeRedis()
     cache = AudioSearchCache(redis, max_size=3, ttl_sec=100)
     request = SearchAudioRequest(query_text="雨声", top_k=2)
-    materials = [{"id": "a1", "audio_name": "雨声"}]
+    materials = [{"_id": "a1", "audio_name": "雨声"}]
 
     await cache.set(request, materials)
     key = build_audio_search_cache_key(request)
@@ -251,3 +252,33 @@ async def test_shutdown_cache_still_closes_if_clear_fails() -> None:
     await shutdown_audio_search_cache(cache)
     cache.clear_all.assert_awaited_once()
     cache.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_create_audio_search_cache_uses_configured_max_connections(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from unittest.mock import AsyncMock, MagicMock
+
+    from app.cache.audio_search_cache import create_audio_search_cache
+    from app.core.config import Settings
+
+    client = AsyncMock()
+    client.ping = AsyncMock(return_value=True)
+    fake_redis = MagicMock(return_value=client)
+    monkeypatch.setattr("redis.asyncio.Redis.from_url", fake_redis)
+
+    settings = Settings(
+        redis_url="redis://127.0.0.1:6379/0",
+        redis_max_connections=512,
+        search_cache_max_size=100,
+        search_cache_ttl_sec=60,
+    )
+    cache = await create_audio_search_cache(settings)
+
+    assert cache is not None
+    fake_redis.assert_called_once_with(
+        "redis://127.0.0.1:6379/0",
+        decode_responses=False,
+        max_connections=512,
+    )

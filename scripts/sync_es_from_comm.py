@@ -29,7 +29,6 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler  # noqa: E402
-from elasticsearch import AsyncElasticsearch  # noqa: E402
 from loguru import logger  # noqa: E402
 from motor.motor_asyncio import AsyncIOMotorClient  # noqa: E402
 
@@ -40,6 +39,7 @@ from app.cache.audio_search_cache import (  # noqa: E402
 from app.core.config import Settings, get_settings  # noqa: E402
 from app.core.logging import setup_logging  # noqa: E402
 from app.embedding.encoder import Encoder, create_encoder  # noqa: E402
+from app.es.client import create_es_client  # noqa: E402
 from app.es.search import EsSearch  # noqa: E402
 from app.es.somni_docs import (  # noqa: E402
     build_material_description_text,
@@ -56,6 +56,8 @@ __all__ = (
 )
 
 if TYPE_CHECKING:
+    from elasticsearch import AsyncElasticsearch
+
     from app.main import AppState
 
 _scheduler: AsyncIOScheduler | None = None
@@ -242,6 +244,8 @@ class TagDictionarySyncJob:
             outcome = await self._sync_one(doc, dry_run=dry_run)
             stats[outcome] += 1
 
+        if not dry_run:
+            self._es_search.clear_content_tag_vectors_cache()
         return stats
 
     async def _sync_one(self, doc: dict[str, Any], *, dry_run: bool) -> str:
@@ -454,11 +458,15 @@ async def run_scheduled_sync(state: AppState, settings: Settings) -> None:
 
 
 async def _clear_search_cache_after_material_sync(state: AppState, result: SyncJobResult) -> None:
-    if state.search_cache is None:
-        return
     if not (result.material_created or result.material_updated or result.material_deleted):
         return
-    await state.search_cache.clear_all()
+    if state.search_cache is not None:
+        await state.search_cache.clear_all()
+    retrieval = state.retrieval_service
+    if retrieval is None:
+        return
+    await retrieval.clear_sleep_stage_cache()
+    await retrieval.warm_sleep_stage_cache()
 
 
 def start_sync_scheduler(state: AppState, settings: Settings) -> None:
@@ -505,7 +513,7 @@ def shutdown_sync_scheduler() -> None:
 async def _run_cli(*, dry_run: bool) -> int:
     settings = get_settings()
     setup_logging(settings)
-    es_client = AsyncElasticsearch(settings.es_node)
+    es_client = create_es_client(settings)
     encoder = create_encoder(settings)
     encoder.load()
     mongo = MongoSource(settings)
@@ -520,6 +528,17 @@ async def _run_cli(*, dry_run: bool) -> int:
             search_cache = await create_audio_search_cache(settings)
             if search_cache is not None:
                 await search_cache.clear_all()
+            from app.cache.sleep_stage_cache import create_sleep_stage_candidate_cache
+
+            sleep_redis = search_cache.redis if search_cache is not None else None
+            sleep_cache = await create_sleep_stage_candidate_cache(settings, redis=sleep_redis)
+            if sleep_cache is not None:
+                await sleep_cache.clear_all()
+
+                async def _load_stage(stage: str) -> list:
+                    return await es_search.filter_by_sleep_stage([stage])
+
+                await sleep_cache.warm(_load_stage)
     finally:
         await shutdown_audio_search_cache(search_cache)
         await mongo.close()

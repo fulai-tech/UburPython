@@ -18,15 +18,18 @@ def test_search_returns_http_200_envelope() -> None:
         return_value=SearchAudioData(
             materials=[
                 {
-                    "id": "6a33a7928030d4cf420efeb6",
+                    "_id": "6a33a7928030d4cf420efeb6",
                     "audio_name": "雨声",
                     "audio_url": "https://cdn.example.com/a.mp3",
-                    "sleep_stage_tags": [{"tag_id": "s1", "code": "unwind", "name": "放松"}],
-                    "content_form_tags": [{"tag_id": "c1", "code": "rain", "name": "雨声"}],
+                    "content_form_tags": [
+                        {"name": "雨声", "parent_tag_id": "p1"}
+                    ],
                     "mechanism_tags": [],
                     "audio_engineering_tags": [],
                     "medical_risk_tags": [],
-                    "evidence_level_tags": [{"tag_id": "e1", "code": "B", "name": "中等证据"}],
+                    "evidence_level_tags": [
+                        {"tag_id": "e1", "code": "B", "name": "中等证据"}
+                    ],
                 }
             ]
         )
@@ -38,16 +41,24 @@ def test_search_returns_http_200_envelope() -> None:
     with patch("app.main.get_app_state", return_value=mock_state):
         response = TestClient(app).post(
             "/api/audio/search",
-            json={"sleep_stage_tags": ["深睡"], "content_tags": ["雨声"], "top_k": 5},
+            json={
+                "sleep_stage_tags": ["深睡"],
+                "content_tags": ["雨声"],
+                "top_k": 5,
+            },
         )
 
     assert response.status_code == 200
     body = response.json()
     _assert_envelope(body, HttpStatus.OK)
     assert body["msg"] == "检索成功"
-    assert len(body["data"]["materials"]) == 1
-    assert body["data"]["materials"][0]["audio_name"] == "雨声"
-    assert body["data"]["materials"][0]["content_form_tags"][0]["name"] == "雨声"
+    materials = body["data"]["materials"]
+    assert len(materials) == 1
+    assert materials[0]["_id"] == "6a33a7928030d4cf420efeb6"
+    assert materials[0]["audio_name"] == "雨声"
+    assert "sleep_stage_tags" not in materials[0]
+    assert materials[0]["content_form_tags"][0]["name"] == "雨声"
+    assert set(materials[0]["content_form_tags"][0]) == {"name", "parent_tag_id"}
     assert response.status_code == body["code"]
 
 

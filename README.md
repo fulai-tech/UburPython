@@ -31,7 +31,7 @@ BioNode 体系中的 **Somni 音频检索服务**：以三维度检索为核心�
 |------|------|------|------|
 | Mongo → ES 同步 | `somni_audio_materials`、`somni_audio_tag_dictionary` | 同名 ES 索引 | `scripts/sync_es_from_comm.py` |
 | 标签向量 | 词典 `name` / `name_en` | `name_vector` / `name_en_vector` | 同步脚本 + `app/embedding/` |
-| HTTP 检索 | ES 原料文档 | `data.materials[]` 原样返回 | `app/services/retrieval.py` |
+| HTTP 检索 | ES 原料文档 | `data.results[].materials[]` 原样返回 | `app/services/retrieval.py` |
 | HTTP 创建/更新 | Somni 文档体（仅创建强制 `audio_name`） | Mongo + ES | `app/services/audio.py` |
 | HTTP 删除（遗留） | material_id | comm + ES delete | `app/services/audio.py` |
 
@@ -135,7 +135,7 @@ OpenAPI 文档：启动后访问 `http://localhost:8080/docs`。
 
 ### 检索接口
 
-**请求** `POST /api/audio/search`：
+**请求** `POST /api/audio/search`（单次检索）：
 
 ```json
 {
@@ -146,7 +146,7 @@ OpenAPI 文档：启动后访问 `http://localhost:8080/docs`。
 }
 ```
 
-**响应** `data.materials` 为命中条目的 `somni_audio_materials` 索引文档（含 `id`，字段与 ES/Mongo 一致，暂不做裁剪）：
+**响应** `data.materials` 为 `somni_audio_materials` 索引文档列表：
 
 ```json
 {
@@ -187,7 +187,7 @@ OpenAPI 文档：启动后访问 `http://localhost:8080/docs`。
 | 步骤 | 说明 |
 |------|------|
 | 1 | `sleep_stage_tags.name` nested 精确匹配（可配置跳过） |
-| 2 | `content_tags` 与内容/机制/工程标签精确或向量模糊命中 |
+| 2 | `content_tags` 与内容/机制/工程标签精确或向量模糊命中；白/粉/棕噪音互斥，仅允许精确命中 |
 | 3 | `disliked_tags` 向量相似则剔除 |
 | 4 | 按 `match_count` 降序，`top_k` 截断 |
 
@@ -215,6 +215,8 @@ uv run python scripts/sync_es_from_comm.py --dry-run # 仅比对统计
 | `MONGO_DB` | `Fullive` | 数据库名 |
 | `SIM_THRESHOLD` | `0.7` | 向量模糊命中阈值 |
 | `EMBEDDING_ONNX_DIR` | `models/onnx/bge-small-zh-v1.5` | ONNX 模型目录 |
+| `EMBEDDING_ONNX_POOL_SIZE` | `4` | ONNX 会话池大小（并发推理路上限） |
+| `EMBEDDING_ONNX_INTRA_OP_THREADS` | `1` | 单 session ORT 线程数 |
 
 完整列表见 [`.env.example`](.env.example)。
 

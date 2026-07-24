@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from elasticsearch import AsyncElasticsearch, NotFoundError
@@ -20,6 +21,19 @@ from app.schemas.audio import AudioTags, TagItem
 
 LEGACY_INDICES = ("audio_materials", "tag_vectors")
 CONTENT_TAG_TYPES = ("content_form", "mechanism", "audio_engineering")
+# 检索候选只取流水线与响应组装需要的字段，避免新增索引字段被默认带回。
+SEARCH_CANDIDATE_SOURCE_INCLUDES = (
+    "audio_name",
+    "description",
+    "audio_url",
+    "sleep_stage_tags",
+    "content_form_tags",
+    "mechanism_tags",
+    "audio_engineering_tags",
+    "medical_risk_tags",
+    "evidence_level_tags",
+    "recommend_weight",
+)
 
 
 def _tag_item_from_dict(item: dict[str, Any]) -> TagItem | None:
@@ -57,12 +71,26 @@ def _parse_engineering_tags(items: list[dict[str, Any]] | None) -> list[TagItem]
 
 
 def _document_from_hit(hit: dict[str, Any]) -> dict[str, Any]:
-    """ES hit → 索引文档（id/_id + _source，不做字段裁剪）。"""
+    """ES hit → 候选文档（只注入 hit._id，避免与 _source id 混淆）。"""
     source = hit.get("_source", {})
     doc_id = str(hit.get("_id", ""))
     if not isinstance(source, dict):
-        return {"id": doc_id, "_id": doc_id}
-    return {"id": doc_id, "_id": doc_id, **source}
+        return {"_id": doc_id}
+    return {"_id": doc_id, **source}
+
+
+def _candidate_from_hit(hit: dict[str, Any]) -> dict[str, Any]:
+    """检索候选：_source 已按 includes 裁剪，附带 hit._id 作为 _id。"""
+    return _document_from_hit(hit)
+
+
+def _candidate_search_body(query: dict[str, Any], *, size: int = 1000) -> dict[str, Any]:
+    """检索候选查询体：只取流水线必要字段。"""
+    return {
+        "query": query,
+        "size": size,
+        "_source": {"includes": list(SEARCH_CANDIDATE_SOURCE_INCLUDES)},
+    }
 
 
 class EsSearch:
@@ -71,6 +99,11 @@ class EsSearch:
     def __init__(self, client: AsyncElasticsearch, settings: Settings) -> None:
         self._client = client
         self._settings = settings
+        self._content_tag_vectors_cache: list[dict[str, Any]] | None = None
+        self._content_tag_vectors_lock = asyncio.Lock()
+        # 按 tag_id 缓存 name_vector，避免每请求 mget（内容准入模糊路径）
+        self._dictionary_vectors_cache: dict[str, list[float]] = {}
+        self._dictionary_vectors_lock = asyncio.Lock()
 
     @property
     def audio_index(self) -> str:
@@ -85,22 +118,23 @@ class EsSearch:
         return self.tag_dictionary_index
 
     async def filter_by_sleep_stage(self, sleep_stage_tags: list[str]) -> list[dict[str, Any]]:
-        """检索步骤 1：睡眠阶段 nested term 精确匹配。"""
+        """检索步骤 1：sleep_stage_names term 精确匹配。"""
         if not sleep_stage_tags:
             return []
 
-        query = {
-            "query": _sleep_stage_filter(sleep_stage_tags),
-            "size": 1000,
-        }
-        response = await self._client.search(index=self.audio_index, body=query)
-        return [_document_from_hit(hit) for hit in response["hits"]["hits"]]
+        response = await self._client.search(
+            index=self.audio_index,
+            body=_candidate_search_body(_sleep_stage_filter(sleep_stage_tags)),
+        )
+        return [_candidate_from_hit(hit) for hit in response["hits"]["hits"]]
 
     async def list_all_audio_candidates(self) -> list[dict[str, Any]]:
         """检索步骤 1（跳过睡眠阶段过滤时）：返回索引内全部音频候选。"""
-        query = {"query": {"match_all": {}}, "size": 1000}
-        response = await self._client.search(index=self.audio_index, body=query)
-        return [_document_from_hit(hit) for hit in response["hits"]["hits"]]
+        response = await self._client.search(
+            index=self.audio_index,
+            body=_candidate_search_body({"match_all": {}}),
+        )
+        return [_candidate_from_hit(hit) for hit in response["hits"]["hits"]]
 
     async def find_tag_doc_id_by_name(self, name: str) -> str | None:
         """按标签中文名查词典索引，命中则返回文档 _id。"""
@@ -165,21 +199,101 @@ class EsSearch:
             return None
 
     async def get_dictionary_vectors(self, tag_ids: list[str]) -> dict[str, list[float]]:
-        """批量取标签词典 name_vector，供内容形态向量模糊命中。"""
-        if not tag_ids:
+        """去重读取标签词典 name_vector；进程内缓存命中则跳过 ES mget。"""
+        unique_tag_ids = list(dict.fromkeys(tag_id for tag_id in tag_ids if tag_id))
+        if not unique_tag_ids:
             return {}
-        response = await self._client.mget(index=self.tag_dictionary_index, body={"ids": tag_ids})
+
+        cached = {
+            tag_id: self._dictionary_vectors_cache[tag_id]
+            for tag_id in unique_tag_ids
+            if tag_id in self._dictionary_vectors_cache
+        }
+        missing = [tag_id for tag_id in unique_tag_ids if tag_id not in cached]
+        if not missing:
+            return cached
+
+        async with self._dictionary_vectors_lock:
+            cached = {
+                tag_id: self._dictionary_vectors_cache[tag_id]
+                for tag_id in unique_tag_ids
+                if tag_id in self._dictionary_vectors_cache
+            }
+            missing = [tag_id for tag_id in unique_tag_ids if tag_id not in cached]
+            if missing:
+                fetched = await self._mget_dictionary_vectors(missing)
+                self._dictionary_vectors_cache.update(fetched)
+                cached.update(fetched)
+
+        return {
+            tag_id: cached[tag_id] for tag_id in unique_tag_ids if tag_id in cached
+        }
+
+    async def _mget_dictionary_vectors(self, tag_ids: list[str]) -> dict[str, list[float]]:
+        """分批 mget 标签词典 name_vector（仅未命中缓存的 id）。"""
+        batch_size = max(1, self._settings.es_dictionary_mget_batch_size)
         result: dict[str, list[float]] = {}
-        for doc in response["docs"]:
-            if doc.get("found"):
-                result[doc["_id"]] = doc["_source"].get("name_vector", [])
+        batch_count = 0
+        for offset in range(0, len(tag_ids), batch_size):
+            batch_count += 1
+            batch = tag_ids[offset : offset + batch_size]
+            response = await self._client.mget(
+                index=self.tag_dictionary_index,
+                ids=batch,
+                source_includes=["name_vector"],
+            )
+            for doc in response["docs"]:
+                if doc.get("found"):
+                    result[doc["_id"]] = doc.get("_source", {}).get("name_vector", [])
+
+        logger.debug(
+            "标签词典向量批量读取：请求数={}，批次数={}，命中向量数={}",
+            len(tag_ids),
+            batch_count,
+            len(result),
+        )
         return result
 
     async def get_tag_vectors(self, vector_ids: list[str]) -> dict[str, list[float]]:
         return await self.get_dictionary_vectors(vector_ids)
 
     async def list_content_tag_vectors(self, *, size: int = 1000) -> list[dict[str, Any]]:
-        """读取内容相关标签词典向量，供 query_text 自动映射到标准标签。"""
+        """读取内容相关标签词典向量；进程内缓存，避免每请求打 ES。"""
+        if self._content_tag_vectors_cache is not None:
+            return self._content_tag_vectors_cache
+
+        async with self._content_tag_vectors_lock:
+            if self._content_tag_vectors_cache is not None:
+                return self._content_tag_vectors_cache
+            tags = await self._fetch_content_tag_vectors(size=size)
+            self._content_tag_vectors_cache = tags
+            async with self._dictionary_vectors_lock:
+                self._seed_dictionary_vectors_from_content_tags(tags)
+            logger.info("已缓存内容标签词典向量，数量={}", len(tags))
+            return tags
+
+    async def warm_dictionary_vectors_cache(self, *, size: int = 1000) -> None:
+        """启动预热：拉取内容标签词典并写入按 id 向量缓存。"""
+        tags = await self.list_content_tag_vectors(size=size)
+        logger.info("标签词典向量缓存预热完成，数量={}", len(tags))
+
+    def _seed_dictionary_vectors_from_content_tags(
+        self,
+        tags: list[dict[str, Any]],
+    ) -> None:
+        """把 list_content_tag_vectors 结果写入按 id 缓存。"""
+        for tag in tags:
+            tag_id = str(tag.get("id", "")).strip()
+            vector = tag.get("vector")
+            if tag_id and isinstance(vector, list) and vector:
+                self._dictionary_vectors_cache[tag_id] = vector
+
+    def clear_content_tag_vectors_cache(self) -> None:
+        """词典同步后失效缓存（内容列表 + 按 id 向量）。"""
+        self._content_tag_vectors_cache = None
+        self._dictionary_vectors_cache.clear()
+
+    async def _fetch_content_tag_vectors(self, *, size: int) -> list[dict[str, Any]]:
         response = await self._client.search(
             index=self.tag_dictionary_index,
             body={
@@ -235,11 +349,12 @@ class EsSearch:
             body={
                 "knn": knn,
                 "size": size,
+                "_source": {"includes": list(SEARCH_CANDIDATE_SOURCE_INCLUDES)},
             },
         )
         results: list[dict[str, Any]] = []
         for hit in response["hits"]["hits"]:
-            source = _document_from_hit(hit)
+            source = _candidate_from_hit(hit)
             source["_description_score"] = float(hit.get("_score") or 0.0)
             results.append(source)
         return results
@@ -290,17 +405,5 @@ class EsSearch:
 
 
 def _sleep_stage_filter(sleep_stage_tags: list[str]) -> dict[str, Any]:
-    return {
-        "bool": {
-            "should": [
-                {
-                    "nested": {
-                        "path": "sleep_stage_tags",
-                        "query": {"term": {"sleep_stage_tags.name": tag}},
-                    }
-                }
-                for tag in sleep_stage_tags
-            ],
-            "minimum_should_match": 1,
-        }
-    }
+    """扁平 sleep_stage_names 上的 terms 过滤（任一阶段命中即可）。"""
+    return {"terms": {"sleep_stage_names": sleep_stage_tags}}
