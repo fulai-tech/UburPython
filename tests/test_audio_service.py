@@ -7,7 +7,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.bionode_grpc_clients.comm.grpc_gen import bionode_comm_pb2
-from app.schemas.audio import CreateAudioRequest, SearchAudioRequest, UpdateAudioRequest
+from app.schemas.audio import (
+    CreateAudioRequest,
+    SearchAudioRequest,
+    UpdateAudioRequest,
+)
 from app.services.audio import AudioService
 
 
@@ -19,12 +23,17 @@ def _service(
     search_cache: MagicMock | None = None,
     comm: MagicMock | None = None,
 ) -> AudioService:
+    retrieval_svc = retrieval or MagicMock()
+    if retrieval is None:
+        retrieval_svc.clear_sleep_stage_cache = AsyncMock()
+        retrieval_svc.warm_sleep_stage_cache = AsyncMock()
     return AudioService(
         comm or MagicMock(),
         es_sync or MagicMock(),
-        retrieval or MagicMock(),
+        retrieval_svc,
         materials=materials,
         search_cache=search_cache,
+        sleep_stage_rewarm_delay_sec=0,
     )
 
 
@@ -105,14 +114,14 @@ async def test_search_audio_returns_cache_hit_without_retrieval() -> None:
     retrieval = MagicMock()
     retrieval.search = AsyncMock()
     search_cache = MagicMock()
-    search_cache.get = AsyncMock(return_value=[{"id": "cached"}])
+    search_cache.get = AsyncMock(return_value=[{"_id": "cached"}])
     search_cache.set = AsyncMock()
     service = _service(retrieval=retrieval, search_cache=search_cache)
     request = SearchAudioRequest(query_text="雨声")
 
     result = await service.search_audio(request)
 
-    assert result.materials == [{"id": "cached"}]
+    assert result.materials == [{"_id": "cached"}]
     search_cache.get.assert_awaited_once_with(request)
     retrieval.search.assert_not_awaited()
     search_cache.set.assert_not_awaited()
@@ -133,3 +142,21 @@ async def test_search_audio_miss_runs_retrieval_and_sets_cache() -> None:
     assert result.materials == [{"id": "fresh"}]
     retrieval.search.assert_awaited_once_with(request)
     search_cache.set.assert_awaited_once_with(request, [{"id": "fresh"}])
+
+
+@pytest.mark.asyncio
+async def test_search_audio_empty_result_skips_cache_write() -> None:
+    """空结果不写缓存，避免长时间缓存无命中。"""
+    retrieval = MagicMock()
+    retrieval.search = AsyncMock(return_value=[])
+    search_cache = MagicMock()
+    search_cache.get = AsyncMock(return_value=None)
+    search_cache.set = AsyncMock()
+    service = _service(retrieval=retrieval, search_cache=search_cache)
+    request = SearchAudioRequest(query_text="不存在的声音")
+
+    result = await service.search_audio(request)
+
+    assert result.materials == []
+    retrieval.search.assert_awaited_once_with(request)
+    search_cache.set.assert_not_awaited()

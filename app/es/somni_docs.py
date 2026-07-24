@@ -14,6 +14,18 @@ DESCRIPTION_TAG_FIELDS = (
 )
 
 
+def extract_sleep_stage_names(doc: dict[str, Any]) -> list[str]:
+    """从 sleep_stage_tags 提取中文名列表，供 ES 扁平 term 过滤。"""
+    names: list[str] = []
+    for item in doc.get("sleep_stage_tags") or []:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name", "")).strip()
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
 def build_material_description_text(doc: dict[str, Any]) -> str:
     """拼接 audio_name + description + 标签 name/code/en_name。"""
     labels: list[str] = []
@@ -45,4 +57,5 @@ def material_source_for_es(doc: dict[str, Any]) -> dict[str, Any] | None:
     payload = {k: v for k, v in doc.items() if k not in ("_id", "id")}
     payload["audio_url"] = audio_url
     payload["description_text"] = build_material_description_text(payload)
+    payload["sleep_stage_names"] = extract_sleep_stage_names(payload)
     return payload

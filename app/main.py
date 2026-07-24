@@ -13,7 +13,10 @@ import sys
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import AsyncIterator
+from typing import TYPE_CHECKING, AsyncIterator
+
+if TYPE_CHECKING:
+    from elasticsearch import AsyncElasticsearch
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _VENV_PYTHON = _PROJECT_ROOT / ".venv" / "bin" / "python"
@@ -35,7 +38,6 @@ def _bootstrap_dev_entry() -> None:
 
 _bootstrap_dev_entry()
 
-from elasticsearch import AsyncElasticsearch
 from fastapi import FastAPI
 from loguru import logger
 
@@ -46,10 +48,15 @@ from app.cache.audio_search_cache import (
     create_audio_search_cache,
     shutdown_audio_search_cache,
 )
+from app.cache.sleep_stage_cache import (
+    SleepStageCandidateCache,
+    create_sleep_stage_candidate_cache,
+)
 from app.core.config import Settings, get_settings
 from app.core.exception_handlers import register_exception_handlers
 from app.core.logging import setup_logging
 from app.embedding.encoder import Encoder, create_encoder
+from app.es.client import create_es_client
 from app.es.search import EsSearch
 from app.es.sync import EsSync
 from app.middleware.request_log import register_request_log_middleware
@@ -73,6 +80,7 @@ class AppState:
     retrieval_service: RetrievalService | None = None
     audio_service: AudioService | None = None
     search_cache: AudioSearchCache | None = None
+    sleep_stage_cache: SleepStageCandidateCache | None = None
 
 
 _app_state = AppState(settings=get_settings())
@@ -90,7 +98,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     logger.info("正在启动 UburNode 音频检索服务")
 
-    es_client = AsyncElasticsearch(settings.es_node)
+    es_client = create_es_client(settings)
     _app_state.es_client = es_client
 
     encoder = create_encoder(settings)
@@ -113,20 +121,44 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         else:
             raise
     _app_state.es_search = es_search
+    if not settings.app_debug:
+        try:
+            await es_search.warm_dictionary_vectors_cache()
+        except Exception as exc:
+            logger.warning("启动预热标签词典向量缓存失败：{}", exc)
 
     es_sync = EsSync(es_client, encoder, settings)
     _app_state.es_sync = es_sync
 
-    retrieval = RetrievalService(es_search, encoder, settings)
+    search_cache = await create_audio_search_cache(settings)
+    _app_state.search_cache = search_cache
+
+    sleep_redis = search_cache.redis if search_cache is not None else None
+    sleep_stage_cache = await create_sleep_stage_candidate_cache(settings, redis=sleep_redis)
+    _app_state.sleep_stage_cache = sleep_stage_cache
+
+    retrieval = RetrievalService(
+        es_search,
+        encoder,
+        settings,
+        sleep_stage_cache=sleep_stage_cache,
+    )
     _app_state.retrieval_service = retrieval
+    if not settings.app_debug:
+        try:
+            await retrieval.warm_query_tag_vectors()
+        except Exception as exc:
+            logger.warning("启动预热查询标签向量缓存失败：{}", exc)
+    if sleep_stage_cache is not None:
+        try:
+            await retrieval.warm_sleep_stage_cache()
+        except Exception as exc:
+            logger.warning("启动预热睡眠阶段候选缓存失败：{}", exc)
 
     materials_store = create_materials_store(settings)
     _app_state.materials_store = materials_store
     if materials_store is None:
         logger.warning("未配置 MONGO_URI，定时同步等读 Mongo 路径将不可用")
-
-    search_cache = await create_audio_search_cache(settings)
-    _app_state.search_cache = search_cache
 
     _app_state.audio_service = AudioService(
         comm_client,
@@ -134,6 +166,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         retrieval,
         materials=materials_store,
         search_cache=search_cache,
+        sleep_stage_cache=sleep_stage_cache,
     )
 
     start_sync_scheduler(_app_state, settings)

@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     es_node: str = "http://localhost:9200"
     es_audio_index: str = "somni_audio_materials"
     es_tag_vectors_index: str = "somni_audio_tag_dictionary"
+    es_connections_per_node: int = 50  # 异步连接池大小，高并发检索需调大
+    es_request_timeout_sec: float = 30.0
+    search_max_concurrency: int = 25  # 同时执行的检索流水线上限，防止打满 ES
 
     mongo_uri: str = ""
     mongo_db: str = "Fullive"
@@ -45,6 +48,9 @@ class Settings(BaseSettings):
     dashscope_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     embedding_api_timeout_sec: float = 30.0
     embedding_api_batch_size: int = 10
+    embedding_text_cache_size: int = 4096  # 请求侧文本→向量 LRU，降低重复 ONNX
+    embedding_onnx_pool_size: int = 4  # ONNX InferenceSession 池大小，提高并发 encode
+    embedding_onnx_intra_op_threads: int = 1  # 单 session 内线程数；池化后宜保持较小避免 CPU 过订阅
 
     log_level: str = "INFO"
     log_dir: str = "logs"
@@ -61,8 +67,12 @@ class Settings(BaseSettings):
 
     # 音频检索 Redis 缓存（空 URL 表示关闭）
     redis_url: str = ""
+    # 连接池需覆盖 HTTP 并发峰值；redis-py 默认仅 100，高并发易 Too many connections
+    redis_max_connections: int = 512
     search_cache_max_size: int = 2048
     search_cache_ttl_sec: int = 604800  # 7 天
+    # CUD 后延时重建睡眠阶段候选缓存，窗口内多次写入只重建一次
+    sleep_stage_cache_rewarm_delay_sec: float = 5.0
 
     @property
     def embedding_onnx_path(self) -> Path:

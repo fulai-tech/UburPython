@@ -64,6 +64,9 @@ def build_somni_audio_materials_mapping(embedding_dim: int) -> dict[str, Any]:
                 "sleep_stage_tags": (
                     "睡眠阶段（多选）：unwind/soothe/guard/wake"
                 ),
+                "sleep_stage_names": (
+                    "睡眠阶段中文名扁平数组，供 term 过滤；由 sleep_stage_tags 同步派生"
+                ),
                 "content_form_tags": (
                     "内容形态标签（多选）：一级/二级分类，如 music → slow_piano"
                 ),
@@ -104,6 +107,10 @@ def build_somni_audio_materials_mapping(embedding_dim: int) -> dict[str, Any]:
             "created_at": _field("date", "记录创建时间"),
             "updated_at": _field("date", "记录最后更新时间；同步 diff 依据之一"),
             "sleep_stage_tags": _nested(tag_ref),
+            "sleep_stage_names": _field(
+                "keyword",
+                "睡眠阶段中文名扁平数组，供检索步骤 1 term 过滤",
+            ),
             "content_form_tags": _nested(
                 {
                     **tag_ref,

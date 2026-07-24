@@ -202,12 +202,17 @@ def _parse_last_pipeline(log_chunk: str) -> dict[str, object]:
 
 
 async def _search(client: httpx.AsyncClient, base: str, body: dict) -> tuple[list[str], list[int]]:
-    resp = await client.post(f"{base}/api/audio/search", json=body)
-    payload = resp.json()
-    if resp.status_code != 200 or payload.get("code") != 200:
-        raise RuntimeError(f"search failed: {resp.status_code} {payload}")
-    results = payload.get("data", {}).get("materials", [])
-    names = [r["audio_name"] for r in results]
+    payload = body["queries"][0] if isinstance(body.get("queries"), list) and body["queries"] else body
+    resp = await client.post(f"{base}/api/audio/search", json=payload)
+    payload_json = resp.json()
+    if resp.status_code != 200 or payload_json.get("code") != 200:
+        raise RuntimeError(f"search failed: {resp.status_code} {payload_json}")
+    data = payload_json.get("data", {}) or {}
+    materials = data.get("materials") or []
+    if not materials:
+        results = data.get("results") or []
+        materials = results[0].get("materials", []) if results else []
+    names = [r["audio_name"] for r in materials]
     # match_count 不对外暴露，粗排顺序即代理
     return names, list(range(len(names)))
 
@@ -302,7 +307,7 @@ async def main() -> None:
     print("\n流水线固定顺序（代码 retrieval.py search 方法）:")
     print("  1. filter_by_sleep_stage → 无候选短路")
     print("  2. _apply_content_admission → 无通过短路")
-    print("  3. _apply_dislike_and_coarse_rank")
+    print("  3. _apply_dislike_filter → _apply_coarse_rank")
     print("  4. sorted(match_count)[:top_k]")
 
 

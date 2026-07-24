@@ -12,7 +12,7 @@ from loguru import logger
 from app.core.config import Settings
 from app.schemas.audio import SearchAudioRequest
 
-AUDIO_SEARCH_KEY_PREFIX = "audio_search+"
+AUDIO_SEARCH_KEY_PREFIX = "audio_search_v2+"
 AUDIO_SEARCH_LRU_INDEX_KEY = "audio_search:_lru_index"
 _LRU_INDEX_KEY = AUDIO_SEARCH_LRU_INDEX_KEY  # 兼容旧测试名
 _WEEK_SECONDS = 7 * 24 * 60 * 60
@@ -36,10 +36,10 @@ class RedisLike(Protocol):
     async def close(self) -> None: ...
 
 
-def build_audio_search_cache_key(request: SearchAudioRequest) -> str:
-    """key = sha256(audio_search+{稳定序列化请求体})。"""
+def build_audio_search_cache_key(query: SearchAudioRequest) -> str:
+    """key = sha256(audio_search_v2+{稳定序列化单条 query})。"""
     body = json.dumps(
-        request.model_dump(mode="json"),
+        query.model_dump(mode="json"),
         sort_keys=True,
         ensure_ascii=False,
         separators=(",", ":"),
@@ -66,8 +66,12 @@ class AudioSearchCache:
         self._max_size = max_size
         self._ttl_sec = ttl_sec
 
-    async def get(self, request: SearchAudioRequest) -> list[dict[str, Any]] | None:
-        key = build_audio_search_cache_key(request)
+    @property
+    def redis(self) -> RedisLike:
+        return self._redis
+
+    async def get(self, query: SearchAudioRequest) -> list[dict[str, Any]] | None:
+        key = build_audio_search_cache_key(query)
         raw = await self._redis.get(key)
         if raw is None:
             await self._redis.zrem(_LRU_INDEX_KEY, key)
@@ -77,8 +81,8 @@ class AudioSearchCache:
         logger.info("检索缓存命中，key={}", key[:12])
         return json.loads(raw)
 
-    async def set(self, request: SearchAudioRequest, materials: list[dict[str, Any]]) -> None:
-        key = build_audio_search_cache_key(request)
+    async def set(self, query: SearchAudioRequest, materials: list[dict[str, Any]]) -> None:
+        key = build_audio_search_cache_key(query)
         payload = json.dumps(materials, ensure_ascii=False, separators=(",", ":"))
         await self._redis.set(key, payload, ex=self._ttl_sec)
         await self._redis.zadd(_LRU_INDEX_KEY, {key: time.time()})
@@ -139,7 +143,12 @@ async def create_audio_search_cache(settings: Settings) -> AudioSearchCache | No
         return None
     from redis.asyncio import Redis
 
-    client = Redis.from_url(settings.redis_url, decode_responses=False)
+    max_connections = max(1, settings.redis_max_connections)
+    client = Redis.from_url(
+        settings.redis_url,
+        decode_responses=False,
+        max_connections=max_connections,
+    )
     try:
         await client.ping()
     except Exception as exc:
@@ -149,9 +158,10 @@ async def create_audio_search_cache(settings: Settings) -> AudioSearchCache | No
             return None
         raise
     logger.info(
-        "已连接 Redis 检索缓存，max_size={} ttl_sec={}",
+        "已连接 Redis 检索缓存，max_size={} ttl_sec={} max_connections={}",
         settings.search_cache_max_size,
         settings.search_cache_ttl_sec,
+        max_connections,
     )
     return AudioSearchCache(
         client,

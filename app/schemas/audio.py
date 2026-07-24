@@ -178,7 +178,7 @@ class UpdateAudioRequest(SomniAudioBody):
 
 
 class SearchAudioRequest(BaseModel):
-    """POST /audio/search 请求体。"""
+    """POST /audio/search 请求体：单次检索条件。"""
 
     query_text: str | None = None
     sleep_stage_tags: list[str] = Field(default_factory=list)
@@ -188,7 +188,7 @@ class SearchAudioRequest(BaseModel):
 
 
 class SearchAudioData(BaseModel):
-    """检索成功时写入 ApiResponse.data；每项为 somni_audio_materials 索引文档（含 id）。"""
+    """检索成功时写入 ApiResponse.data。"""
 
     materials: list[dict[str, Any]] = Field(default_factory=list)
 

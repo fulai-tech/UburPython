@@ -14,6 +14,8 @@ def test_materials_mapping_fields_have_descriptions() -> None:
     props = mapping["properties"]
     assert props["audio_name"]["meta"]["description"]
     assert mapping["_meta"]["field_descriptions"]["sleep_stage_tags"]
+    assert mapping["_meta"]["field_descriptions"]["sleep_stage_names"]
+    assert props["sleep_stage_names"]["type"] == "keyword"
     assert props["content_form_tags"]["properties"]["en_name"]["meta"]["description"]
     assert props["audio_engineering_tags"]["properties"]["band_values"]["meta"]["description"]
 
