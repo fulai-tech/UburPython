@@ -14,6 +14,7 @@ from scripts.sync_es_from_comm import (
     MaterialsSyncJob,
     MongoEsSyncJob,
     TagDictionarySyncJob,
+    _redact_mongo_uri,
     bson_to_jsonable,
     material_doc_to_es,
     material_documents_differ,
@@ -23,6 +24,14 @@ from scripts.sync_es_from_comm import (
     tag_documents_differ,
     zero_vector,
 )
+
+
+def test_redact_mongo_uri_hides_password() -> None:
+    assert (
+        _redact_mongo_uri("mongodb://Fullive:secret@18.167.165.48:27017/Fullive")
+        == "mongodb://Fullive:***@18.167.165.48:27017/Fullive"
+    )
+    assert _redact_mongo_uri("mongodb://localhost:27017") == "mongodb://localhost:27017"
 
 
 def _material_doc(

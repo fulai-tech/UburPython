@@ -145,6 +145,16 @@ def write_backup(path: Path, records: list[dict[str, Any]]) -> None:
     logger.info("已备份 {} 条记录至 {}", len(records), path)
 
 
+def _redact_mongo_uri(uri: str) -> str:
+    """日志用：保留 scheme/用户/主机，隐藏密码。"""
+    if "://" not in uri or "@" not in uri:
+        return uri
+    scheme, rest = uri.split("://", 1)
+    creds, host_part = rest.rsplit("@", 1)
+    user = creds.split(":", 1)[0] if ":" in creds else "***"
+    return f"{scheme}://{user}:***@{host_part}"
+
+
 class MongoSource:
     """MongoDB Somni 集合只读访问。"""
 
@@ -152,6 +162,11 @@ class MongoSource:
         if not settings.mongo_uri:
             msg = "MONGO_URI 未配置，无法连接 MongoDB"
             raise ValueError(msg)
+        logger.info(
+            "同步将连接 MongoDB，MONGO_URI={}，MONGO_DB={}",
+            _redact_mongo_uri(settings.mongo_uri),
+            settings.mongo_db,
+        )
         self._client = AsyncIOMotorClient(settings.mongo_uri)
         self._db = self._client[settings.mongo_db]
         self._materials = settings.mongo_materials_collection
