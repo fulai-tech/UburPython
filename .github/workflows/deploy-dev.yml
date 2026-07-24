@@ -1,0 +1,75 @@
+name: Deploy UburNode (dev)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - dev
+
+permissions:
+  contents: read
+
+env:
+  # 测试机大盘路径（根分区仅 8G，Docker 与代码均放 localssd）
+  DEPLOY_DIR: /mnt/localssd/uburnode
+  # 服务器侧用 SSH 拉代码（需已配置 ~/.ssh/config 或默认可用的 GitHub 部署钥）
+  GIT_REPO: git@github.com:fulai-tech/UburPython.git
+  DEPLOY_BRANCH: dev
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: uburnode-deploy-dev
+      cancel-in-progress: true
+
+    steps:
+      - name: Validate required secrets
+        run: |
+          test -n "${{ secrets.SSH_HOST_DEV }}" || (echo "Missing SSH_HOST_DEV" && exit 1)
+          test -n "${{ secrets.SSH_USER_DEV }}" || (echo "Missing SSH_USER_DEV" && exit 1)
+          test -n "${{ secrets.SSH_PRIVATE_KEY_DEV }}" || (echo "Missing SSH_PRIVATE_KEY_DEV" && exit 1)
+
+      - name: Deploy on server
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST_DEV }}
+          username: ${{ secrets.SSH_USER_DEV }}
+          key: ${{ secrets.SSH_PRIVATE_KEY_DEV }}
+          port: ${{ secrets.SSH_PORT_DEV || 22 }}
+          command_timeout: 90m
+          script: |
+            set -euo pipefail
+            DEPLOY_DIR="${{ secrets.DEPLOY_PATH_DEV || env.DEPLOY_DIR }}"
+            GIT_REPO="${{ env.GIT_REPO }}"
+            DEPLOY_BRANCH="${{ env.DEPLOY_BRANCH }}"
+
+            if [ ! -d "$DEPLOY_DIR/.git" ]; then
+              if [ -d "$DEPLOY_DIR" ] && [ -n "$(ls -A "$DEPLOY_DIR" 2>/dev/null)" ]; then
+                echo "错误: $DEPLOY_DIR 已存在但不是 git 仓库。"
+                echo "请备份 .env 后: rm -rf $DEPLOY_DIR && git clone -b $DEPLOY_BRANCH $GIT_REPO $DEPLOY_DIR"
+                exit 1
+              fi
+              mkdir -p "$DEPLOY_DIR"
+              git clone -b "$DEPLOY_BRANCH" "$GIT_REPO" "$DEPLOY_DIR"
+            fi
+
+            cd "$DEPLOY_DIR"
+            # 统一为 SSH remote；本地改动一律丢弃，强制对齐远程 DEPLOY_BRANCH
+            git remote set-url origin "$GIT_REPO"
+            git fetch --all --prune
+            # -f 必须：否则工作区有改动（如 docker-compose.yml）时 checkout 会直接失败
+            git checkout -f -B "$DEPLOY_BRANCH" "origin/$DEPLOY_BRANCH"
+            git reset --hard "origin/$DEPLOY_BRANCH"
+            # 清理会挡住检出的未跟踪文件；保留 .env / logs / models（本地配置、日志、已上传 ONNX）
+            git clean -fd -e .env -e .env.* -e logs -e logs/ -e models -e models/
+
+            if [ ! -f .env ]; then
+              echo "缺少 $DEPLOY_DIR/.env，请从 .env.example 复制并填写后重试"
+              exit 1
+            fi
+
+            # 测试机用预置 ONNX（Dockerfile.server），避免构建期导出占满磁盘/耗时
+            docker compose -f docker-compose.yml -f docker-compose.prebuilt.yml up -d --build --remove-orphans
+            docker image prune -f
+            docker compose -f docker-compose.yml -f docker-compose.prebuilt.yml ps
