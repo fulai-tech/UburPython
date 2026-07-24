@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -12,9 +13,16 @@ from app.embedding.encoder import Encoder
 from app.es.search import EsSearch
 from app.schemas.audio import SearchAudioRequest
 from app.services.retrieval import (
+    VOICE_MARKER,
     RetrievalService,
+    ScoredCandidate,
+    _apply_voice_code_filter,
     _match_labels_from_text,
     _normalize_to_dictionary_labels,
+    _strip_voice_mention_tags,
+    _tags_mention_voice,
+    _usable_dislike_tags,
+    _voice_value_code,
 )
 
 _VECTOR_DIM = 512
@@ -32,6 +40,7 @@ def _audio_doc(
     sleep_stage: list[str] | None = None,
     content_form: list[str] | None = None,
     mechanism: list[str] | None = None,
+    audio_engineering: list[dict] | None = None,
 ) -> dict:
     doc = {
         "_id": doc_id or audio_name,
@@ -41,12 +50,27 @@ def _audio_doc(
         "sleep_stage_tags": _tag_entries("ss", sleep_stage or []),
         "content_form_tags": _tag_entries("cf", content_form or []),
         "mechanism_tags": _tag_entries("mech", mechanism or []),
-        "audio_engineering_tags": [],
+        "audio_engineering_tags": audio_engineering or [],
         "medical_risk_tags": [],
     }
     if description_score is not None:
         doc["_description_score"] = description_score
     return doc
+
+
+def _voice_position(value_code: str, value_name: str) -> list[dict]:
+    return [
+        {
+            "tag_id": "eng_voice_position",
+            "code": "voice_position",
+            "name": "人声出现位置",
+            "value": {
+                "tag_id": f"eng_{value_code}",
+                "code": value_code,
+                "name": value_name,
+            },
+        }
+    ]
 
 
 def _unit(index: int) -> list[float]:
@@ -1037,3 +1061,149 @@ async def test_warm_query_tag_vectors_skips_when_dictionary_empty() -> None:
     await service.warm_query_tag_vectors()
 
     encoder.encode.assert_not_awaited()
+
+
+def test_dislike_penalty_respects_strong_threshold_from_settings() -> None:
+    """厌恶硬剔除阈值读 Settings.strong_dislike_sim_threshold，而非写死常量。"""
+    sim = 0.81
+    dislike_vec = _unit(0)
+    tag_vec = [0.0] * _VECTOR_DIM
+    tag_vec[0] = sim
+    tag_vec[1] = math.sqrt(1.0 - sim * sim)
+
+    tags = EsSearch.parse_tags(_audio_doc("候选", content_form=["人声出现位置"]))
+    dictionary = {"cf_人声出现位置": tag_vec}
+
+    soft_service, _, _ = _build_service(
+        settings=Settings(strong_dislike_sim_threshold=0.85)
+    )
+    soft_penalty = soft_service._dislike_penalty(
+        tags,
+        disliked_tags=["人声"],
+        dislike_vectors=[dislike_vec],
+        dictionary_vectors=dictionary,
+    )
+    assert soft_penalty == 0.2
+
+    hard_service, _, _ = _build_service(
+        settings=Settings(strong_dislike_sim_threshold=0.78)
+    )
+    hard_penalty = hard_service._dislike_penalty(
+        tags,
+        disliked_tags=["人声"],
+        dislike_vectors=[dislike_vec],
+        dictionary_vectors=dictionary,
+    )
+    assert hard_penalty == 1.0
+
+
+def test_tags_mention_voice_detects_substring() -> None:
+    assert _tags_mention_voice(["人声"]) is True
+    assert _tags_mention_voice(["避免人声和语言引导"]) is True
+    assert _tags_mention_voice(["自然声", "音乐"]) is False
+
+
+def test_strip_voice_mention_tags_removes_voice_related() -> None:
+    assert _strip_voice_mention_tags(
+        ["人声", "避免突发", "避免人声和语言引导", "节奏"]
+    ) == ["避免突发", "节奏"]
+
+
+def test_usable_dislike_tags_ignores_event_density() -> None:
+    assert _usable_dislike_tags(
+        ["人声", "声音事件密度", "避免突发", "声音事件密度"]
+    ) == ["人声", "避免突发"]
+
+
+def test_voice_value_code_reads_nested_value() -> None:
+    doc = _audio_doc("无人声轨", audio_engineering=_voice_position("none", "无人声"))
+    assert _voice_value_code(doc) == "none"
+    doc2 = _audio_doc(
+        "有人声轨",
+        audio_engineering=_voice_position("continuous", "人声贯穿大部分音频"),
+    )
+    assert _voice_value_code(doc2) == "continuous"
+    assert _voice_value_code(_audio_doc("无字段")) is None
+
+
+def test_voice_code_filter_dislike_keeps_none_only() -> None:
+    none_doc = _audio_doc(
+        "无人声",
+        content_form=["雨声"],
+        audio_engineering=_voice_position("none", "无人声"),
+    )
+    voice_doc = _audio_doc(
+        "有人声",
+        content_form=["雨声"],
+        audio_engineering=_voice_position("intermittent", "人声间歇出现"),
+    )
+    missing_doc = _audio_doc("缺字段", content_form=["雨声"])
+    candidates = [
+        ScoredCandidate(source=none_doc, tags=EsSearch.parse_tags(none_doc)),
+        ScoredCandidate(source=voice_doc, tags=EsSearch.parse_tags(voice_doc)),
+        ScoredCandidate(source=missing_doc, tags=EsSearch.parse_tags(missing_doc)),
+    ]
+    kept = _apply_voice_code_filter(
+        candidates,
+        disliked_tags=["人声"],
+    )
+    assert [c.source["audio_name"] for c in kept] == ["无人声", "缺字段"]
+
+
+def test_voice_code_filter_skips_when_dislike_has_no_voice() -> None:
+    none_doc = _audio_doc(
+        "无人声",
+        audio_engineering=_voice_position("none", "无人声"),
+    )
+    voice_doc = _audio_doc(
+        "有人声",
+        audio_engineering=_voice_position("continuous", "人声贯穿大部分音频"),
+    )
+    candidates = [
+        ScoredCandidate(source=none_doc, tags=EsSearch.parse_tags(none_doc)),
+        ScoredCandidate(source=voice_doc, tags=EsSearch.parse_tags(voice_doc)),
+    ]
+    kept = _apply_voice_code_filter(
+        candidates,
+        disliked_tags=["嘈杂"],
+    )
+    assert [c.source["audio_name"] for c in kept] == ["无人声", "有人声"]
+
+
+@pytest.mark.asyncio
+async def test_tag_search_dislike_voice_uses_code_not_vector() -> None:
+    """dislike 含人声时按 value.code 留无人声，且不对人声做向量厌恶。"""
+    unit_vec = _unit(0)
+    service, es_search, encoder = _build_service()
+    es_search.filter_by_sleep_stage = AsyncMock(
+        return_value=[
+            _audio_doc(
+                "无人声雨",
+                sleep_stage=["放松"],
+                content_form=["雨声"],
+                audio_engineering=_voice_position("none", "无人声"),
+            ),
+            _audio_doc(
+                "有人声雨",
+                sleep_stage=["放松"],
+                content_form=["雨声"],
+                audio_engineering=_voice_position("continuous", "人声贯穿大部分音频"),
+            ),
+        ]
+    )
+    es_search.parse_tags = EsSearch.parse_tags
+    es_search.get_dictionary_vectors = AsyncMock(return_value={"cf_雨声": unit_vec})
+    encoder.encode = AsyncMock(return_value=[unit_vec])
+    request = SearchAudioRequest(
+        sleep_stage_tags=["放松"],
+        content_tags=["雨声"],
+        disliked_tags=["人声", "避免人声和语言引导"],
+        top_k=10,
+    )
+
+    results = await service.search(request)
+
+    assert [r["audio_name"] for r in results] == ["无人声雨"]
+    # 含「人声」的厌恶词已剥离，不会进入向量厌恶 encode
+    for call in encoder.encode.await_args_list:
+        assert all(VOICE_MARKER not in tag for tag in call.args[0])
