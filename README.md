@@ -213,7 +213,8 @@ uv run python scripts/sync_es_from_comm.py --dry-run # 仅比对统计
 | `ES_TAG_VECTORS_INDEX` | `somni_audio_tag_dictionary` | 标签词典索引名 |
 | `MONGO_URI` | — | MongoDB 连接串（同步必填） |
 | `MONGO_DB` | `Fullive` | 数据库名 |
-| `SIM_THRESHOLD` | `0.7` | 向量模糊命中阈值 |
+| `SIM_THRESHOLD` | `0.7` | 内容形态向量模糊命中阈值 |
+| `STRONG_DISLIKE_SIM_THRESHOLD` | `0.85` | 多路文本检索厌恶硬剔除阈值 |
 | `EMBEDDING_ONNX_DIR` | `models/onnx/bge-small-zh-v1.5` | ONNX 模型目录 |
 | `EMBEDDING_ONNX_POOL_SIZE` | `4` | ONNX 会话池大小（并发推理路上限） |
 | `EMBEDDING_ONNX_INTRA_OP_THREADS` | `1` | 单 session ORT 线程数 |

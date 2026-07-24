@@ -36,8 +36,11 @@ if TYPE_CHECKING:
 AUTO_TAG_TOP_K = 5
 AUTO_TAG_SIM_THRESHOLD = 0.62
 AUTO_DISLIKE_SIM_THRESHOLD = 0.65
-STRONG_DISLIKE_SIM_THRESHOLD = 0.78
 WEAK_DISLIKE_PENALTY = 0.2
+VOICE_MARKER = "人声"
+NO_VOICE_CODE = "none"
+# 音工维名：几乎全库都有，进厌恶会自比对互杀；不参与自动/显式厌恶
+IGNORED_DISLIKE_LABELS = frozenset({"声音事件密度"})
 MIN_AUTO_TAG_LABEL_LEN = 2  # 过滤「低」「无」等过短子串误匹配
 MAX_FALLBACK_TAG_LEN = 12  # 无词典映射时，超过此长度的自然语言句不参与硬剔除
 NEGATIVE_MARKERS = ("不要", "避免", "讨厌", "不喜欢", "别")
@@ -138,7 +141,9 @@ class RetrievalService:
             return []
 
         step2_started = time.perf_counter()
-        need_dictionary = bool(request.disliked_tags) or self._has_non_exact_content_candidate(
+        need_dictionary = bool(
+            _strip_voice_mention_tags(_usable_dislike_tags(request.disliked_tags))
+        ) or self._has_non_exact_content_candidate(
             candidates_raw,
             _normalize_color_noise_aliases(request.content_tags),
         )
@@ -167,11 +172,16 @@ class RetrievalService:
             return []
 
         step3_started = time.perf_counter()
+        vector_disliked = _strip_voice_mention_tags(disliked_tags)
         filtered = await self._apply_dislike_filter(
             admitted,
-            disliked_tags,
+            vector_disliked,
             dictionary_vectors,
             dislike_vectors=dislike_vectors,
+        )
+        filtered = _apply_voice_code_filter(
+            filtered,
+            disliked_tags=disliked_tags,
         )
         scored = self._apply_coarse_rank(filtered)
         step3_ms = _elapsed_ms(step3_started)
@@ -223,10 +233,13 @@ class RetrievalService:
             content_tags,
             preferred_labels=explicit_content_tags,
         )
-        disliked_tags = _normalize_to_dictionary_labels(
-            [*request.disliked_tags, *extracted.disliked_tags],
-            tag_vectors,
+        disliked_tags = _usable_dislike_tags(
+            _normalize_to_dictionary_labels(
+                [*request.disliked_tags, *extracted.disliked_tags],
+                tag_vectors,
+            )
         )
+        vector_disliked_tags = _strip_voice_mention_tags(disliked_tags)
         content_tags = [tag for tag in content_tags if tag not in set(disliked_tags)]
         parse_ms = _elapsed_ms(parse_started)
         logger.info(
@@ -261,8 +274,8 @@ class RetrievalService:
         ]
 
         rank_started = time.perf_counter()
-        vector_docs = [*tag_docs, *desc_docs] if disliked_tags else tag_docs
-        need_dictionary = bool(disliked_tags) or self._has_non_exact_content_candidate(
+        vector_docs = [*tag_docs, *desc_docs] if vector_disliked_tags else tag_docs
+        need_dictionary = bool(vector_disliked_tags) or self._has_non_exact_content_candidate(
             tag_docs,
             content_tags,
         )
@@ -270,7 +283,7 @@ class RetrievalService:
             self._prefetch_dictionary_vectors(vector_docs, required=need_dictionary)
         )
         encode_task = asyncio.create_task(
-            self._encode_request_tag_vectors(content_tags, disliked_tags)
+            self._encode_request_tag_vectors(content_tags, vector_disliked_tags)
         )
         try:
             dictionary_vectors, (content_vectors, dislike_vectors) = await asyncio.gather(
@@ -296,7 +309,8 @@ class RetrievalService:
             tag_candidates=tag_candidates,
             desc_candidates=desc_candidates,
             content_tags=content_tags,
-            disliked_tags=disliked_tags,
+            disliked_tags=vector_disliked_tags,
+            voice_filter_tags=disliked_tags,
             dictionary_vectors=dictionary_vectors,
             dislike_vectors=dislike_vectors,
             top_k=request.top_k,
@@ -490,15 +504,19 @@ class RetrievalService:
         tag_vectors = (
             await self._es_search.list_content_tag_vectors() if request.disliked_tags else []
         )
-        disliked_tags = _normalize_to_dictionary_labels(
-            _normalize_color_noise_aliases(request.disliked_tags), tag_vectors
+        disliked_tags = _usable_dislike_tags(
+            _normalize_to_dictionary_labels(
+                _normalize_color_noise_aliases(request.disliked_tags),
+                tag_vectors,
+            )
         )
+        vector_disliked = _strip_voice_mention_tags(disliked_tags)
         content_tags = _normalize_color_noise_aliases(
             [tag for tag in request.content_tags if tag not in set(disliked_tags)]
         )
         content_vectors, dislike_vectors = await self._encode_request_tag_vectors(
             content_tags,
-            disliked_tags,
+            vector_disliked,
         )
         return content_tags, disliked_tags, content_vectors, dislike_vectors
 
@@ -764,6 +782,7 @@ class RetrievalService:
         dictionary_vectors: DictionaryVectors,
         top_k: int | None,
         dislike_vectors: list[list[float]] | None = None,
+        voice_filter_tags: list[str] | None = None,
     ) -> list[ScoredCandidate]:
         merged: dict[str, ScoredCandidate] = {}
         for candidate in [*tag_candidates, *desc_candidates]:
@@ -798,6 +817,10 @@ class RetrievalService:
             )
             ranked.append(candidate)
 
+        ranked = _apply_voice_code_filter(
+            ranked,
+            disliked_tags=voice_filter_tags or disliked_tags,
+        )
         ranked.sort(key=lambda c: c.final_score, reverse=True)
         if top_k is not None:
             ranked = ranked[:top_k]
@@ -856,7 +879,9 @@ class RetrievalService:
 
         return ExtractedQueryTags(
             content_tags=_unique_preserve_order(content_tags)[:AUTO_TAG_TOP_K],
-            disliked_tags=_unique_preserve_order(disliked_tags)[:AUTO_TAG_TOP_K],
+            disliked_tags=_usable_dislike_tags(
+                _unique_preserve_order(disliked_tags)[:AUTO_TAG_TOP_K]
+            ),
         )
 
     def _dislike_penalty(
@@ -878,7 +903,7 @@ class RetrievalService:
             dislike_vectors,
             dictionary_vectors,
         )
-        if max_similarity >= STRONG_DISLIKE_SIM_THRESHOLD:
+        if max_similarity >= self._settings.strong_dislike_sim_threshold:
             return 1.0
         if max_similarity >= AUTO_DISLIKE_SIM_THRESHOLD:
             return WEAK_DISLIKE_PENALTY
@@ -999,6 +1024,54 @@ def _candidate_key(source: dict[str, Any]) -> str:
     return str(
         source.get("_id") or source.get("id") or source.get("audio_url") or source.get("audio_name")
     )
+
+
+def _tags_mention_voice(tags: list[str]) -> bool:
+    return any(VOICE_MARKER in tag for tag in tags)
+
+
+def _strip_voice_mention_tags(tags: list[str]) -> list[str]:
+    return [tag for tag in tags if VOICE_MARKER not in tag]
+
+
+def _usable_dislike_tags(tags: list[str]) -> list[str]:
+    """去掉不应参与厌恶的标签（如全库共有的音工维名）。"""
+    return [tag for tag in tags if tag not in IGNORED_DISLIKE_LABELS]
+
+
+def _voice_value_code(source: dict[str, Any]) -> str | None:
+    """读取音工「人声*」条目的 value.code；找不到返回 None。"""
+    for item in source.get("audio_engineering_tags") or []:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "")
+        if VOICE_MARKER not in name:
+            continue
+        value = item.get("value")
+        if not isinstance(value, dict):
+            return None
+        code = value.get("code")
+        if code is None:
+            return None
+        return str(code)
+    return None
+
+
+def _apply_voice_code_filter(
+    candidates: list[ScoredCandidate],
+    *,
+    disliked_tags: list[str],
+) -> list[ScoredCandidate]:
+    """dislike 含人声时只留 value.code=none（无人声）；缺字段不过滤。"""
+    if not _tags_mention_voice(disliked_tags):
+        return candidates
+
+    kept: list[ScoredCandidate] = []
+    for candidate in candidates:
+        code = _voice_value_code(candidate.source)
+        if code is None or code == NO_VOICE_CODE:
+            kept.append(candidate)
+    return kept
 
 
 def _parse_desc_score(doc: dict[str, Any]) -> float:

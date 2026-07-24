@@ -37,6 +37,8 @@ class Settings(BaseSettings):
     comm_grpc_use_tls: bool = True  # 443 走 TLS；内网明文可设 false
 
     sim_threshold: float = 0.7  # 内容形态向量模糊命中阈值（规范 §五-2）
+    # 多路文本检索厌恶硬剔除阈值；≥ 该值 penalty=1.0 丢弃候选
+    strong_dislike_sim_threshold: float = 0.85
     search_sleep_stage_filter_enabled: bool = True  # 检索步骤 1 是否按睡眠阶段过滤
     es_dictionary_mget_batch_size: int = 500  # 标签词典向量批量读取的单批最大 ID 数
 
