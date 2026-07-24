@@ -2,6 +2,7 @@
 
 文件落在 LOG_DIR，每日一个，命名为 YYYY-MM-DD_ubur_log（不隐藏、不压缩）。
 enqueue=True：异步写盘，避免阻塞请求线程。
+extra.request_id：并发请求可按 request_id 串联整条调用链日志。
 """
 
 from __future__ import annotations
@@ -16,16 +17,18 @@ from app.core.config import Settings
 
 FILE_LOG_FORMAT = (
     "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | "
-    "{name}:{function}:{line} | {message}"
+    "{extra[request_id]} | {name}:{function}:{line} | {message}"
 )
 
 CONSOLE_LOG_FORMAT = (
     "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
     "<level>{level: <8}</level> | "
+    "<yellow>{extra[request_id]}</yellow> | "
     "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> | "
     "<level>{message}</level>"
 )
 
+DEFAULT_REQUEST_ID = "-"
 LOG_FILE_SUFFIX = "_ubur_log"
 _DAILY_ROTATION = "00:00"
 
@@ -44,6 +47,7 @@ def setup_logging(settings: Settings) -> Path:
     sink_pattern = str(log_dir / f"{{time:YYYY-MM-DD}}{LOG_FILE_SUFFIX}")
 
     logger.remove()
+    logger.configure(extra={"request_id": DEFAULT_REQUEST_ID})
     level = settings.log_level.upper()
     logger.add(sys.stderr, level=level, format=CONSOLE_LOG_FORMAT)
     logger.add(
