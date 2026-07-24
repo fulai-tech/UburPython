@@ -25,6 +25,18 @@ def _app_with_echo() -> FastAPI:
     return app
 
 
+def _app_with_inner_log() -> FastAPI:
+    app = FastAPI()
+    register_request_log_middleware(app)
+
+    @app.get("/inner")
+    async def inner() -> dict[str, str]:
+        logger.info("业务层探测日志")
+        return {"ok": "1"}
+
+    return app
+
+
 def test_post_request_logs_body_and_keeps_body_for_handler() -> None:
     messages: list[str] = []
     handler_id = logger.add(lambda m: messages.append(str(m)))
@@ -73,3 +85,33 @@ def test_long_body_is_logged_in_full() -> None:
     assert start_lines
     assert "已截断" not in start_lines[0]
     assert huge in start_lines[0]
+
+
+def test_response_sets_x_request_id_header() -> None:
+    client = TestClient(_app_with_echo())
+    response = client.get("/ping", headers={"X-Request-Id": "client-rid-001"})
+    assert response.status_code == 200
+    assert response.headers["X-Request-Id"] == "client-rid-001"
+
+
+def test_request_id_propagates_to_handler_logs() -> None:
+    records: list[dict] = []
+
+    def _capture(message) -> None:
+        records.append(message.record)
+
+    handler_id = logger.add(_capture)
+    try:
+        client = TestClient(_app_with_inner_log())
+        response = client.get("/inner", headers={"X-Request-Id": "prop-rid-xyz"})
+    finally:
+        logger.remove(handler_id)
+
+    assert response.status_code == 200
+    assert response.headers["X-Request-Id"] == "prop-rid-xyz"
+    business = [r for r in records if "业务层探测日志" in r["message"]]
+    assert business
+    assert business[0]["extra"].get("request_id") == "prop-rid-xyz"
+    starts = [r for r in records if "请求开始" in r["message"]]
+    assert starts
+    assert starts[0]["extra"].get("request_id") == "prop-rid-xyz"

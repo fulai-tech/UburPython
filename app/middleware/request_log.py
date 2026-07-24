@@ -2,6 +2,7 @@
 
 每次请求写入 logs/YYYY-MM-DD_ubur_log：入站 / 出站 / 耗时 / 状态码 / 请求体（完整，不截断）。
 使用 @app.middleware("http") 而非 BaseHTTPMiddleware，避免异常绕过 FastAPI handler。
+通过 logger.contextualize(request_id=...) 把 request_id 注入整条请求调用链。
 """
 
 from __future__ import annotations
@@ -25,38 +26,37 @@ def register_request_log_middleware(app: FastAPI) -> None:
         started_at = time.perf_counter()
         body_text = await _read_and_restore_body(request)
 
-        bound = logger.bind(request_id=request_id)
-        bound.info(
-            "请求开始，方法={}，路径={}，查询参数={}，请求体={}，客户端={}",
-            request.method,
-            request.url.path,
-            _truncate(request.url.query, MAX_LOG_QUERY_LEN),
-            body_text,
-            client_host,
-        )
-
-        try:
-            response = await call_next(request)
-        except Exception:
-            duration_ms = _elapsed_ms(started_at)
-            bound.exception(
-                "请求失败，方法={}，路径={}，耗时={}毫秒",
+        with logger.contextualize(request_id=request_id):
+            logger.info(
+                "请求开始，方法={}，路径={}，查询参数={}，请求体={}，客户端={}",
                 request.method,
                 request.url.path,
+                _truncate(request.url.query, MAX_LOG_QUERY_LEN),
+                body_text,
+                client_host,
+            )
+            try:
+                response = await call_next(request)
+            except Exception:
+                duration_ms = _elapsed_ms(started_at)
+                logger.exception(
+                    "请求失败，方法={}，路径={}，耗时={}毫秒",
+                    request.method,
+                    request.url.path,
+                    duration_ms,
+                )
+                raise
+
+            duration_ms = _elapsed_ms(started_at)
+            logger.info(
+                "请求完成，方法={}，路径={}，状态码={}，耗时={}毫秒",
+                request.method,
+                request.url.path,
+                response.status_code,
                 duration_ms,
             )
-            raise
-
-        duration_ms = _elapsed_ms(started_at)
-        bound.info(
-            "请求完成，方法={}，路径={}，状态码={}，耗时={}毫秒",
-            request.method,
-            request.url.path,
-            response.status_code,
-            duration_ms,
-        )
-        response.headers["X-Request-Id"] = request_id
-        return response
+            response.headers["X-Request-Id"] = request_id
+            return response
 
 
 async def _read_and_restore_body(request: Request) -> str:
