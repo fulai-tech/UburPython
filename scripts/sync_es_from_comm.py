@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Mongo Somni 集合 → ES 差异同步（单文件：适配、备份、对账、向量化、定时调度）。
+"""Mongo Somni 集合 → ES 全量重建同步（单文件：适配、备份、清空、向量化、定时调度）。
 
-以 Mongo _id 为准，只读不写源库：
-  - ES 有、Mongo 无 → 删 ES
-  - Mongo 有 → 比差异，有变才 upsert
-  - 先同步 somni_audio_tag_dictionary（name/name_en 向量），再同步 somni_audio_materials
+以 Mongo `_id` 为准，只读不写源库：
+  - 先删除目标 ES 索引全部数据（删索引再 ensure 重建）
+  - 再按 Mongo 启用文档全量插入；ES 文档 id = Mongo `_id`，_source 不含 `id`/`_id`
+  - 先同步 somni_audio_tag_dictionary，再同步 somni_audio_materials
 
 服务启动后按 SYNC_INTERVAL_DAYS 注册定时任务；也可手动执行本脚本。
 
@@ -91,51 +91,47 @@ def mongo_doc_id(doc: dict[str, Any]) -> str:
 
 
 def material_doc_to_es(doc: dict[str, Any]) -> dict[str, Any] | None:
-    """Mongo 原料文档 → ES 文档（去掉 _id）；无 _id 或无 audio_url 则跳过。"""
+    """Mongo 原料文档 → ES _source（去掉 _id/id）；无 _id 或无 audio_url 则跳过。"""
     doc_id = mongo_doc_id(doc)
     if not doc_id:
         return None
-    return material_source_for_es(bson_to_jsonable(doc))
+    payload = material_source_for_es(bson_to_jsonable(doc))
+    if payload is None:
+        return None
+    payload.pop("_id", None)
+    payload.pop("id", None)
+    return payload
 
 
-def tag_dictionary_compare_snapshot(doc: dict[str, Any]) -> dict[str, Any]:
-    """标签词典 diff 快照（不含向量）。"""
-    keys = (
-        "type",
-        "code",
-        "status",
-        "name",
-        "name_en",
-        "description",
-        "applicability",
-        "parent_tag_id",
-        "created_at",
-        "updated_at",
-        "created_by",
-        "updated_by",
-    )
-    return {k: doc.get(k) for k in keys}
-
-
-def material_compare_snapshot(doc: dict[str, Any]) -> dict[str, Any]:
-    """原料 diff 快照（不比较 dense vector，避免浮点噪声导致反复更新）。"""
-    snapshot = bson_to_jsonable(doc)
-    snapshot.pop("_id", None)
-    snapshot.pop("id", None)
-    snapshot.pop("description_vector", None)
-    return snapshot
-
-
-def tag_documents_differ(desired: dict[str, Any], existing: dict[str, Any]) -> bool:
-    return tag_dictionary_compare_snapshot(desired) != tag_dictionary_compare_snapshot(existing)
-
-
-def material_documents_differ(desired: dict[str, Any], existing: dict[str, Any]) -> bool:
-    return material_compare_snapshot(desired) != material_compare_snapshot(existing)
+def tag_doc_to_es(doc: dict[str, Any]) -> dict[str, Any] | None:
+    """Mongo 标签文档 → ES _source（去掉 _id/id）；无 _id 则跳过。"""
+    doc_id = mongo_doc_id(doc)
+    if not doc_id:
+        return None
+    payload = bson_to_jsonable(doc)
+    payload.pop("_id", None)
+    payload.pop("id", None)
+    return payload
 
 
 def zero_vector(dim: int) -> list[float]:
     return [0.0] * dim
+
+
+async def wipe_and_recreate_index(
+    es_client: AsyncElasticsearch,
+    es_search: EsSearch,
+    index: str,
+) -> int:
+    """删除索引内全部数据：统计文档数 → 删索引 → ensure 重建映射。"""
+    count = 0
+    if await es_client.indices.exists(index=index):
+        count_resp = await es_client.count(index=index)
+        count = int(count_resp.get("count", 0))
+        await es_client.indices.delete(index=index)
+        logger.info("已删除 ES 索引以全量重建：{}，原文档数={}", index, count)
+    await es_search.ensure_indices()
+    return count
 
 
 def write_backup(path: Path, records: list[dict[str, Any]]) -> None:
@@ -226,39 +222,33 @@ class TagDictionarySyncJob:
         if not dry_run:
             write_backup(self._settings.sync_tag_dictionary_backup_path, bson_to_jsonable(docs))
 
-        source_ids = {mongo_doc_id(d) for d in docs if mongo_doc_id(d)}
-        es_ids = await self._es_search.list_all_tag_dictionary_doc_ids()
-
-        for doc_id in es_ids - source_ids:
-            if dry_run:
-                stats["deleted"] += 1
-                continue
-            try:
-                await self._client.delete(index=self._es_search.tag_dictionary_index, id=doc_id)
-                stats["deleted"] += 1
-            except Exception as exc:
-                stats["failed"] += 1
-                logger.error("删除 ES 孤儿标签失败，id={}，原因：{}", doc_id, exc)
-
+        payloads: dict[str, dict[str, Any]] = {}
         for doc in docs:
-            outcome = await self._sync_one(doc, dry_run=dry_run)
+            es_doc = tag_doc_to_es(doc)
+            if es_doc is None:
+                stats["failed"] += 1
+                continue
+            payloads[mongo_doc_id(doc)] = es_doc
+
+        if dry_run:
+            es_ids = await self._es_search.list_all_tag_dictionary_doc_ids()
+            stats["deleted"] = len(es_ids)
+            stats["created"] = len(payloads)
+            return stats
+
+        stats["deleted"] = await wipe_and_recreate_index(
+            self._client,
+            self._es_search,
+            self._es_search.tag_dictionary_index,
+        )
+        for doc_id, es_doc in payloads.items():
+            outcome = await self._insert_one(doc_id, es_doc)
             stats[outcome] += 1
 
-        if not dry_run:
-            self._es_search.clear_content_tag_vectors_cache()
+        self._es_search.clear_content_tag_vectors_cache()
         return stats
 
-    async def _sync_one(self, doc: dict[str, Any], *, dry_run: bool) -> str:
-        doc_id = mongo_doc_id(doc)
-        if not doc_id:
-            return "failed"
-        es_doc = bson_to_jsonable(doc)
-        es_doc.pop("_id", None)
-        existing = await self._es_search.get_tag_dictionary_source(doc_id)
-        if existing and not tag_documents_differ(es_doc, existing):
-            return "unchanged"
-        if dry_run:
-            return "created" if existing is None else "updated"
+    async def _insert_one(self, doc_id: str, es_doc: dict[str, Any]) -> str:
         try:
             es_doc["name_vector"] = await self._encoder.encode_one(str(es_doc.get("name", "")))
             name_en = str(es_doc.get("name_en", "")).strip()
@@ -270,7 +260,7 @@ class TagDictionarySyncJob:
                 id=doc_id,
                 document=es_doc,
             )
-            return "created" if existing is None else "updated"
+            return "created"
         except Exception as exc:
             logger.error(
                 "同步标签词典失败，id={}，name={}，原因：{}",
@@ -321,40 +311,34 @@ class MaterialsSyncJob:
                 continue
             payloads[mongo_doc_id(doc)] = es_doc
 
-        es_ids = await self._es_search.list_all_audio_doc_ids()
-        for doc_id in es_ids - set(payloads.keys()):
-            if dry_run:
-                stats["deleted"] += 1
-                continue
-            try:
-                await self._client.delete(index=self._es_search.audio_index, id=doc_id)
-                stats["deleted"] += 1
-            except Exception as exc:
-                stats["failed"] += 1
-                logger.error("删除 ES 孤儿原料失败，id={}，原因：{}", doc_id, exc)
+        if dry_run:
+            es_ids = await self._es_search.list_all_audio_doc_ids()
+            stats["deleted"] = len(es_ids)
+            stats["created"] = len(payloads)
+            return stats
 
+        stats["deleted"] = await wipe_and_recreate_index(
+            self._client,
+            self._es_search,
+            self._es_search.audio_index,
+        )
         for doc_id, es_doc in payloads.items():
-            outcome = await self._sync_one(doc_id, es_doc, dry_run=dry_run)
+            outcome = await self._insert_one(doc_id, es_doc)
             stats[outcome] += 1
 
         return stats
 
-    async def _sync_one(self, doc_id: str, es_doc: dict[str, Any], *, dry_run: bool) -> str:
-        existing = await self._es_search.get_audio_source(doc_id)
-        if (
-            existing
-            and not material_documents_differ(es_doc, existing)
-            and existing.get("description_vector")
-        ):
-            return "unchanged"
-        if dry_run:
-            return "created" if existing is None else "updated"
+    async def _insert_one(self, doc_id: str, es_doc: dict[str, Any]) -> str:
         try:
             es_doc["description_vector"] = await self._encoder.encode_one(
                 str(es_doc.get("description_text", ""))
             )
-            await self._client.index(index=self._es_search.audio_index, id=doc_id, document=es_doc)
-            return "created" if existing is None else "updated"
+            await self._client.index(
+                index=self._es_search.audio_index,
+                id=doc_id,
+                document=es_doc,
+            )
+            return "created"
         except Exception as exc:
             logger.error(
                 "同步原料失败，id={}，name={}，原因：{}",
@@ -383,7 +367,7 @@ class MongoEsSyncJob:
         self._settings = settings
 
     async def run(self, *, dry_run: bool = False) -> SyncJobResult:
-        logger.info("开始 Mongo → ES 差异同步，dry_run={}", dry_run)
+        logger.info("开始 Mongo → ES 全量重建同步，dry_run={}", dry_run)
         await self._es_search.migrate_legacy_indices()
         await self._es_search.ensure_indices()
 
@@ -417,20 +401,16 @@ class MongoEsSyncJob:
             material_failed=material_stats["failed"],
         )
         logger.info(
-            "Mongo → ES 同步结束：标签 拉取={} 删={} 增={} 改={} 未变={} 失败={}；"
-            "原料 拉取={} 跳过={} 删={} 增={} 改={} 未变={} 失败={} dry_run={}",
+            "Mongo → ES 全量同步结束：标签 拉取={} 清索引={} 增={} 失败={}；"
+            "原料 拉取={} 跳过={} 清索引={} 增={} 失败={} dry_run={}",
             result.tag_fetched,
             result.tag_deleted,
             result.tag_created,
-            result.tag_updated,
-            result.tag_unchanged,
             result.tag_failed,
             result.material_fetched,
             result.material_skipped,
             result.material_deleted,
             result.material_created,
-            result.material_updated,
-            result.material_unchanged,
             result.material_failed,
             dry_run,
         )
@@ -482,7 +462,7 @@ def start_sync_scheduler(state: AppState, settings: Settings) -> None:
         return
 
     async def _job() -> None:
-        logger.info("定时任务触发：Mongo → ES 差异同步")
+        logger.info("定时任务触发：Mongo → ES 全量重建同步")
         await run_scheduled_sync(state, settings)
 
     _scheduler = AsyncIOScheduler(timezone=UTC)
@@ -547,8 +527,8 @@ async def _run_cli(*, dry_run: bool) -> int:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Mongo Somni 集合差异同步至 ES")
-    parser.add_argument("--dry-run", action="store_true", help="只拉取比对，不写 ES、不备份")
+    parser = argparse.ArgumentParser(description="Mongo Somni 集合全量重建同步至 ES")
+    parser.add_argument("--dry-run", action="store_true", help="只拉取统计，不删 ES、不写 ES、不备份")
     args = parser.parse_args()
     exit_code = asyncio.run(_run_cli(dry_run=args.dry_run))
     if exit_code != 0:
