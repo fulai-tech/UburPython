@@ -1,4 +1,4 @@
-"""scripts/sync_es_from_comm.py Mongo 同步逻辑单元测试。"""
+"""scripts/sync_es_from_comm.py Mongo 全量重建同步单元测试。"""
 
 from __future__ import annotations
 
@@ -17,11 +17,10 @@ from scripts.sync_es_from_comm import (
     _redact_mongo_uri,
     bson_to_jsonable,
     material_doc_to_es,
-    material_documents_differ,
     mongo_doc_id,
     start_sync_scheduler,
-    tag_dictionary_compare_snapshot,
-    tag_documents_differ,
+    tag_doc_to_es,
+    wipe_and_recreate_index,
     zero_vector,
 )
 
@@ -42,6 +41,7 @@ def _material_doc(
 ) -> dict:
     return {
         "_id": ObjectId(doc_id) if len(doc_id) == 24 else doc_id,
+        "id": doc_id,
         "audio_name": audio_name,
         "description": "描述",
         "status": True,
@@ -63,6 +63,7 @@ def _material_doc(
 def _tag_doc(doc_id: str, *, name: str = "放松", name_en: str = "Unwind") -> dict:
     return {
         "_id": ObjectId(doc_id) if len(doc_id) == 24 else doc_id,
+        "id": doc_id,
         "type": "sleep_stage",
         "code": "unwind",
         "status": "启用",
@@ -87,38 +88,52 @@ def test_material_doc_to_es_requires_audio_url() -> None:
     assert material_doc_to_es(doc) is None
 
 
-def test_tag_documents_same_when_only_vectors_differ() -> None:
-    desired = {"name": "放松", "name_en": "Unwind", "status": "启用"}
-    existing = {
-        "name": "放松",
-        "name_en": "Unwind",
-        "status": "启用",
-        "name_vector": [0.1],
-        "name_en_vector": [0.2],
-    }
-    assert tag_documents_differ(desired, existing) is False
+def test_material_doc_to_es_keeps_sleep_stage_names_without_id_fields() -> None:
+    payload = material_doc_to_es(_material_doc("6a33a7928030d4cf420efeb6"))
+    assert payload is not None
+    assert "id" not in payload
+    assert "_id" not in payload
+    assert payload["sleep_stage_names"] == ["放松"]
 
 
-def test_material_documents_differ_on_tag_change() -> None:
-    desired = material_doc_to_es(_material_doc("6a33a7928030d4cf420efeb6"))
-    existing = dict(desired)
-    existing["sleep_stage_tags"] = []
-    assert material_documents_differ(desired, existing) is True
+def test_tag_doc_to_es_strips_id_fields() -> None:
+    payload = tag_doc_to_es(_tag_doc("6a325acc1a3dbc128504c423"))
+    assert payload is not None
+    assert "id" not in payload
+    assert "_id" not in payload
+    assert payload["name"] == "放松"
 
 
 @pytest.mark.asyncio
-async def test_tag_sync_job_deletes_es_orphan() -> None:
+async def test_wipe_and_recreate_index_deletes_then_ensures() -> None:
+    es_client = MagicMock()
+    es_client.indices.exists = AsyncMock(return_value=True)
+    es_client.count = AsyncMock(return_value={"count": 12})
+    es_client.indices.delete = AsyncMock()
+    es_search = MagicMock()
+    es_search.ensure_indices = AsyncMock()
+
+    deleted = await wipe_and_recreate_index(es_client, es_search, "somni_audio_materials")
+
+    assert deleted == 12
+    es_client.indices.delete.assert_awaited_once_with(index="somni_audio_materials")
+    es_search.ensure_indices.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_tag_sync_job_wipes_index_then_inserts() -> None:
     mongo = MagicMock()
     mongo.fetch_tag_dictionary = AsyncMock(return_value=[_tag_doc("6a325acc1a3dbc128504c423")])
     es_search = MagicMock()
-    es_search.list_all_tag_dictionary_doc_ids = AsyncMock(
-        return_value={"6a325acc1a3dbc128504c423", "orphan"}
-    )
-    es_search.get_tag_dictionary_source = AsyncMock(return_value=None)
+    es_search.list_all_tag_dictionary_doc_ids = AsyncMock(return_value={"orphan"})
     es_search.tag_dictionary_index = "somni_audio_tag_dictionary"
+    es_search.clear_content_tag_vectors_cache = MagicMock()
+    es_search.ensure_indices = AsyncMock()
     es_client = MagicMock()
+    es_client.indices.exists = AsyncMock(return_value=True)
+    es_client.count = AsyncMock(return_value={"count": 1})
+    es_client.indices.delete = AsyncMock()
     es_client.index = AsyncMock()
-    es_client.delete = AsyncMock()
     encoder = MagicMock()
     encoder.encode_one = AsyncMock(return_value=[0.1] * 512)
 
@@ -127,23 +142,27 @@ async def test_tag_sync_job_deletes_es_orphan() -> None:
     ).run(dry_run=False)
 
     assert stats["deleted"] == 1
-    es_client.delete.assert_awaited_once_with(
-        index="somni_audio_tag_dictionary", id="orphan"
-    )
+    assert stats["created"] == 1
+    es_client.indices.delete.assert_awaited_once_with(index="somni_audio_tag_dictionary")
+    kwargs = es_client.index.await_args.kwargs
+    assert kwargs["id"] == "6a325acc1a3dbc128504c423"
+    assert "id" not in kwargs["document"]
+    assert "_id" not in kwargs["document"]
 
 
 @pytest.mark.asyncio
-async def test_material_sync_job_skips_unchanged(tmp_path) -> None:
+async def test_material_sync_job_wipes_then_reindexes(tmp_path) -> None:
     doc = _material_doc("6a33a7928030d4cf420efeb6")
-    es_payload = material_doc_to_es(doc)
-    es_payload["description_vector"] = [0.1] * 512
     mongo = MagicMock()
     mongo.fetch_materials = AsyncMock(return_value=[doc])
     es_search = MagicMock()
     es_search.list_all_audio_doc_ids = AsyncMock(return_value={"6a33a7928030d4cf420efeb6"})
-    es_search.get_audio_source = AsyncMock(return_value=es_payload)
     es_search.audio_index = "somni_audio_materials"
+    es_search.ensure_indices = AsyncMock()
     es_client = MagicMock()
+    es_client.indices.exists = AsyncMock(return_value=True)
+    es_client.count = AsyncMock(return_value={"count": 99})
+    es_client.indices.delete = AsyncMock()
     es_client.index = AsyncMock()
     encoder = MagicMock()
     encoder.encode_one = AsyncMock(return_value=[0.1] * 512)
@@ -152,8 +171,14 @@ async def test_material_sync_job_skips_unchanged(tmp_path) -> None:
         mongo, es_search, es_client, encoder, Settings(sync_backup_dir=str(tmp_path))
     ).run(dry_run=False)
 
-    assert stats["unchanged"] == 1
-    es_client.index.assert_not_called()
+    assert stats["deleted"] == 99
+    assert stats["created"] == 1
+    es_client.indices.delete.assert_awaited_once_with(index="somni_audio_materials")
+    indexed = es_client.index.await_args.kwargs
+    assert indexed["id"] == "6a33a7928030d4cf420efeb6"
+    assert "id" not in indexed["document"]
+    assert "_id" not in indexed["document"]
+    assert indexed["document"]["sleep_stage_names"] == ["放松"]
 
 
 @pytest.mark.asyncio
@@ -163,9 +188,11 @@ async def test_material_sync_job_writes_description_vector(tmp_path) -> None:
     mongo.fetch_materials = AsyncMock(return_value=[doc])
     es_search = MagicMock()
     es_search.list_all_audio_doc_ids = AsyncMock(return_value=set())
-    es_search.get_audio_source = AsyncMock(return_value=None)
     es_search.audio_index = "somni_audio_materials"
+    es_search.ensure_indices = AsyncMock()
     es_client = MagicMock()
+    es_client.indices.exists = AsyncMock(return_value=False)
+    es_client.indices.delete = AsyncMock()
     es_client.index = AsyncMock()
     encoder = MagicMock()
     encoder.encode_one = AsyncMock(return_value=[0.2] * 512)
@@ -182,6 +209,29 @@ async def test_material_sync_job_writes_description_vector(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_material_sync_dry_run_does_not_wipe(tmp_path) -> None:
+    doc = _material_doc("6a33a7928030d4cf420efeb6")
+    mongo = MagicMock()
+    mongo.fetch_materials = AsyncMock(return_value=[doc])
+    es_search = MagicMock()
+    es_search.list_all_audio_doc_ids = AsyncMock(return_value={"a", "b", "c"})
+    es_search.audio_index = "somni_audio_materials"
+    es_client = MagicMock()
+    es_client.indices.delete = AsyncMock()
+    es_client.index = AsyncMock()
+    encoder = MagicMock()
+
+    stats = await MaterialsSyncJob(
+        mongo, es_search, es_client, encoder, Settings(sync_backup_dir=str(tmp_path))
+    ).run(dry_run=True)
+
+    assert stats["deleted"] == 3
+    assert stats["created"] == 1
+    es_client.indices.delete.assert_not_called()
+    es_client.index.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_mongo_sync_job_migrates_legacy_indices() -> None:
     mongo = MagicMock()
     mongo.fetch_tag_dictionary = AsyncMock(return_value=[])
@@ -191,7 +241,11 @@ async def test_mongo_sync_job_migrates_legacy_indices() -> None:
     es_search.ensure_indices = AsyncMock()
     es_search.list_all_tag_dictionary_doc_ids = AsyncMock(return_value=set())
     es_search.list_all_audio_doc_ids = AsyncMock(return_value=set())
+    es_search.tag_dictionary_index = "somni_audio_tag_dictionary"
+    es_search.audio_index = "somni_audio_materials"
+    es_search.clear_content_tag_vectors_cache = MagicMock()
     es_client = MagicMock()
+    es_client.indices.exists = AsyncMock(return_value=False)
     encoder = MagicMock()
 
     await MongoEsSyncJob(mongo, es_search, es_client, encoder, Settings()).run(dry_run=True)
@@ -203,14 +257,6 @@ async def test_mongo_sync_job_migrates_legacy_indices() -> None:
 def test_zero_vector_has_embedding_dim_length() -> None:
     assert len(zero_vector(512)) == 512
     assert all(v == 0.0 for v in zero_vector(512))
-
-
-def test_tag_dictionary_snapshot_uses_created_by_fields() -> None:
-    doc = _tag_doc("6a325acc1a3dbc128504c423")
-    snapshot = tag_dictionary_compare_snapshot(bson_to_jsonable(doc))
-    assert snapshot["created_by"] == "tester"
-    assert snapshot["updated_by"] == "tester"
-    assert "create_by" not in snapshot
 
 
 def test_start_sync_scheduler_skipped_without_mongo_uri() -> None:
