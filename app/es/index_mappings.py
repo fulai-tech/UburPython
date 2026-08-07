@@ -51,6 +51,7 @@ def build_somni_audio_materials_mapping(embedding_dim: int) -> dict[str, Any]:
                 "description_vector": f"description_text 的 {embedding_dim} 维 embedding",
                 "status": "是否启用；true 表示可参与检索与同步",
                 "audio_url": "音频文件 CDN / 对象存储 URL",
+                "cover_url": "封面图 CDN / 对象存储 URL",
                 "operation_type": "0 大模型打标，1 人工打标",
                 "tag_id": "标签 ID，关联 somni_audio_tag_dictionary._id",
                 "code": "标签编码，用于规则判断与接口传输",
@@ -98,6 +99,7 @@ def build_somni_audio_materials_mapping(embedding_dim: int) -> dict[str, Any]:
             ),
             "status": _field("boolean", "是否启用；true 表示可参与检索与同步"),
             "audio_url": _field("keyword", "音频文件地址（CDN / 对象存储 / 内部资源 URL）"),
+            "cover_url": _field("keyword", "封面图地址（CDN / 对象存储 / 内部资源 URL）"),
             "operation_type": _field(
                 "integer",
                 "标注操作类型：0 大模型打标，1 人工打标",
