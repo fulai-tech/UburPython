@@ -667,6 +667,7 @@ async def test_search_returns_projected_material() -> None:
         "audio_name": "雨声A",
         "description": "描述",
         "audio_url": doc["audio_url"],
+        "cover_url": "",
         "content_form_tags": [{"name": "雨声", "parent_tag_id": "p1"}],
         "audio_engineering_tags": [],
     }
@@ -706,6 +707,7 @@ async def test_text_query_can_return_description_only_recall() -> None:
         "audio_name": "描述命中",
         "description": "海边声音",
         "audio_url": "https://cdn.example.com/描述命中.mp3",
+        "cover_url": "",
         "content_form_tags": [{"name": "海浪", "parent_tag_id": "p2"}],
         "audio_engineering_tags": [],
     }

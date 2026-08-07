@@ -26,6 +26,7 @@ SEARCH_CANDIDATE_SOURCE_INCLUDES = (
     "audio_name",
     "description",
     "audio_url",
+    "cover_url",
     "sleep_stage_tags",
     "content_form_tags",
     "mechanism_tags",

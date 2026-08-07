@@ -10,6 +10,7 @@ def project_search_material(doc: dict[str, Any]) -> dict[str, Any]:
         "audio_name": str(doc.get("audio_name") or ""),
         "description": str(doc.get("description") or ""),
         "audio_url": str(doc.get("audio_url") or ""),
+        "cover_url": str(doc.get("cover_url") or ""),
         "content_form_tags": _project_content_form_tags(doc.get("content_form_tags")),
         "audio_engineering_tags": _project_engineering_tags(
             doc.get("audio_engineering_tags")
