@@ -56,7 +56,8 @@ class Settings(BaseSettings):
 
     log_level: str = "INFO"
     log_dir: str = "logs"
-    # 按日滚动：文件名为 YYYY-MM-DD_ubur_log，见 app.core.logging
+    # 按日命名 YYYY-MM-DD_ubur_log；超大小则同日再开新文件，见 app.core.logging
+    log_rotation_size: str = "100 MB"
     log_retention: str = "7 days"
 
     # Mongo → ES 差异同步（服务内定时 + scripts/sync_es_from_comm.py 手动）
