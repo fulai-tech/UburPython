@@ -1,4 +1,4 @@
-"""Pydantic 对外契约模型（替代 uburnode_audio.proto）。
+"""Pydantic 对外契约模型（HTTP / gRPC 映射共用）。
 
 字段 snake_case；检索出参直接返回 somni_audio_materials 索引文档（materials 列表）。
 创建/更新入参对齐 Mongo Somni 文档结构。
@@ -229,8 +229,8 @@ class AudioMaterialData(BaseModel):
     evidence_level_tags: list[dict[str, Any]] = Field(default_factory=list)
 
     @classmethod
-    def from_comm_material(cls, material: object) -> Self:
-        """bionode_comm_pb2.AudioMaterialInfo → HTTP/内存出参。"""
+    def from_material_like(cls, material: object) -> Self:
+        """鸭子类型原料对象 → HTTP/内存出参。"""
         return cls(
             id=material.id,
             description=material.description,

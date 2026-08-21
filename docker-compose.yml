@@ -27,6 +27,8 @@ services:
     environment:
       ES_NODE: http://elasticsearch:9200
       REDIS_URL: redis://redis:6379/0
+    ports:
+      - "50051:50051"  # 对外 gRPC（HTTP 仍经 nginx :8001）
     volumes:
       - hf_cache:/data/huggingface
       - ./logs:/app/logs  # 宿主机可直接看项目目录 logs/YYYY-MM-DD_ubur_log

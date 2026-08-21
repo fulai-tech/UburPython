@@ -1,20 +1,17 @@
-"""Mongo somni_audio_materials 读写。"""
+"""手板 Mongo 原料集合访问（直连，非独立 mongo 包）。"""
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from typing import Any
 
-from bson import ObjectId
-from bson.errors import InvalidId
 from loguru import logger
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorCollection
 from pymongo import ReturnDocument
 
+from app.core.bson_util import bson_to_jsonable, parse_object_id, utc_now
 from app.core.config import Settings
 from app.core.exceptions import MaterialNotFoundError
 
-# Mongo $jsonSchema required；HTTP 侧仅 audio_name 必填时由此补齐
 _CREATE_REQUIRED_DEFAULTS: dict[str, Any] = {
     "status": True,
     "audio_url": "",
@@ -26,28 +23,6 @@ _CREATE_REQUIRED_DEFAULTS: dict[str, Any] = {
     "medical_risk_tags": [],
     "evidence_level_tags": [],
 }
-
-
-def utc_now() -> datetime:
-    """Mongo 校验要求 created_at / updated_at 为 BSON date。"""
-    return datetime.now(UTC)
-
-
-def utc_now_iso() -> str:
-    return utc_now().isoformat().replace("+00:00", "Z")
-
-
-def bson_to_jsonable(value: Any) -> Any:
-    """BSON → JSON 可序列化（HTTP / ES）。"""
-    if isinstance(value, ObjectId):
-        return str(value)
-    if isinstance(value, datetime):
-        return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
-    if isinstance(value, dict):
-        return {k: bson_to_jsonable(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [bson_to_jsonable(v) for v in value]
-    return value
 
 
 class MaterialsStore:
@@ -63,7 +38,6 @@ class MaterialsStore:
         return db[self._settings.mongo_materials_collection]
 
     async def insert_material(self, doc: dict[str, Any]) -> dict[str, Any]:
-        """插入原料，返回含 id 的 JSON 文档。"""
         now = utc_now()
         payload = {**_CREATE_REQUIRED_DEFAULTS, **doc}
         payload["created_at"] = doc.get("created_at") or now
@@ -78,8 +52,7 @@ class MaterialsStore:
         material_id: str,
         fields: dict[str, Any],
     ) -> dict[str, Any]:
-        """按字段 `$set` 更新；fields 为空则直接返回当前文档。"""
-        oid = self._parse_object_id(material_id)
+        oid = parse_object_id(material_id)
         if not fields:
             return await self.get_material(material_id)
         payload = {**fields, "updated_at": utc_now()}
@@ -93,8 +66,15 @@ class MaterialsStore:
         logger.info("Mongo 已更新原料，id={}", material_id)
         return self._as_response(doc, material_id)
 
+    async def delete_material(self, material_id: str) -> None:
+        oid = parse_object_id(material_id)
+        result = await self._collection.delete_one({"_id": oid})
+        if result.deleted_count == 0:
+            raise MaterialNotFoundError(material_id)
+        logger.info("Mongo 已删除原料，id={}", material_id)
+
     async def get_material(self, material_id: str) -> dict[str, Any]:
-        oid = self._parse_object_id(material_id)
+        oid = parse_object_id(material_id)
         doc = await self._collection.find_one({"_id": oid})
         if doc is None:
             raise MaterialNotFoundError(material_id)
@@ -109,16 +89,8 @@ class MaterialsStore:
         payload["id"] = material_id
         return payload
 
-    @staticmethod
-    def _parse_object_id(material_id: str) -> ObjectId:
-        try:
-            return ObjectId(material_id)
-        except InvalidId as exc:
-            raise MaterialNotFoundError(material_id) from exc
-
 
 def create_materials_store(settings: Settings) -> MaterialsStore | None:
-    """有 mongo_uri 时创建 store，否则返回 None。"""
     if not settings.mongo_uri:
         return None
     client = AsyncIOMotorClient(settings.mongo_uri)

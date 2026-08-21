@@ -45,7 +45,7 @@ from app.es.somni_docs import (  # noqa: E402
     build_material_description_text,
     material_source_for_es,
 )
-from app.mongo.materials import bson_to_jsonable  # noqa: E402
+from app.core.bson_util import bson_to_jsonable  # noqa: E402
 
 # 供测试与外部脚本复用
 __all__ = (

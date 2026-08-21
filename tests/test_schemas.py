@@ -132,11 +132,12 @@ def test_cosine_similarity_identical() -> None:
     assert _cosine_similarity(vec, vec) == pytest.approx(1.0)
 
 
-def test_audio_material_data_from_comm_material() -> None:
-    from app.bionode_grpc_clients.comm.grpc_gen import bionode_comm_pb2
+def test_audio_material_data_from_material_like() -> None:
+    from types import SimpleNamespace
+
     from app.schemas.audio import AudioMaterialData
 
-    material = bionode_comm_pb2.AudioMaterialInfo(
+    material = SimpleNamespace(
         id="674a1b2c3d4e5f6789012345",
         description="夜雨",
         status=True,
@@ -146,13 +147,17 @@ def test_audio_material_data_from_comm_material() -> None:
         audio_url="https://cdn.example.com/a.mp3",
         operation_type=0,
         created_by="agent",
+        updated_by="",
         sleep_stage_tags=[
-            bionode_comm_pb2.AudioMaterialTag(
-                tag_id="t1", code="unwind", name="放松"
-            )
+            SimpleNamespace(tag_id="t1", code="unwind", name="放松")
         ],
+        content_form_tags=[],
+        mechanism_tags=[],
+        audio_engineering_tags=[],
+        medical_risk_tags=[],
+        evidence_level_tags=[],
     )
-    data = AudioMaterialData.from_comm_material(material)
+    data = AudioMaterialData.from_material_like(material)
     assert data.id == material.id
     assert data.audio_name == "深夜雨声"
     assert data.audio_url == "https://cdn.example.com/a.mp3"

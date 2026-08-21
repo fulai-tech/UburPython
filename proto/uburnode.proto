@@ -1,0 +1,128 @@
+syntax = "proto3";
+
+// 功能手板对外契约（对齐 HTTP /api/audio；问卷 GetAnswer 本期可 stub）
+package uburnode.v1;
+
+import "google/protobuf/struct.proto";
+
+message IdRequest {
+  string id = 1;
+}
+
+message OperationResponse {
+  bool ok = 1;
+  string msg = 2;
+}
+
+message SomniTagRef {
+  optional string tag_id = 1;
+  optional string code = 2;
+  optional string name = 3;
+}
+
+message ContentFormTag {
+  optional string tag_id = 1;
+  optional string code = 2;
+  optional string name = 3;
+  optional string en_name = 4;
+  optional string parent_tag_id = 5;
+  optional string parent_tag_code = 6;
+}
+
+message AudioEngineeringTag {
+  optional string tag_id = 1;
+  optional string code = 2;
+  optional string name = 3;
+  optional SomniTagRef value = 4;
+  repeated double band_values = 5;
+  optional double relative_loudness = 6;
+}
+
+message CreateAudioReq {
+  string audio_name = 1;
+  optional string audio_url = 2;
+  optional string description = 3;
+  optional int32 operation_type = 4;
+  optional string created_by = 5;
+  optional string updated_by = 6;
+  optional bool status = 7;
+  repeated SomniTagRef sleep_stage_tags = 8;
+  repeated ContentFormTag content_form_tags = 9;
+  repeated SomniTagRef mechanism_tags = 10;
+  repeated AudioEngineeringTag audio_engineering_tags = 11;
+  repeated SomniTagRef medical_risk_tags = 12;
+  repeated SomniTagRef evidence_level_tags = 13;
+  repeated double embedding = 14;
+}
+
+message UpdateAudioReq {
+  string material_id = 1;
+  optional string audio_name = 2;
+  optional string audio_url = 3;
+  optional string description = 4;
+  optional int32 operation_type = 5;
+  optional string created_by = 6;
+  optional string updated_by = 7;
+  optional bool status = 8;
+  repeated SomniTagRef sleep_stage_tags = 9;
+  repeated ContentFormTag content_form_tags = 10;
+  repeated SomniTagRef mechanism_tags = 11;
+  repeated AudioEngineeringTag audio_engineering_tags = 12;
+  repeated SomniTagRef medical_risk_tags = 13;
+  repeated SomniTagRef evidence_level_tags = 14;
+  repeated double embedding = 15;
+}
+
+message SearchAudioReq {
+  optional string query_text = 1;
+  repeated string sleep_stage_tags = 2;
+  repeated string content_tags = 3;
+  repeated string disliked_tags = 4;
+  optional int32 top_k = 5;
+}
+
+message AudioMaterial {
+  string id = 1;
+  string description = 2;
+  bool status = 3;
+  string create_time = 4;
+  string update_time = 5;
+  string audio_name = 6;
+  string audio_url = 7;
+  int32 operation_type = 8;
+  string created_by = 9;
+  string updated_by = 10;
+  repeated SomniTagRef sleep_stage_tags = 11;
+  repeated ContentFormTag content_form_tags = 12;
+  repeated SomniTagRef mechanism_tags = 13;
+  repeated AudioEngineeringTag audio_engineering_tags = 14;
+  repeated SomniTagRef medical_risk_tags = 15;
+  repeated SomniTagRef evidence_level_tags = 16;
+  repeated double embedding = 17;
+}
+
+message AudioMaterialRes {
+  AudioMaterial material = 1;
+}
+
+message SearchAudioRes {
+  repeated google.protobuf.Struct materials = 1;
+}
+
+service AudioService {
+  rpc CreateAudio (CreateAudioReq) returns (AudioMaterialRes);
+  rpc UpdateAudio (UpdateAudioReq) returns (OperationResponse);
+  rpc DeleteAudio (IdRequest) returns (OperationResponse);
+  rpc SearchAudio (SearchAudioReq) returns (SearchAudioRes);
+}
+
+message GetAnswerReq {
+  string uid = 1;
+  string answer_id = 2;
+}
+
+message GetAnswerRes {}
+
+service QuizService {
+  rpc GetAnswer (GetAnswerReq) returns (GetAnswerRes);
+}

@@ -13,7 +13,7 @@ from app.schemas.audio import (
     UpdateAudioRequest,
 )
 from app.schemas.response import ApiResponse, success
-from app.services.audio import AudioService
+from app.server.handboard.audio.service import AudioService
 
 router = APIRouter(prefix="/audio", tags=["audio"])
 
