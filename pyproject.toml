@@ -47,6 +47,9 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+extend-exclude = [
+    "app/uburnode_grpc/grpc_gen",
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]

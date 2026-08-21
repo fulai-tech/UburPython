@@ -85,7 +85,7 @@ main() {
   log ""
   log "=== 请在服务器首次克隆并配置 .env ==="
   log "  git clone -b dev https://github.com/$REPO.git $DEPLOY_DIR"
-  log "  cp $DEPLOY_DIR/.env.example $DEPLOY_DIR/.env   # 编辑 COMM_GRPC_* 等"
+  log "  cp $DEPLOY_DIR/.env.example $DEPLOY_DIR/.env   # 编辑 MONGO_* / SOMNI_* / ES_* 等"
   log "  cd $DEPLOY_DIR && docker compose up -d --build"
   log "  ES_NODE 在 compose 中已覆盖为 http://elasticsearch:9200"
   log ""

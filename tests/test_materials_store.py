@@ -9,7 +9,7 @@ import pytest
 from bson import ObjectId
 
 from app.core.config import Settings
-from app.mongo.materials import MaterialsStore
+from app.server.handboard.audio.store import MaterialsStore
 
 
 def _store_with_collection() -> tuple[MaterialsStore, MagicMock]:

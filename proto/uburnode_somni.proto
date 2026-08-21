@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+// 量产对外契约（见 docs/量产中间件接口文档.md）
+// 本期仅 GetAnswer；查量产表 somni_quiz_answers
+package uburnode.somni.v1;
+
+import "google/protobuf/struct.proto";
+
+message GetAnswerReq {
+  string uid = 1;        // 必传
+  string answer_id = 2;  // 必传：答卷 _id
+}
+
+// 对齐 somni_quiz_answers.answers[]（见问卷测评四表-新结构）
+message AnswerItem {
+  string question_id = 1;
+  string input_type = 2;
+  string title = 3;
+  repeated string tags = 4;
+  google.protobuf.Value value = 5;  // 形态由 input_type 决定
+  string extra_input = 6;           // 题级补充文本；无则空
+}
+
+message GetAnswerRes {
+  repeated AnswerItem answers = 1;
+}
+
+service QuizService {
+  rpc GetAnswer (GetAnswerReq) returns (GetAnswerRes);
+}

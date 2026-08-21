@@ -1,7 +1,7 @@
 """FastAPI 应用入口。
 
 职责：
-- lifespan 内单例预热 ES / Embedding / gRPC 客户端（规范要求勿每请求重建）
+- lifespan 内预热 ES / Embedding / Mongo；启功能手板 + 量产 gRPC
 - 挂载 HTTP 路由与请求日志中间件
 - 通过 AppState 向 API 层提供已初始化的服务实例
 """
@@ -17,13 +17,13 @@ from typing import TYPE_CHECKING, AsyncIterator
 
 if TYPE_CHECKING:
     from elasticsearch import AsyncElasticsearch
+    from motor.motor_asyncio import AsyncIOMotorClient
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _VENV_PYTHON = _PROJECT_ROOT / ".venv" / "bin" / "python"
 
 
 def _bootstrap_dev_entry() -> None:
-    """直接运行 main.py 时切到项目 .venv，并保证可 import app 包。"""
     if __name__ != "__main__":
         return
     root = str(_PROJECT_ROOT)
@@ -40,9 +40,9 @@ _bootstrap_dev_entry()
 
 from fastapi import FastAPI
 from loguru import logger
+from motor.motor_asyncio import AsyncIOMotorClient
 
 from app.api.audio import router as audio_router
-from app.bionode_grpc_clients import CommClient
 from app.cache.audio_search_cache import (
     AudioSearchCache,
     create_audio_search_cache,
@@ -60,27 +60,29 @@ from app.es.client import create_es_client
 from app.es.search import EsSearch
 from app.es.sync import EsSync
 from app.middleware.request_log import register_request_log_middleware
-from app.mongo.materials import MaterialsStore, create_materials_store
-from app.services.audio import AudioService
+from app.server.bootstrap import GrpcServers, start_grpc_servers, stop_grpc_servers
+from app.server.handboard.audio.service import AudioService
+from app.server.handboard.audio.store import MaterialsStore, create_materials_store
+from app.server.somni.quiz.service import QuizService as SomniQuizService
 from app.services.retrieval import RetrievalService
 from scripts.sync_es_from_comm import shutdown_sync_scheduler, start_sync_scheduler
 
 
 @dataclass
 class AppState:
-    """进程级单例容器，在 lifespan 中填充，供依赖注入读取。"""
-
     settings: Settings
     es_client: AsyncElasticsearch | None = None
     encoder: Encoder | None = None
-    comm_client: CommClient | None = None
     materials_store: MaterialsStore | None = None
+    somni_mongo_client: AsyncIOMotorClient | None = None
     es_search: EsSearch | None = None
     es_sync: EsSync | None = None
     retrieval_service: RetrievalService | None = None
     audio_service: AudioService | None = None
+    somni_quiz_service: SomniQuizService | None = None
     search_cache: AudioSearchCache | None = None
     sleep_stage_cache: SleepStageCandidateCache | None = None
+    grpc_servers: GrpcServers | None = None
 
 
 _app_state = AppState(settings=get_settings())
@@ -102,20 +104,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _app_state.es_client = es_client
 
     encoder = create_encoder(settings)
-    # debug 模式跳过向量模型加载：本地无外网时可先调 HTTP 路由
     if not settings.app_debug:
         encoder.load()
     _app_state.encoder = encoder
-
-    comm_client = CommClient(settings)
-    await comm_client.connect()
-    _app_state.comm_client = comm_client
 
     es_search = EsSearch(es_client, settings)
     try:
         await es_search.ensure_indices()
     except Exception as exc:
-        # 生产环境 ES 不可达应 fail fast；debug 允许仅验证 API 层
         if settings.app_debug:
             logger.warning("Elasticsearch 不可用（调试模式，继续启动）：{}", exc)
         else:
@@ -158,28 +154,40 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     materials_store = create_materials_store(settings)
     _app_state.materials_store = materials_store
     if materials_store is None:
-        logger.warning("未配置 MONGO_URI，定时同步等读 Mongo 路径将不可用")
+        logger.warning("未配置 MONGO_URI，手板写路径将不可用")
 
     _app_state.audio_service = AudioService(
-        comm_client,
+        materials_store,
         es_sync,
         retrieval,
-        materials=materials_store,
         search_cache=search_cache,
         sleep_stage_cache=sleep_stage_cache,
     )
 
+    somni_mongo = None
+    if settings.somni_mongo_uri:
+        somni_mongo = AsyncIOMotorClient(settings.somni_mongo_uri)
+        _app_state.somni_mongo_client = somni_mongo
+    else:
+        logger.warning("未配置 SOMNI_MONGO_URI，量产问卷将不可用")
+
+    _app_state.somni_quiz_service = SomniQuizService(somni_mongo, settings)
+
     start_sync_scheduler(_app_state, settings)
+    _app_state.grpc_servers = await start_grpc_servers(_app_state, settings)
 
     logger.info("UburNode 音频检索服务已就绪")
     yield
 
     logger.info("正在关闭 UburNode 音频检索服务")
+    await stop_grpc_servers(_app_state.grpc_servers)
+    _app_state.grpc_servers = None
     shutdown_sync_scheduler()
     await shutdown_audio_search_cache(search_cache)
     if materials_store is not None:
         materials_store.close()
-    await comm_client.close()
+    if somni_mongo is not None:
+        somni_mongo.close()
     await es_client.close()
 
 
@@ -187,7 +195,7 @@ def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(
         title="UburNode Audio Search Service",
-        description="音频检索服务 — HTTP 对外，gRPC 调 comm-service，ES 索引副本",
+        description="音频检索服务 — HTTP + 功能手板/量产 gRPC；直连 Mongo，ES 为索引副本",
         version="0.1.0",
         lifespan=lifespan,
         debug=False,
@@ -202,7 +210,6 @@ app = create_app()
 
 
 def run_dev_server() -> None:
-    """本地开发一键启动（读取 .env 的 APP_HOST / APP_PORT）。"""
     import uvicorn
 
     settings = get_settings()

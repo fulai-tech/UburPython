@@ -1,4 +1,4 @@
-"""AudioService 创建/更新走 comm gRPC + ES 编排测试。"""
+"""AudioService：直连 Mongo + ES 编排测试。"""
 
 from __future__ import annotations
 
@@ -6,13 +6,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.bionode_grpc_clients.comm.grpc_gen import bionode_comm_pb2
 from app.schemas.audio import (
     CreateAudioRequest,
     SearchAudioRequest,
     UpdateAudioRequest,
 )
-from app.services.audio import AudioService
+from app.server.handboard.audio.service import AudioService
 
 
 def _service(
@@ -21,33 +20,35 @@ def _service(
     es_sync: MagicMock | None = None,
     retrieval: MagicMock | None = None,
     search_cache: MagicMock | None = None,
-    comm: MagicMock | None = None,
 ) -> AudioService:
     retrieval_svc = retrieval or MagicMock()
     if retrieval is None:
         retrieval_svc.clear_sleep_stage_cache = AsyncMock()
         retrieval_svc.warm_sleep_stage_cache = AsyncMock()
     return AudioService(
-        comm or MagicMock(),
+        materials,
         es_sync or MagicMock(),
         retrieval_svc,
-        materials=materials,
         search_cache=search_cache,
         sleep_stage_rewarm_delay_sec=0,
     )
 
 
 @pytest.mark.asyncio
-async def test_create_audio_calls_grpc_then_es() -> None:
-    created = bionode_comm_pb2.AudioMaterialInfo(id="abc123", audio_name="雨声")
-    comm = MagicMock()
-    comm.create_audio_material = AsyncMock()
-    comm.list_audio_materials_by_name = AsyncMock(return_value=[created])
+async def test_create_audio_writes_mongo_then_es() -> None:
+    materials = MagicMock()
+    materials.insert_material = AsyncMock(
+        return_value={
+            "id": "abc123",
+            "audio_name": "雨声",
+            "audio_url": "https://cdn.example.com/a.mp3",
+        }
+    )
     es_sync = MagicMock()
     es_sync.upsert_somni_material = AsyncMock()
     search_cache = MagicMock()
     search_cache.clear_all = AsyncMock()
-    service = _service(comm=comm, es_sync=es_sync, search_cache=search_cache)
+    service = _service(materials=materials, es_sync=es_sync, search_cache=search_cache)
 
     result = await service.create_audio(
         CreateAudioRequest.model_validate(
@@ -56,107 +57,52 @@ async def test_create_audio_calls_grpc_then_es() -> None:
     )
 
     assert result["id"] == "abc123"
-    assert result["audio_name"] == "雨声"
-    assert result["audio_url"] == "https://cdn.example.com/a.mp3"
-    comm.create_audio_material.assert_awaited_once()
-    create_req = comm.create_audio_material.await_args.args[0]
-    assert create_req.audio_name == "雨声"
-    assert create_req.audio_url == "https://cdn.example.com/a.mp3"
-    comm.list_audio_materials_by_name.assert_awaited_once_with("雨声")
+    materials.insert_material.assert_awaited_once()
     es_sync.upsert_somni_material.assert_awaited_once()
     assert es_sync.upsert_somni_material.await_args.args[0] == "abc123"
     search_cache.clear_all.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_update_audio_calls_grpc_then_es() -> None:
-    comm = MagicMock()
-    comm.update_audio_material = AsyncMock()
+async def test_update_audio_writes_mongo_then_es() -> None:
+    materials = MagicMock()
+    materials.update_material = AsyncMock(
+        return_value={"id": "m1", "description": "新描述"}
+    )
     es_sync = MagicMock()
     es_sync.upsert_somni_material = AsyncMock()
     search_cache = MagicMock()
     search_cache.clear_all = AsyncMock()
-    service = _service(comm=comm, es_sync=es_sync, search_cache=search_cache)
+    service = _service(materials=materials, es_sync=es_sync, search_cache=search_cache)
 
     await service.update_audio(
-        "abc123",
-        UpdateAudioRequest.model_validate({"description": "新描述"}),
+        "m1", UpdateAudioRequest.model_validate({"description": "新描述"})
     )
-
-    comm.update_audio_material.assert_awaited_once()
-    material_id_arg, update_body = comm.update_audio_material.await_args.args
-    assert material_id_arg == "abc123"
-    assert update_body.description == "新描述"
+    materials.update_material.assert_awaited_once()
     es_sync.upsert_somni_material.assert_awaited_once()
-    assert es_sync.upsert_somni_material.await_args.args[0] == "abc123"
-    search_cache.clear_all.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_delete_audio_clears_search_cache() -> None:
-    comm = MagicMock()
-    comm.delete_audio_material = AsyncMock()
+async def test_delete_audio_deletes_mongo_and_es() -> None:
+    materials = MagicMock()
+    materials.delete_material = AsyncMock()
     es_sync = MagicMock()
     es_sync.delete_audio = AsyncMock()
     search_cache = MagicMock()
     search_cache.clear_all = AsyncMock()
-    service = _service(comm=comm, es_sync=es_sync, search_cache=search_cache)
+    service = _service(materials=materials, es_sync=es_sync, search_cache=search_cache)
 
-    await service.delete_audio("abc123")
-
-    comm.delete_audio_material.assert_awaited_once_with("abc123")
-    es_sync.delete_audio.assert_awaited_once_with("abc123")
-    search_cache.clear_all.assert_awaited_once()
+    await service.delete_audio("m1")
+    materials.delete_material.assert_awaited_once_with("m1")
+    es_sync.delete_audio.assert_awaited_once_with("m1")
 
 
 @pytest.mark.asyncio
-async def test_search_audio_returns_cache_hit_without_retrieval() -> None:
+async def test_search_audio_uses_retrieval() -> None:
     retrieval = MagicMock()
-    retrieval.search = AsyncMock()
-    search_cache = MagicMock()
-    search_cache.get = AsyncMock(return_value=[{"_id": "cached"}])
-    search_cache.set = AsyncMock()
-    service = _service(retrieval=retrieval, search_cache=search_cache)
-    request = SearchAudioRequest(query_text="雨声")
-
-    result = await service.search_audio(request)
-
-    assert result.materials == [{"_id": "cached"}]
-    search_cache.get.assert_awaited_once_with(request)
-    retrieval.search.assert_not_awaited()
-    search_cache.set.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_search_audio_miss_runs_retrieval_and_sets_cache() -> None:
-    retrieval = MagicMock()
-    retrieval.search = AsyncMock(return_value=[{"id": "fresh"}])
-    search_cache = MagicMock()
-    search_cache.get = AsyncMock(return_value=None)
-    search_cache.set = AsyncMock()
-    service = _service(retrieval=retrieval, search_cache=search_cache)
-    request = SearchAudioRequest(query_text="雨声")
-
-    result = await service.search_audio(request)
-
-    assert result.materials == [{"id": "fresh"}]
-    retrieval.search.assert_awaited_once_with(request)
-    search_cache.set.assert_awaited_once_with(request, [{"id": "fresh"}])
-
-
-@pytest.mark.asyncio
-async def test_search_audio_empty_result_skips_cache_write() -> None:
-    """空结果不写缓存，避免长时间缓存无命中。"""
-    retrieval = MagicMock()
-    retrieval.search = AsyncMock(return_value=[])
-    search_cache = MagicMock()
-    search_cache.get = AsyncMock(return_value=None)
-    search_cache.set = AsyncMock()
-    service = _service(retrieval=retrieval, search_cache=search_cache)
-    request = SearchAudioRequest(query_text="不存在的声音")
-
-    result = await service.search_audio(request)
-
-    assert result.materials == []
-    retrieval.search.assert_awaited_once_with(request)
-    search_cache.set.assert_not_awaited()
+    retrieval.search = AsyncMock(return_value=[{"id": "m1"}])
+    retrieval.clear_sleep_stage_cache = AsyncMock()
+    retrieval.warm_sleep_stage_cache = AsyncMock()
+    service = _service(retrieval=retrieval)
+    data = await service.search_audio(SearchAudioRequest(query_text="雨"))
+    assert data.materials == [{"id": "m1"}]

@@ -1,8 +1,4 @@
-"""音频业务编排层（AudioService）。
-
-写路径：HTTP → comm gRPC（Create/Update/Delete）→ EsSync
-读路径：HTTP → 检索缓存 → RetrievalService → ES
-"""
+"""功能手板音频业务：直连 Mongo + 本侧 ES / 缓存。"""
 
 from __future__ import annotations
 
@@ -10,23 +6,21 @@ from typing import Any
 
 from loguru import logger
 
-from app.bionode_grpc_clients import CommClient
 from app.cache.audio_search_cache import AudioSearchCache
 from app.cache.sleep_stage_cache import SleepStageCandidateCache
 from app.cache.sleep_stage_refresh import DebouncedSleepStageCacheRefresh
 from app.core.config import Settings
-from app.core.exceptions import CommMaterialNotFoundError
+from app.core.exceptions import MongoNotConfiguredError
 from app.es.sync import EsSync
-from app.mongo.materials import MaterialsStore
 from app.schemas.audio import (
     CreateAudioRequest,
     SearchAudioData,
     SearchAudioRequest,
     UpdateAudioRequest,
 )
+from app.server.handboard.audio.store import MaterialsStore
 from app.services.retrieval import RetrievalService
 
-# 与 Mongo 写入默认对齐，保证创建 HTTP 响应字段形状不变
 _CREATE_RESPONSE_DEFAULTS: dict[str, Any] = {
     "status": True,
     "audio_url": "",
@@ -41,23 +35,21 @@ _CREATE_RESPONSE_DEFAULTS: dict[str, Any] = {
 
 
 class AudioService:
-    """编排 CUD + Search。"""
+    """编排 CUD + Search（无 BioNode）。"""
 
     def __init__(
         self,
-        comm: CommClient,
+        materials: MaterialsStore | None,
         es_sync: EsSync,
         retrieval: RetrievalService,
-        materials: MaterialsStore | None = None,
         search_cache: AudioSearchCache | None = None,
         sleep_stage_cache: SleepStageCandidateCache | None = None,
         *,
         sleep_stage_rewarm_delay_sec: float | None = None,
     ) -> None:
-        self._comm = comm
+        self._materials = materials
         self._es_sync = es_sync
         self._retrieval = retrieval
-        self._materials = materials
         self._search_cache = search_cache
         self._sleep_stage_cache = sleep_stage_cache
         delay = (
@@ -71,23 +63,28 @@ class AudioService:
             delay_sec=delay,
         )
 
+    def _require_store(self) -> MaterialsStore:
+        if self._materials is None:
+            raise MongoNotConfiguredError()
+        return self._materials
+
     async def create_audio(self, request: CreateAudioRequest) -> dict[str, Any]:
-        await self._comm.create_audio_material(request)
-        material_id = await self._resolve_created_id(request.audio_name)
-        saved = _create_response_doc(material_id, request)
-        await self._es_sync.upsert_somni_material(material_id, saved)
+        store = self._require_store()
+        saved = await store.insert_material(request.to_mongo_doc())
+        await self._es_sync.upsert_somni_material(saved["id"], saved)
         await self._invalidate_candidate_caches()
-        logger.info("已创建音频原料，id={}", material_id)
-        return saved
+        logger.info("已创建音频原料，id={}", saved["id"])
+        return {**_CREATE_RESPONSE_DEFAULTS, **saved}
 
     async def update_audio(self, material_id: str, request: UpdateAudioRequest) -> None:
-        await self._comm.update_audio_material(material_id, request)
-        saved = {"id": material_id, **request.model_dump(exclude_unset=True)}
+        store = self._require_store()
+        saved = await store.update_material(material_id, request.to_update_fields())
         await self._es_sync.upsert_somni_material(material_id, saved)
         await self._invalidate_candidate_caches()
 
     async def delete_audio(self, material_id: str) -> None:
-        await self._comm.delete_audio_material(material_id)
+        store = self._require_store()
+        await store.delete_material(material_id)
         await self._es_sync.delete_audio(material_id)
         await self._invalidate_candidate_caches()
 
@@ -96,16 +93,9 @@ class AudioService:
         if cached is not None:
             return SearchAudioData(materials=cached)
         results = await self._retrieval.search(request)
-        # 空结果不写入缓存，避免长时间缓存「无命中」导致误伤
         if results:
             await self._set_cached_materials(request, results)
         return SearchAudioData(materials=results)
-
-    async def _resolve_created_id(self, audio_name: str) -> str:
-        materials = await self._comm.list_audio_materials_by_name(audio_name)
-        if not materials:
-            raise CommMaterialNotFoundError(audio_name)
-        return materials[0].id
 
     async def _get_cached_materials(
         self, request: SearchAudioRequest
@@ -137,12 +127,5 @@ class AudioService:
             logger.error("清除检索缓存失败：{}", exc)
 
     async def _invalidate_candidate_caches(self) -> None:
-        """CUD 后立即清缓存；睡眠阶段候选延时去抖重建，避免频繁写入反复打 ES。"""
         await self._clear_search_cache()
         await self._sleep_stage_refresh.invalidate()
-
-
-def _create_response_doc(material_id: str, request: CreateAudioRequest) -> dict[str, Any]:
-    payload = {**_CREATE_RESPONSE_DEFAULTS, **request.to_mongo_doc()}
-    payload["id"] = material_id
-    return payload
