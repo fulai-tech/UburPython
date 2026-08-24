@@ -17,4 +17,5 @@ def test_handboard_package() -> None:
 def test_somni_package() -> None:
     assert uburnode_somni_pb2.DESCRIPTOR.package == "uburnode.somni.v1"
     assert hasattr(uburnode_somni_pb2_grpc, "QuizServiceServicer")
+    assert hasattr(uburnode_somni_pb2_grpc, "ReportServiceServicer")
     assert not hasattr(uburnode_somni_pb2_grpc, "AudioServiceServicer")

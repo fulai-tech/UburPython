@@ -64,6 +64,7 @@ from app.server.bootstrap import GrpcServers, start_grpc_servers, stop_grpc_serv
 from app.server.handboard.audio.service import AudioService
 from app.server.handboard.audio.store import MaterialsStore, create_materials_store
 from app.server.somni.quiz.service import QuizService as SomniQuizService
+from app.server.somni.report.service import ReportService as SomniReportService
 from app.services.retrieval import RetrievalService
 from scripts.sync_es_from_comm import shutdown_sync_scheduler, start_sync_scheduler
 
@@ -80,6 +81,7 @@ class AppState:
     retrieval_service: RetrievalService | None = None
     audio_service: AudioService | None = None
     somni_quiz_service: SomniQuizService | None = None
+    somni_report_service: SomniReportService | None = None
     search_cache: AudioSearchCache | None = None
     sleep_stage_cache: SleepStageCandidateCache | None = None
     grpc_servers: GrpcServers | None = None
@@ -172,6 +174,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.warning("未配置 SOMNI_MONGO_URI，量产问卷将不可用")
 
     _app_state.somni_quiz_service = SomniQuizService(somni_mongo, settings)
+    _app_state.somni_report_service = SomniReportService()
 
     start_sync_scheduler(_app_state, settings)
     _app_state.grpc_servers = await start_grpc_servers(_app_state, settings)
