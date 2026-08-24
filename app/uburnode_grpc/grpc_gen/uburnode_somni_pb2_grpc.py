@@ -95,3 +95,247 @@ class QuizService:
             timeout,
             metadata,
             _registered_method=True)
+
+
+class ReportServiceStub:
+    """Missing associated documentation comment in .proto file."""
+
+    def __init__(self, channel):
+        """Constructor.
+
+        Args:
+            channel: A grpc.Channel.
+        """
+        self.GetSummary = channel.unary_unary(
+                '/uburnode.somni.v1.ReportService/GetSummary',
+                request_serializer=uburnode__somni__pb2.ReportDateReq.SerializeToString,
+                response_deserializer=uburnode__somni__pb2.GetSummaryRes.FromString,
+                _registered_method=True)
+        self.GetEvents = channel.unary_unary(
+                '/uburnode.somni.v1.ReportService/GetEvents',
+                request_serializer=uburnode__somni__pb2.ReportDateReq.SerializeToString,
+                response_deserializer=uburnode__somni__pb2.GetEventsRes.FromString,
+                _registered_method=True)
+        self.GetEnvironment = channel.unary_unary(
+                '/uburnode.somni.v1.ReportService/GetEnvironment',
+                request_serializer=uburnode__somni__pb2.ReportDateReq.SerializeToString,
+                response_deserializer=uburnode__somni__pb2.GetEnvironmentRes.FromString,
+                _registered_method=True)
+        self.GetStructure = channel.unary_unary(
+                '/uburnode.somni.v1.ReportService/GetStructure',
+                request_serializer=uburnode__somni__pb2.ReportDateReq.SerializeToString,
+                response_deserializer=uburnode__somni__pb2.GetStructureRes.FromString,
+                _registered_method=True)
+        self.GetSleepQuality = channel.unary_unary(
+                '/uburnode.somni.v1.ReportService/GetSleepQuality',
+                request_serializer=uburnode__somni__pb2.ReportDateReq.SerializeToString,
+                response_deserializer=uburnode__somni__pb2.GetSleepQualityRes.FromString,
+                _registered_method=True)
+
+
+class ReportServiceServicer:
+    """Missing associated documentation comment in .proto file."""
+
+    def GetSummary(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetEvents(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetEnvironment(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetStructure(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetSleepQuality(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+
+def add_ReportServiceServicer_to_server(servicer, server):
+    rpc_method_handlers = {
+            'GetSummary': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetSummary,
+                    request_deserializer=uburnode__somni__pb2.ReportDateReq.FromString,
+                    response_serializer=uburnode__somni__pb2.GetSummaryRes.SerializeToString,
+            ),
+            'GetEvents': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetEvents,
+                    request_deserializer=uburnode__somni__pb2.ReportDateReq.FromString,
+                    response_serializer=uburnode__somni__pb2.GetEventsRes.SerializeToString,
+            ),
+            'GetEnvironment': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetEnvironment,
+                    request_deserializer=uburnode__somni__pb2.ReportDateReq.FromString,
+                    response_serializer=uburnode__somni__pb2.GetEnvironmentRes.SerializeToString,
+            ),
+            'GetStructure': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetStructure,
+                    request_deserializer=uburnode__somni__pb2.ReportDateReq.FromString,
+                    response_serializer=uburnode__somni__pb2.GetStructureRes.SerializeToString,
+            ),
+            'GetSleepQuality': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetSleepQuality,
+                    request_deserializer=uburnode__somni__pb2.ReportDateReq.FromString,
+                    response_serializer=uburnode__somni__pb2.GetSleepQualityRes.SerializeToString,
+            ),
+    }
+    generic_handler = grpc.method_handlers_generic_handler(
+            'uburnode.somni.v1.ReportService', rpc_method_handlers)
+    server.add_generic_rpc_handlers((generic_handler,))
+    server.add_registered_method_handlers('uburnode.somni.v1.ReportService', rpc_method_handlers)
+
+
+ # This class is part of an EXPERIMENTAL API.
+class ReportService:
+    """Missing associated documentation comment in .proto file."""
+
+    @staticmethod
+    def GetSummary(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/uburnode.somni.v1.ReportService/GetSummary',
+            uburnode__somni__pb2.ReportDateReq.SerializeToString,
+            uburnode__somni__pb2.GetSummaryRes.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetEvents(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/uburnode.somni.v1.ReportService/GetEvents',
+            uburnode__somni__pb2.ReportDateReq.SerializeToString,
+            uburnode__somni__pb2.GetEventsRes.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetEnvironment(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/uburnode.somni.v1.ReportService/GetEnvironment',
+            uburnode__somni__pb2.ReportDateReq.SerializeToString,
+            uburnode__somni__pb2.GetEnvironmentRes.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetStructure(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/uburnode.somni.v1.ReportService/GetStructure',
+            uburnode__somni__pb2.ReportDateReq.SerializeToString,
+            uburnode__somni__pb2.GetStructureRes.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetSleepQuality(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/uburnode.somni.v1.ReportService/GetSleepQuality',
+            uburnode__somni__pb2.ReportDateReq.SerializeToString,
+            uburnode__somni__pb2.GetSleepQualityRes.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)

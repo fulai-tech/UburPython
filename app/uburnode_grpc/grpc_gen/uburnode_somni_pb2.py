@@ -25,7 +25,7 @@ _sym_db = _symbol_database.Default()
 from google.protobuf import struct_pb2 as google_dot_protobuf_dot_struct__pb2
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x14uburnode_somni.proto\x12\x11uburnode.somni.v1\x1a\x1cgoogle/protobuf/struct.proto\".\n\x0cGetAnswerReq\x12\x0b\n\x03uid\x18\x01 \x01(\t\x12\x11\n\tanswer_id\x18\x02 \x01(\t\"\x8e\x01\n\nAnswerItem\x12\x13\n\x0bquestion_id\x18\x01 \x01(\t\x12\x12\n\ninput_type\x18\x02 \x01(\t\x12\r\n\x05title\x18\x03 \x01(\t\x12\x0c\n\x04tags\x18\x04 \x03(\t\x12%\n\x05value\x18\x05 \x01(\x0b\x32\x16.google.protobuf.Value\x12\x13\n\x0b\x65xtra_input\x18\x06 \x01(\t\">\n\x0cGetAnswerRes\x12.\n\x07\x61nswers\x18\x01 \x03(\x0b\x32\x1d.uburnode.somni.v1.AnswerItem2\\\n\x0bQuizService\x12M\n\tGetAnswer\x12\x1f.uburnode.somni.v1.GetAnswerReq\x1a\x1f.uburnode.somni.v1.GetAnswerResb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x14uburnode_somni.proto\x12\x11uburnode.somni.v1\x1a\x1cgoogle/protobuf/struct.proto\".\n\x0cGetAnswerReq\x12\x0b\n\x03uid\x18\x01 \x01(\t\x12\x11\n\tanswer_id\x18\x02 \x01(\t\"\x8e\x01\n\nAnswerItem\x12\x13\n\x0bquestion_id\x18\x01 \x01(\t\x12\x12\n\ninput_type\x18\x02 \x01(\t\x12\r\n\x05title\x18\x03 \x01(\t\x12\x0c\n\x04tags\x18\x04 \x03(\t\x12%\n\x05value\x18\x05 \x01(\x0b\x32\x16.google.protobuf.Value\x12\x13\n\x0b\x65xtra_input\x18\x06 \x01(\t\">\n\x0cGetAnswerRes\x12.\n\x07\x61nswers\x18\x01 \x03(\x0b\x32\x1d.uburnode.somni.v1.AnswerItem\"1\n\rReportDateReq\x12\x0b\n\x03uid\x18\x01 \x01(\t\x12\x13\n\x0brecord_date\x18\x02 \x01(\t\"\x0f\n\rGetSummaryRes\"\x0e\n\x0cGetEventsRes\"\x13\n\x11GetEnvironmentRes\"\x11\n\x0fGetStructureRes\"\x14\n\x12GetSleepQualityRes2\\\n\x0bQuizService\x12M\n\tGetAnswer\x12\x1f.uburnode.somni.v1.GetAnswerReq\x1a\x1f.uburnode.somni.v1.GetAnswerRes2\xbd\x03\n\rReportService\x12P\n\nGetSummary\x12 .uburnode.somni.v1.ReportDateReq\x1a .uburnode.somni.v1.GetSummaryRes\x12N\n\tGetEvents\x12 .uburnode.somni.v1.ReportDateReq\x1a\x1f.uburnode.somni.v1.GetEventsRes\x12X\n\x0eGetEnvironment\x12 .uburnode.somni.v1.ReportDateReq\x1a$.uburnode.somni.v1.GetEnvironmentRes\x12T\n\x0cGetStructure\x12 .uburnode.somni.v1.ReportDateReq\x1a\".uburnode.somni.v1.GetStructureRes\x12Z\n\x0fGetSleepQuality\x12 .uburnode.somni.v1.ReportDateReq\x1a%.uburnode.somni.v1.GetSleepQualityResb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -38,6 +38,20 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_ANSWERITEM']._serialized_end=264
   _globals['_GETANSWERRES']._serialized_start=266
   _globals['_GETANSWERRES']._serialized_end=328
-  _globals['_QUIZSERVICE']._serialized_start=330
-  _globals['_QUIZSERVICE']._serialized_end=422
+  _globals['_REPORTDATEREQ']._serialized_start=330
+  _globals['_REPORTDATEREQ']._serialized_end=379
+  _globals['_GETSUMMARYRES']._serialized_start=381
+  _globals['_GETSUMMARYRES']._serialized_end=396
+  _globals['_GETEVENTSRES']._serialized_start=398
+  _globals['_GETEVENTSRES']._serialized_end=412
+  _globals['_GETENVIRONMENTRES']._serialized_start=414
+  _globals['_GETENVIRONMENTRES']._serialized_end=433
+  _globals['_GETSTRUCTURERES']._serialized_start=435
+  _globals['_GETSTRUCTURERES']._serialized_end=452
+  _globals['_GETSLEEPQUALITYRES']._serialized_start=454
+  _globals['_GETSLEEPQUALITYRES']._serialized_end=474
+  _globals['_QUIZSERVICE']._serialized_start=476
+  _globals['_QUIZSERVICE']._serialized_end=568
+  _globals['_REPORTSERVICE']._serialized_start=571
+  _globals['_REPORTSERVICE']._serialized_end=1016
 # @@protoc_insertion_point(module_scope)

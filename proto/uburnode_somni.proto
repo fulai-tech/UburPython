@@ -1,7 +1,7 @@
 syntax = "proto3";
 
 // 量产对外契约（见 docs/量产中间件接口文档.md）
-// 本期仅 GetAnswer；查量产表 somni_quiz_answers
+// Quiz：GetAnswer；Report：GetSummary/GetEvents/GetEnvironment/GetStructure/GetSleepQuality
 package uburnode.somni.v1;
 
 import "google/protobuf/struct.proto";
@@ -27,4 +27,27 @@ message GetAnswerRes {
 
 service QuizService {
   rpc GetAnswer (GetAnswerReq) returns (GetAnswerRes);
+}
+
+message ReportDateReq {
+  string uid = 1;          // 必传
+  string record_date = 2;  // 必传：记录日期
+}
+
+message GetSummaryRes {}
+
+message GetEventsRes {}
+
+message GetEnvironmentRes {}
+
+message GetStructureRes {}
+
+message GetSleepQualityRes {}
+
+service ReportService {
+  rpc GetSummary (ReportDateReq) returns (GetSummaryRes);
+  rpc GetEvents (ReportDateReq) returns (GetEventsRes);
+  rpc GetEnvironment (ReportDateReq) returns (GetEnvironmentRes);
+  rpc GetStructure (ReportDateReq) returns (GetStructureRes);
+  rpc GetSleepQuality (ReportDateReq) returns (GetSleepQualityRes);
 }

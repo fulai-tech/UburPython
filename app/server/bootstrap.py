@@ -11,6 +11,7 @@ from loguru import logger
 from app.server.handboard.audio.rpc import AudioRpc as HandboardAudioRpc
 from app.server.handboard.quiz.rpc import QuizRpc as HandboardQuizRpc
 from app.server.somni.quiz.rpc import QuizRpc as SomniQuizRpc
+from app.server.somni.report.rpc import ReportRpc as SomniReportRpc
 from app.uburnode_grpc.grpc_gen import uburnode_pb2_grpc, uburnode_somni_pb2_grpc
 
 if TYPE_CHECKING:
@@ -64,6 +65,10 @@ async def _start_somni(state: AppState, settings: Settings) -> grpc.aio.Server:
     server = grpc.aio.server()
     uburnode_somni_pb2_grpc.add_QuizServiceServicer_to_server(
         SomniQuizRpc(getattr(state, "somni_quiz_service", None)),
+        server,
+    )
+    uburnode_somni_pb2_grpc.add_ReportServiceServicer_to_server(
+        SomniReportRpc(getattr(state, "somni_report_service", None)),
         server,
     )
     bind = f"{settings.grpc_host}:{settings.somni_grpc_port}"
