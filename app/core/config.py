@@ -22,11 +22,11 @@ class Settings(BaseSettings):
 
     # 功能手板 gRPC（与 HTTP 同进程；false 时跳过该端口）
     grpc_host: str = "0.0.0.0"
-    grpc_port: int = 50050
+    grpc_port: int = 50065
     grpc_enabled: bool = True
 
     # 量产 gRPC
-    somni_grpc_port: int = 50055
+    somni_grpc_port: int = 50064
     somni_grpc_enabled: bool = True
 
     es_node: str = "http://localhost:9200"
