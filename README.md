@@ -3,8 +3,8 @@
 **Somni / 功能手板音频检索服务**：三维度检索为核心；HTTP 保留；同进程再对外暴露功能手板与量产两套 gRPC。
 
 - **核心**：三维度音频检索（ES 召回 + 标签词典向量 + 精排）
-- **功能手板**：`MONGO_*` + `ES_NODE` + `REDIS_URL`；HTTP `:8080` + gRPC `:50050`
-- **量产**：`SOMNI_MONGO_*` + `SOMNI_ES_*` + `SOMNI_REDIS_URL`；gRPC `:50055`
+- **功能手板**：`MONGO_*` + `ES_NODE` + `REDIS_URL`；HTTP `:8080` + gRPC `:50065`
+- **量产**：`SOMNI_MONGO_*` + `SOMNI_ES_*` + `SOMNI_REDIS_URL`；gRPC `:50064`
 - **写路径**：直连 Mongo，再同步本侧 ES（不再调用 BioNode）
 - **接口文档**：`docs/功能手板接口文档.md`、`docs/量产接口文档.md`
 
@@ -14,8 +14,8 @@
 算法端 / 调用方
     │
     ├── HTTP :8080 ──► app/api/audio ──► server/handboard（Fullive）
-    ├── gRPC :50050 ─► uburnode.v1（手板 audio/quiz）
-    └── gRPC :50055 ─► uburnode.somni.v1（量产 ListTags/ListAudios/Search/GetAnswer）
+    ├── gRPC :50065 ─► uburnode.v1（手板 audio/quiz）
+    └── gRPC :50064 ─► uburnode.somni.v1（量产 ListTags/ListAudios/Search/GetAnswer）
 ```
 
 ## 目录结构
