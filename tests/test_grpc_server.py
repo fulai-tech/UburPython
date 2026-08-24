@@ -17,7 +17,7 @@ async def test_start_both_servers_when_enabled(monkeypatch: pytest.MonkeyPatch) 
     fake_hb.add_insecure_port = MagicMock(return_value=50050)
     fake_hb.start = AsyncMock()
     fake_sm = MagicMock()
-    fake_sm.add_insecure_port = MagicMock(return_value=50051)
+    fake_sm.add_insecure_port = MagicMock(return_value=50055)
     fake_sm.start = AsyncMock()
     servers = iter([fake_hb, fake_sm])
     monkeypatch.setattr(

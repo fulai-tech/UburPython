@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     grpc_enabled: bool = True
 
     # 量产 gRPC
-    somni_grpc_port: int = 50051
+    somni_grpc_port: int = 50055
     somni_grpc_enabled: bool = True
 
     es_node: str = "http://localhost:9200"
