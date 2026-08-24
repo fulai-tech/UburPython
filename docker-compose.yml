@@ -29,7 +29,7 @@ services:
       REDIS_URL: redis://redis:6379/0
     ports:
       - "50050:50050"  # 功能手板 gRPC
-      - "50051:50051"  # 量产 gRPC
+      - "50055:50055"  # 量产 gRPC
       # HTTP 仍经 nginx :8001
     volumes:
       - hf_cache:/data/huggingface
