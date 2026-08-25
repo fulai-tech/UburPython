@@ -6,13 +6,20 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import grpc
+from grpc_reflection.v1alpha import reflection
 from loguru import logger
 
 from app.server.handboard.audio.rpc import AudioRpc as HandboardAudioRpc
 from app.server.handboard.quiz.rpc import QuizRpc as HandboardQuizRpc
+from app.server.somni.audio.rpc import AudioRpc as SomniAudioRpc
 from app.server.somni.quiz.rpc import QuizRpc as SomniQuizRpc
 from app.server.somni.report.rpc import ReportRpc as SomniReportRpc
-from app.uburnode_grpc.grpc_gen import uburnode_pb2_grpc, uburnode_somni_pb2_grpc
+from app.uburnode_grpc.grpc_gen import (
+    uburnode_pb2,
+    uburnode_pb2_grpc,
+    uburnode_somni_pb2,
+    uburnode_somni_pb2_grpc,
+)
 
 if TYPE_CHECKING:
     from app.core.config import Settings
@@ -55,6 +62,7 @@ async def _start_handboard(state: AppState, settings: Settings) -> grpc.aio.Serv
         server,
     )
     uburnode_pb2_grpc.add_QuizServiceServicer_to_server(HandboardQuizRpc(), server)
+    _enable_reflection(server, uburnode_pb2)
     bind = f"{settings.grpc_host}:{settings.grpc_port}"
     _bind(server, bind, "功能手板")
     await server.start()
@@ -71,10 +79,21 @@ async def _start_somni(state: AppState, settings: Settings) -> grpc.aio.Server:
         SomniReportRpc(getattr(state, "somni_report_service", None)),
         server,
     )
+    uburnode_somni_pb2_grpc.add_AudioServiceServicer_to_server(
+        SomniAudioRpc(getattr(state, "somni_audio_service", None)),
+        server,
+    )
+    _enable_reflection(server, uburnode_somni_pb2)
     bind = f"{settings.grpc_host}:{settings.somni_grpc_port}"
     _bind(server, bind, "量产")
     await server.start()
     return server
+
+
+def _enable_reflection(server: grpc.aio.Server, proto_module) -> None:
+    names = [reflection.SERVICE_NAME]
+    names.extend(svc.full_name for svc in proto_module.DESCRIPTOR.services_by_name.values())
+    reflection.enable_server_reflection(tuple(names), server)
 
 
 def _bind(server: grpc.aio.Server, bind: str, label: str) -> None:

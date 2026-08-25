@@ -6,6 +6,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import grpc
 import pytest
+from bson import ObjectId
+from google.protobuf.json_format import MessageToDict
 
 from app.core.config import Settings
 from app.core.exceptions import AppError, MongoNotConfiguredError
@@ -55,16 +57,39 @@ async def test_somni_get_answer_maps_answer_item() -> None:
                     "question_id": "q1",
                     "input_type": "radio",
                     "title": "您的性别是？",
-                    "tags": ["基础信息"],
+                    "tags": [],
                     "value": {"option_id": "A", "option_text": "先生"},
+                    "extra_input": "",
+                },
+                {
+                    "question_id": "q3",
+                    "input_type": "checkbox",
+                    "title": "关注阶段",
+                    "value": [
+                        {"option_id": "A", "option_text": "早期"},
+                        {"option_id": "B", "option_text": "VC"},
+                    ],
                     "extra_input": "",
                 },
                 {
                     "question_id": "q2",
                     "input_type": "input_number",
                     "title": "夜醒次数",
-                    "tags": [],
                     "value": 2,
+                    "extra_input": "",
+                },
+                {
+                    "question_id": "q4",
+                    "input_type": "input",
+                    "title": "补充说明",
+                    "value": "最近压力比较大",
+                    "extra_input": "",
+                },
+                {
+                    "question_id": "q5",
+                    "input_type": "switch",
+                    "title": "是否启用",
+                    "value": True,
                     "extra_input": "",
                 },
             ]
@@ -75,12 +100,21 @@ async def test_somni_get_answer_maps_answer_item() -> None:
         uburnode_somni_pb2.GetAnswerReq(uid="u1", answer_id="a1"),
         _context(),
     )
-    assert len(res.answers) == 2
-    assert res.answers[0].question_id == "q1"
-    assert res.answers[0].input_type == "radio"
-    assert list(res.answers[0].tags) == ["基础信息"]
-    assert res.answers[0].value.struct_value.fields["option_id"].string_value == "A"
-    assert res.answers[1].value.number_value == 2
+    payload = MessageToDict(res, preserving_proto_field_name=True)
+    assert len(payload["answers"]) == 5
+    assert payload["answers"][0]["value"] == {
+        "option_id": "A",
+        "option_text": "先生",
+    }
+    assert payload["answers"][1]["value"] == [
+        {"option_id": "A", "option_text": "早期"},
+        {"option_id": "B", "option_text": "VC"},
+    ]
+    assert payload["answers"][2]["value"] == 2
+    assert payload["answers"][3]["value"] == "最近压力比较大"
+    assert payload["answers"][4]["value"] is True
+    assert "tags" not in payload["answers"][0]
+    assert "values" not in payload["answers"][0]
 
 
 @pytest.mark.asyncio
@@ -93,8 +127,22 @@ async def test_somni_quiz_service_loads_from_collection() -> None:
                 "question_id": "q1",
                 "input_type": "radio",
                 "title": "您的性别是？",
-                "tags": ["基础信息"],
                 "value": {"option_id": "A", "option_text": "先生"},
+            },
+            {
+                "question_id": "q3",
+                "input_type": "select",
+                "title": "常驻城市",
+                "value": {"option_id": "A", "option_text": "北京"},
+            },
+            {
+                "question_id": "q4",
+                "input_type": "checkbox",
+                "title": "关注阶段",
+                "value": [
+                    {"option_id": "A", "option_text": "早期"},
+                    {"option_id": "B", "option_text": "VC"},
+                ],
             },
             {
                 "question_id": "q2",
@@ -123,9 +171,25 @@ async def test_somni_quiz_service_loads_from_collection() -> None:
     client.__getitem__.assert_called_with("Somni")
     db.__getitem__.assert_called_with("somni_quiz_answers")
     assert payload["answers"][0]["input_type"] == "radio"
-    assert payload["answers"][0]["value"]["option_id"] == "A"
-    assert payload["answers"][1]["extra_input"] == "备注"
-    assert payload["answers"][0]["tags"] == ["基础信息"]
+    assert payload["answers"][0]["value"] == {
+        "option_id": "A",
+        "option_text": "先生",
+    }
+    assert payload["answers"][1]["value"] == {
+        "option_id": "A",
+        "option_text": "北京",
+    }
+    assert payload["answers"][2]["value"] == [
+        {"option_id": "A", "option_text": "早期"},
+        {"option_id": "B", "option_text": "VC"},
+    ]
+    assert payload["answers"][3]["extra_input"] == "备注"
+    assert "tags" not in payload["answers"][0]
+    query = collection.find_one.await_args.args[0]
+    assert query == {
+        "uid": "user-001",
+        "_id": ObjectId("69b10cc516d7472aedf6bb80"),
+    }
 
 
 @pytest.mark.asyncio

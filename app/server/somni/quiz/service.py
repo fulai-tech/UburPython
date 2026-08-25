@@ -49,14 +49,10 @@ def _normalize_answer(item: Any) -> dict[str, Any]:
             message="答卷明细格式非法",
             status_code=HttpStatus.INTERNAL_SERVER_ERROR,
         )
-    tags = item.get("tags") or []
-    if not isinstance(tags, list):
-        tags = []
     return {
         "question_id": str(item.get("question_id") or ""),
         "input_type": str(item.get("input_type") or ""),
         "title": str(item.get("title") or ""),
-        "tags": [str(tag) for tag in tags],
         "value": item.get("value"),
         "extra_input": str(item.get("extra_input") or ""),
     }

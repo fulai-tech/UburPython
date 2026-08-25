@@ -1,7 +1,7 @@
 syntax = "proto3";
 
 // 量产对外契约（见 docs/量产中间件接口文档.md）
-// Quiz：GetAnswer；Report：GetSummary/GetEvents/GetEnvironment/GetStructure/GetSleepQuality
+// Quiz / Report / Audio
 package uburnode.somni.v1;
 
 import "google/protobuf/struct.proto";
@@ -11,14 +11,15 @@ message GetAnswerReq {
   string answer_id = 2;  // 必传：答卷 _id
 }
 
-// 对齐 somni_quiz_answers.answers[]（见问卷测评四表-新结构）
 message AnswerItem {
   string question_id = 1;
   string input_type = 2;
   string title = 3;
-  repeated string tags = 4;
-  google.protobuf.Value value = 5;  // 形态由 input_type 决定
-  string extra_input = 6;           // 题级补充文本；无则空
+  reserved 4;
+  reserved "tags";
+  reserved "values";
+  google.protobuf.Value value = 5;
+  string extra_input = 6;
 }
 
 message GetAnswerRes {
@@ -50,4 +51,47 @@ service ReportService {
   rpc GetEnvironment (ReportDateReq) returns (GetEnvironmentRes);
   rpc GetStructure (ReportDateReq) returns (GetStructureRes);
   rpc GetSleepQuality (ReportDateReq) returns (GetSleepQualityRes);
+}
+
+message GetAudioReq {
+  optional int32 page = 1;         // 页码，≥ 1；fetch_all 时忽略
+  optional int32 page_size = 2;    // 每页条数
+  optional bool fetch_all = 3;     // true 时分页字段忽略，拉全量
+  optional string query_text = 4;  // 搜索词，如「雨声」；空则不过滤
+  optional string tag_code = 5;    // 内容形态标签 code；空则不按标签过滤
+}
+
+message PageInfo {
+  int32 page = 1;
+  int32 page_size = 2;
+  int32 total = 3;
+  int32 total_pages = 4;
+}
+
+message GetAudioRes {
+  repeated google.protobuf.Struct materials = 1;
+  PageInfo page = 2;
+}
+
+message GetAudioTagReq {}
+
+message TagDictItem {
+  string type = 1;
+  string code = 2;
+  string name = 3;
+  string name_en = 4;
+}
+
+message GetAudioTagRes {
+  repeated TagDictItem tags = 1;
+}
+
+message GetHotReq {}
+
+message GetHotRes {}
+
+service AudioService {
+  rpc GetAudio (GetAudioReq) returns (GetAudioRes);
+  rpc GetAudioTag (GetAudioTagReq) returns (GetAudioTagRes);
+  rpc GetHot (GetHotReq) returns (GetHotRes);
 }

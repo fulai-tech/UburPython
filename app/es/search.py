@@ -97,9 +97,20 @@ def _candidate_search_body(query: dict[str, Any], *, size: int = 1000) -> dict[s
 class EsSearch:
     """封装检索相关的 ES 查询与文档解析。"""
 
-    def __init__(self, client: AsyncElasticsearch, settings: Settings) -> None:
+    def __init__(
+        self,
+        client: AsyncElasticsearch,
+        settings: Settings,
+        *,
+        audio_index: str | None = None,
+        tag_dictionary_index: str | None = None,
+    ) -> None:
         self._client = client
         self._settings = settings
+        self._audio_index = audio_index or settings.es_audio_index
+        self._tag_dictionary_index = (
+            tag_dictionary_index or settings.es_tag_vectors_index
+        )
         self._content_tag_vectors_cache: list[dict[str, Any]] | None = None
         self._content_tag_vectors_lock = asyncio.Lock()
         # 按 tag_id 缓存 name_vector，避免每请求 mget（内容准入模糊路径）
@@ -108,11 +119,11 @@ class EsSearch:
 
     @property
     def audio_index(self) -> str:
-        return self._settings.es_audio_index
+        return self._audio_index
 
     @property
     def tag_dictionary_index(self) -> str:
-        return self._settings.es_tag_vectors_index
+        return self._tag_dictionary_index
 
     @property
     def tag_vectors_index(self) -> str:
@@ -321,6 +332,7 @@ class EsSearch:
                         "label": label,
                         "dimension": source.get("type", ""),
                         "vector": vector,
+                        "parent_tag_id": str(source.get("parent_tag_id") or ""),
                     }
                 )
         return tags
@@ -379,6 +391,18 @@ class EsSearch:
         for dim in (tags.content_form, tags.mechanism, tags.audio_feat):
             ids.extend(item.vector_id for item in dim)
         return ids
+
+    async def list_audio_catalog_docs(self, *, size: int) -> list[dict[str, Any]]:
+        """量产 GetAudio：音频全量（不含 embedding），供内存过滤。"""
+        response = await self._client.search(
+            index=self.audio_index,
+            body={
+                "query": {"match_all": {}},
+                "size": max(1, size),
+                "_source": {"excludes": ["embedding", "description_vector"]},
+            },
+        )
+        return [_document_from_hit(hit) for hit in response["hits"]["hits"]]
 
     async def migrate_legacy_indices(self) -> None:
         """删除旧版 audio_materials / tag_vectors 索引。"""

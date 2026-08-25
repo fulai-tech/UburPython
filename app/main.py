@@ -63,6 +63,7 @@ from app.middleware.request_log import register_request_log_middleware
 from app.server.bootstrap import GrpcServers, start_grpc_servers, stop_grpc_servers
 from app.server.handboard.audio.service import AudioService
 from app.server.handboard.audio.store import MaterialsStore, create_materials_store
+from app.server.somni.audio.catalog import AudioCatalogService as SomniAudioService
 from app.server.somni.quiz.service import QuizService as SomniQuizService
 from app.server.somni.report.service import ReportService as SomniReportService
 from app.services.retrieval import RetrievalService
@@ -73,6 +74,7 @@ from scripts.sync_es_from_comm import shutdown_sync_scheduler, start_sync_schedu
 class AppState:
     settings: Settings
     es_client: AsyncElasticsearch | None = None
+    somni_es_client: AsyncElasticsearch | None = None
     encoder: Encoder | None = None
     materials_store: MaterialsStore | None = None
     somni_mongo_client: AsyncIOMotorClient | None = None
@@ -82,6 +84,7 @@ class AppState:
     audio_service: AudioService | None = None
     somni_quiz_service: SomniQuizService | None = None
     somni_report_service: SomniReportService | None = None
+    somni_audio_service: SomniAudioService | None = None
     search_cache: AudioSearchCache | None = None
     sleep_stage_cache: SleepStageCandidateCache | None = None
     grpc_servers: GrpcServers | None = None
@@ -171,10 +174,27 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         somni_mongo = AsyncIOMotorClient(settings.somni_mongo_uri)
         _app_state.somni_mongo_client = somni_mongo
     else:
-        logger.warning("未配置 SOMNI_MONGO_URI，量产问卷将不可用")
+        logger.warning("未配置 SOMNI_MONGO_URI，量产问卷与音频查询将不可用")
 
     _app_state.somni_quiz_service = SomniQuizService(somni_mongo, settings)
     _app_state.somni_report_service = SomniReportService()
+    somni_es_client = create_es_client(
+        settings,
+        node=settings.effective_somni_es_node,
+    )
+    _app_state.somni_es_client = somni_es_client
+    somni_es_search = EsSearch(
+        somni_es_client,
+        settings,
+        audio_index=settings.somni_es_audio_index,
+        tag_dictionary_index=settings.somni_es_tag_vectors_index,
+    )
+    _app_state.somni_audio_service = SomniAudioService(
+        somni_mongo,
+        settings,
+        es_search=somni_es_search,
+        encoder=encoder,
+    )
 
     start_sync_scheduler(_app_state, settings)
     _app_state.grpc_servers = await start_grpc_servers(_app_state, settings)
@@ -191,6 +211,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         materials_store.close()
     if somni_mongo is not None:
         somni_mongo.close()
+    await somni_es_client.close()
     await es_client.close()
 
 
