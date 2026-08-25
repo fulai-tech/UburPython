@@ -8,6 +8,18 @@ from app.core.config import Settings
 from app.es.search import SEARCH_CANDIDATE_SOURCE_INCLUDES, EsSearch
 
 
+def test_es_search_accepts_isolated_index_names() -> None:
+    search = EsSearch(
+        MagicMock(),
+        Settings(),
+        audio_index="somni-prod-audio",
+        tag_dictionary_index="somni-prod-tags",
+    )
+
+    assert search.audio_index == "somni-prod-audio"
+    assert search.tag_dictionary_index == "somni-prod-tags"
+
+
 @pytest.mark.asyncio
 async def test_get_dictionary_vectors_deduplicates_and_batches_ids() -> None:
     client = MagicMock()

@@ -54,6 +54,8 @@ class Settings(BaseSettings):
     somni_mongo_answers_collection: str = "somni_quiz_answers"
 
     sim_threshold: float = 0.7  # 内容形态向量模糊命中阈值（规范 §五-2）
+    # GetAudio query_text 与根标签向量相似度下限
+    get_audio_root_tag_sim_threshold: float = 0.85
     # 多路文本检索厌恶硬剔除阈值；≥ 该值 penalty=1.0 丢弃候选
     strong_dislike_sim_threshold: float = 0.85
     search_sleep_stage_filter_enabled: bool = True  # 检索步骤 1 是否按睡眠阶段过滤
@@ -93,6 +95,7 @@ class Settings(BaseSettings):
     redis_max_connections: int = 512
     search_cache_max_size: int = 2048
     search_cache_ttl_sec: int = 604800  # 7 天
+    somni_audio_catalog_cache_ttl_sec: float = 60.0
     # CUD 后延时重建睡眠阶段候选缓存，窗口内多次写入只重建一次
     sleep_stage_cache_rewarm_delay_sec: float = 5.0
 

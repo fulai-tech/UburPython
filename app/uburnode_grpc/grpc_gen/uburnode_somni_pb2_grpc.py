@@ -339,3 +339,161 @@ class ReportService:
             timeout,
             metadata,
             _registered_method=True)
+
+
+class AudioServiceStub:
+    """Missing associated documentation comment in .proto file."""
+
+    def __init__(self, channel):
+        """Constructor.
+
+        Args:
+            channel: A grpc.Channel.
+        """
+        self.GetAudio = channel.unary_unary(
+                '/uburnode.somni.v1.AudioService/GetAudio',
+                request_serializer=uburnode__somni__pb2.GetAudioReq.SerializeToString,
+                response_deserializer=uburnode__somni__pb2.GetAudioRes.FromString,
+                _registered_method=True)
+        self.GetAudioTag = channel.unary_unary(
+                '/uburnode.somni.v1.AudioService/GetAudioTag',
+                request_serializer=uburnode__somni__pb2.GetAudioTagReq.SerializeToString,
+                response_deserializer=uburnode__somni__pb2.GetAudioTagRes.FromString,
+                _registered_method=True)
+        self.GetHot = channel.unary_unary(
+                '/uburnode.somni.v1.AudioService/GetHot',
+                request_serializer=uburnode__somni__pb2.GetHotReq.SerializeToString,
+                response_deserializer=uburnode__somni__pb2.GetHotRes.FromString,
+                _registered_method=True)
+
+
+class AudioServiceServicer:
+    """Missing associated documentation comment in .proto file."""
+
+    def GetAudio(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetAudioTag(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetHot(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+
+def add_AudioServiceServicer_to_server(servicer, server):
+    rpc_method_handlers = {
+            'GetAudio': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetAudio,
+                    request_deserializer=uburnode__somni__pb2.GetAudioReq.FromString,
+                    response_serializer=uburnode__somni__pb2.GetAudioRes.SerializeToString,
+            ),
+            'GetAudioTag': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetAudioTag,
+                    request_deserializer=uburnode__somni__pb2.GetAudioTagReq.FromString,
+                    response_serializer=uburnode__somni__pb2.GetAudioTagRes.SerializeToString,
+            ),
+            'GetHot': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetHot,
+                    request_deserializer=uburnode__somni__pb2.GetHotReq.FromString,
+                    response_serializer=uburnode__somni__pb2.GetHotRes.SerializeToString,
+            ),
+    }
+    generic_handler = grpc.method_handlers_generic_handler(
+            'uburnode.somni.v1.AudioService', rpc_method_handlers)
+    server.add_generic_rpc_handlers((generic_handler,))
+    server.add_registered_method_handlers('uburnode.somni.v1.AudioService', rpc_method_handlers)
+
+
+ # This class is part of an EXPERIMENTAL API.
+class AudioService:
+    """Missing associated documentation comment in .proto file."""
+
+    @staticmethod
+    def GetAudio(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/uburnode.somni.v1.AudioService/GetAudio',
+            uburnode__somni__pb2.GetAudioReq.SerializeToString,
+            uburnode__somni__pb2.GetAudioRes.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetAudioTag(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/uburnode.somni.v1.AudioService/GetAudioTag',
+            uburnode__somni__pb2.GetAudioTagReq.SerializeToString,
+            uburnode__somni__pb2.GetAudioTagRes.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetHot(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/uburnode.somni.v1.AudioService/GetHot',
+            uburnode__somni__pb2.GetHotReq.SerializeToString,
+            uburnode__somni__pb2.GetHotRes.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)

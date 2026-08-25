@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING, Any
 
-from google.protobuf.json_format import Parse
-from google.protobuf.struct_pb2 import Value
+from google.protobuf.json_format import ParseDict
 
 from app.core.exceptions import ServiceNotReadyError
 from app.server.errors import abort_from_app_error, abort_invalid, run_rpc_call
@@ -40,19 +38,18 @@ class QuizRpc(uburnode_somni_pb2_grpc.QuizServiceServicer):
 def _to_res(payload: dict[str, Any]) -> uburnode_somni_pb2.GetAnswerRes:
     res = uburnode_somni_pb2.GetAnswerRes()
     for item in payload.get("answers") or []:
-        answer = uburnode_somni_pb2.AnswerItem(
-            question_id=str(item.get("question_id") or ""),
-            input_type=str(item.get("input_type") or ""),
-            title=str(item.get("title") or ""),
-            tags=[str(tag) for tag in (item.get("tags") or [])],
-            extra_input=str(item.get("extra_input") or ""),
-        )
-        _assign_value(answer.value, item.get("value"))
-        res.answers.append(answer)
+        res.answers.append(_to_item(item if isinstance(item, dict) else {}))
     return res
 
 
-def _assign_value(target: Value, raw: Any) -> None:
-    if raw is None:
-        return
-    Parse(json.dumps(raw, ensure_ascii=False), target)
+def _to_item(item: dict[str, Any]) -> uburnode_somni_pb2.AnswerItem:
+    answer = uburnode_somni_pb2.AnswerItem(
+        question_id=str(item.get("question_id") or ""),
+        input_type=str(item.get("input_type") or ""),
+        title=str(item.get("title") or ""),
+        extra_input=str(item.get("extra_input") or ""),
+    )
+    raw = item.get("value")
+    if raw is not None:
+        ParseDict(raw, answer.value)
+    return answer
