@@ -55,15 +55,18 @@ from app.cache.sleep_stage_cache import (
 from app.core.config import Settings, get_settings
 from app.core.exception_handlers import register_exception_handlers
 from app.core.logging import setup_logging
+from app.core.somni_redis import create_somni_redis
 from app.embedding.encoder import Encoder, create_encoder
 from app.es.client import create_es_client
 from app.es.search import EsSearch
+from app.es.search_events import SearchEventsStore
 from app.es.sync import EsSync
 from app.middleware.request_log import register_request_log_middleware
 from app.server.bootstrap import GrpcServers, start_grpc_servers, stop_grpc_servers
 from app.server.handboard.audio.service import AudioService
 from app.server.handboard.audio.store import MaterialsStore, create_materials_store
 from app.server.somni.audio.catalog import AudioCatalogService as SomniAudioService
+from app.server.somni.audio.hot import HotTracker
 from app.server.somni.quiz.service import QuizService as SomniQuizService
 from app.server.somni.report.service import ReportService as SomniReportService
 from app.services.retrieval import RetrievalService
@@ -189,11 +192,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         audio_index=settings.somni_es_audio_index,
         tag_dictionary_index=settings.somni_es_tag_vectors_index,
     )
+    somni_redis = await create_somni_redis(settings)
+    events_store = SearchEventsStore(somni_es_client, settings)
+    hot_tracker = HotTracker(somni_redis, events_store, settings)
     _app_state.somni_audio_service = SomniAudioService(
         somni_mongo,
         settings,
         es_search=somni_es_search,
         encoder=encoder,
+        hot=hot_tracker,
     )
 
     start_sync_scheduler(_app_state, settings)
@@ -206,11 +213,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await stop_grpc_servers(_app_state.grpc_servers)
     _app_state.grpc_servers = None
     shutdown_sync_scheduler()
+    if _app_state.somni_audio_service is not None:
+        await _app_state.somni_audio_service.drain_hot_tasks()
     await shutdown_audio_search_cache(search_cache)
     if materials_store is not None:
         materials_store.close()
     if somni_mongo is not None:
         somni_mongo.close()
+    if somni_redis is not None:
+        await somni_redis.aclose()
     await somni_es_client.close()
     await es_client.close()
 

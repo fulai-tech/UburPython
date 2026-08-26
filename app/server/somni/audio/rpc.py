@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from google.protobuf.struct_pb2 import Struct
+from google.protobuf.struct_pb2 import Value
 
 from app.core.exceptions import ServiceNotReadyError
 from app.server.errors import abort_from_app_error, run_rpc_call
@@ -42,8 +42,8 @@ class AudioRpc(uburnode_somni_pb2_grpc.AudioServiceServicer):
         service = await self._require(context)
 
         async def _do():
-            await service.get_hot()
-            return uburnode_somni_pb2.GetHotRes()
+            payload = await service.get_hot()
+            return _to_hot_res(payload)
 
         return await run_rpc_call(context, _do)
 
@@ -72,24 +72,50 @@ def _to_tag_res(payload: dict[str, Any]) -> uburnode_somni_pb2.GetAudioTagRes:
                 code=str(item.get("code") or ""),
                 name=str(item.get("name") or ""),
                 name_en=str(item.get("name_en") or ""),
+                id=str(item.get("id") or ""),
+                parent_tag_id=_to_value(item.get("parent_tag_id")),
+                status=str(item.get("status") or ""),
+            )
+        )
+    return res
+
+
+def _to_value(value: Any) -> Value:
+    result = Value()
+    if value is None:
+        result.null_value = 0
+    else:
+        result.string_value = str(value)
+    return result
+
+
+def _to_hot_res(payload: dict[str, Any]) -> uburnode_somni_pb2.GetHotRes:
+    res = uburnode_somni_pb2.GetHotRes()
+    for item in payload.get("items") or []:
+        res.items.append(
+            uburnode_somni_pb2.HotKeyword(
+                keyword=str(item.get("keyword") or ""),
+                score=int(item.get("score") or 0),
             )
         )
     return res
 
 
 def _to_audio_res(payload: dict[str, Any]) -> uburnode_somni_pb2.GetAudioRes:
-    res = uburnode_somni_pb2.GetAudioRes()
-    for item in payload.get("materials") or []:
-        struct = Struct()
-        struct.update(item if isinstance(item, dict) else {})
-        res.materials.append(struct)
-    page = payload.get("page") or {}
-    res.page.CopyFrom(
-        uburnode_somni_pb2.PageInfo(
-            page=int(page.get("page") or 1),
-            page_size=int(page.get("page_size") or 0),
-            total=int(page.get("total") or 0),
-            total_pages=int(page.get("total_pages") or 0),
-        )
+    res = uburnode_somni_pb2.GetAudioRes(
+        page=int(payload.get("page") or 1),
+        page_size=int(payload.get("page_size") or 0),
+        total=int(payload.get("total") or 0),
     )
+    for item in payload.get("list") or []:
+        res.list.append(
+            uburnode_somni_pb2.AudioListItem(
+                id=str(item.get("id") or ""),
+                audio_name=str(item.get("audio_name") or ""),
+                audio_url=str(item.get("audio_url") or ""),
+                cover_url=str(item.get("cover_url") or ""),
+                description=str(item.get("description") or ""),
+                vip=int(item.get("vip") or 0),
+            )
+        )
     return res
