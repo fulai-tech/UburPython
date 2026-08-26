@@ -53,6 +53,11 @@ class Settings(BaseSettings):
     somni_mongo_materials_collection: str = "somni_audio_materials"
     somni_mongo_tag_dictionary_collection: str = "somni_audio_tag_dictionary"
     somni_mongo_answers_collection: str = "somni_quiz_answers"
+    somni_mongo_devices_collection: str = "somni_devices"
+    somni_mongo_telemetry_collection: str = "somni_telemetry"
+    somni_mongo_records_collection: str = "somni_records"
+    somni_mongo_sleep_reports_collection: str = "somni_sleep_reports"
+    somni_mongo_events_collection: str = "somni_events"
 
     sim_threshold: float = 0.7  # 内容形态向量模糊命中阈值（规范 §五-2）
     # GetAudio query_text 与内容形态标签（含二级）向量相似度下限
