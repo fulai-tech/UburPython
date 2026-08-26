@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any
-
-from google.protobuf.json_format import ParseDict
 
 from app.core.exceptions import ServiceNotReadyError
 from app.server.errors import abort_from_app_error, abort_invalid, run_rpc_call
@@ -36,20 +35,17 @@ class QuizRpc(uburnode_somni_pb2_grpc.QuizServiceServicer):
 
 
 def _to_res(payload: dict[str, Any]) -> uburnode_somni_pb2.GetAnswerRes:
-    res = uburnode_somni_pb2.GetAnswerRes()
-    for item in payload.get("answers") or []:
-        res.answers.append(_to_item(item if isinstance(item, dict) else {}))
-    return res
-
-
-def _to_item(item: dict[str, Any]) -> uburnode_somni_pb2.AnswerItem:
-    answer = uburnode_somni_pb2.AnswerItem(
-        question_id=str(item.get("question_id") or ""),
-        input_type=str(item.get("input_type") or ""),
-        title=str(item.get("title") or ""),
-        extra_input=str(item.get("extra_input") or ""),
+    items = [
+        {
+            "question_id": str(item.get("question_id") or ""),
+            "input_type": str(item.get("input_type") or ""),
+            "title": str(item.get("title") or ""),
+            "value": item.get("value"),
+            "extra_input": str(item.get("extra_input") or ""),
+        }
+        for item in (payload.get("answers") or [])
+        if isinstance(item, dict)
+    ]
+    return uburnode_somni_pb2.GetAnswerRes(
+        answers=json.dumps(items, ensure_ascii=False, separators=(",", ":")),
     )
-    raw = item.get("value")
-    if raw is not None:
-        ParseDict(raw, answer.value)
-    return answer
