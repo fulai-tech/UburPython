@@ -180,7 +180,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.warning("未配置 SOMNI_MONGO_URI，量产问卷与音频查询将不可用")
 
     _app_state.somni_quiz_service = SomniQuizService(somni_mongo, settings)
-    _app_state.somni_report_service = SomniReportService()
+    _app_state.somni_report_service = SomniReportService(somni_mongo, settings)
     somni_es_client = create_es_client(
         settings,
         node=settings.effective_somni_es_node,

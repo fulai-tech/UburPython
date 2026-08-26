@@ -25,15 +25,125 @@ message ReportDateReq {
   string record_date = 2;  // 必传：记录日期
 }
 
-message GetSummaryRes {}
+message SleepSummary {
+  int32 body_battery = 1;
+  string body_battery_status = 2;
+  int32 total_minutes = 3;
+  int32 deep_sleep_minutes = 4;
+  int32 avg_heart_rate = 5;
+  int32 avg_respiratory_rate = 6;
+}
 
-message GetEventsRes {}
+message GetSummaryRes {
+  SleepSummary sleep_summary = 1;
+}
 
-message GetEnvironmentRes {}
+message SleepEventDetail {
+  string event_type = 1;
+  string duration = 2;
+  string trigger_cause = 3;
+  string action_taken = 4;
+  string result_summary = 5;
+}
 
-message GetStructureRes {}
+message Intervention {
+  string type = 1;
+  string event_time = 2;
+  string event_type = 3;
+  string duration = 4;
+  string trigger_cause = 5;
+  string action_taken = 6;
+  string result_summary = 7;
+}
 
-message GetSleepQualityRes {}
+message SleepEventItem {
+  string event_time = 1;
+  string type = 2;
+  string code = 3;
+  repeated SleepEventDetail events = 4;
+  Intervention intervention = 5;
+}
+
+message IdfStage {
+  string stage = 1;
+  string start = 2;
+  string end = 3;
+}
+
+message PhysioMetrics {
+  int32 heart_rate = 1;
+  int32 respiration_rate = 2;
+}
+
+message PhysioDataPoint {
+  string collected_at = 1;
+  PhysioMetrics metrics = 2;
+}
+
+message EnvDataPoint {
+  string collected_at = 1;
+  int32 temperature = 2;
+  int32 humidity = 3;
+  int32 illuminance = 4;
+  int32 noise = 5;
+}
+
+message GetEventsRes {
+  string record_date = 1;
+  repeated SleepEventItem sleep_events = 2;
+  int32 event_count = 3;
+  int32 abnormal_count = 4;
+  int32 intervention_count = 5;
+  repeated IdfStage idf_data = 6;
+  repeated PhysioDataPoint physio_data = 7;
+  repeated EnvDataPoint env_data = 8;
+}
+
+message EnvMetric {
+  int32 value = 1;
+  int32 min = 2;
+  int32 max = 3;
+}
+
+message EnvironmentSummary {
+  EnvMetric temperature = 1;
+  EnvMetric humidity = 2;
+  EnvMetric illuminance = 3;
+  EnvMetric noise = 4;
+}
+
+message GetEnvironmentRes {
+  EnvironmentSummary environment_summary = 1;
+}
+
+message SleepStagePart {
+  int32 minutes = 1;
+  int32 percent = 2;
+}
+
+message SleepStructure {
+  SleepStagePart awake = 1;
+  SleepStagePart rem_sleep = 2;
+  SleepStagePart light_sleep = 3;
+  SleepStagePart deep_sleep = 4;
+}
+
+message GetStructureRes {
+  SleepStructure sleep_structure = 1;
+}
+
+message SleepQuality {
+  int32 time_in_bed_minutes = 1;
+  int32 sleep_onset_latency_minutes = 2;
+  int32 sleep_efficiency = 3;
+  string bedtime = 4;
+  string wake_up_time = 5;
+  int32 awake_after_onset_minutes = 6;
+}
+
+message GetSleepQualityRes {
+  SleepQuality sleep_quality = 1;
+}
 
 service ReportService {
   rpc GetSummary (ReportDateReq) returns (GetSummaryRes);
