@@ -4,7 +4,7 @@
 
 - **核心**：三维度音频检索（ES 召回 + 标签词典向量 + 精排）
 - **功能手板**：`MONGO_*` + `ES_NODE` + `REDIS_URL`；HTTP `:8080` + gRPC `:50065`
-- **量产**：`SOMNI_MONGO_*` + `SOMNI_ES_*` + `SOMNI_REDIS_URL`；gRPC `:50064`
+- **量产**：`SOMNI_MONGO_*` + `SOMNI_ES_*` + `SOMNI_REDIS_URL`（独立 Redis 实例）；gRPC `:50064`
 - **写路径**：直连 Mongo，再同步本侧 ES（不再调用 BioNode）
 - **接口文档**：`docs/功能手板接口文档.md`、`docs/量产接口文档.md`
 

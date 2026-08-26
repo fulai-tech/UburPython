@@ -27,8 +27,19 @@ async def test_get_audio_passes_page_and_query() -> None:
     rpc, service = _make_rpc()
     service.get_audio = AsyncMock(
         return_value={
-            "materials": [{"id": "m1", "audio_name": "雨声"}],
-            "page": {"page": 1, "page_size": 20, "total": 1, "total_pages": 1},
+            "list": [
+                {
+                    "id": "m1",
+                    "audio_name": "雨声",
+                    "audio_url": "https://cdn.example/a.mp3",
+                    "cover_url": "https://cdn.example/a.png",
+                    "description": "desc",
+                    "vip": 0,
+                }
+            ],
+            "page": 1,
+            "page_size": 20,
+            "total": 1,
         }
     )
     req = uburnode_somni_pb2.GetAudioReq(page=1, page_size=20, query_text="雨声")
@@ -40,8 +51,11 @@ async def test_get_audio_passes_page_and_query() -> None:
         query_text="雨声",
         tag_code="",
     )
-    assert res.materials[0]["audio_name"] == "雨声"
-    assert res.page.total == 1
+    assert res.list[0].audio_name == "雨声"
+    assert res.list[0].vip == 0
+    assert res.total == 1
+    assert res.page == 1
+    assert res.page_size == 20
 
 
 @pytest.mark.asyncio
@@ -49,8 +63,10 @@ async def test_get_audio_fetch_all() -> None:
     rpc, service = _make_rpc()
     service.get_audio = AsyncMock(
         return_value={
-            "materials": [],
-            "page": {"page": 1, "page_size": 0, "total": 0, "total_pages": 1},
+            "list": [],
+            "page": 1,
+            "page_size": 0,
+            "total": 0,
         }
     )
     req = uburnode_somni_pb2.GetAudioReq(fetch_all=True)
@@ -69,8 +85,10 @@ async def test_get_audio_passes_tag_code() -> None:
     rpc, service = _make_rpc()
     service.get_audio = AsyncMock(
         return_value={
-            "materials": [],
-            "page": {"page": 1, "page_size": 20, "total": 0, "total_pages": 0},
+            "list": [],
+            "page": 1,
+            "page_size": 20,
+            "total": 0,
         }
     )
     req = uburnode_somni_pb2.GetAudioReq(tag_code="steady_rain")
@@ -95,6 +113,9 @@ async def test_get_audio_tag_maps_fields() -> None:
                     "code": "natural_sound",
                     "name": "自然声",
                     "name_en": "Natural Sound",
+                    "id": "root-natural",
+                    "parent_tag_id": None,
+                    "status": "启用",
                 }
             ]
         }
@@ -103,11 +124,18 @@ async def test_get_audio_tag_maps_fields() -> None:
     service.get_audio_tag.assert_awaited_once_with()
     assert res.tags[0].code == "natural_sound"
     assert res.tags[0].name_en == "Natural Sound"
+    assert res.tags[0].id == "root-natural"
+    assert res.tags[0].parent_tag_id.WhichOneof("kind") == "null_value"
+    assert res.tags[0].status == "启用"
 
 
 @pytest.mark.asyncio
-async def test_get_hot_no_args() -> None:
+async def test_get_hot_maps_items() -> None:
     rpc, service = _make_rpc()
+    service.get_hot = AsyncMock(
+        return_value={"items": [{"keyword": "雨声", "score": 5}]}
+    )
     res = await rpc.GetHot(uburnode_somni_pb2.GetHotReq(), _context())
     service.get_hot.assert_awaited_once_with()
-    assert res == uburnode_somni_pb2.GetHotRes()
+    assert res.items[0].keyword == "雨声"
+    assert res.items[0].score == 5

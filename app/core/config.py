@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     somni_es_node: str = ""
     somni_es_audio_index: str = "somni_audio_materials"
     somni_es_tag_vectors_index: str = "somni_audio_tag_dictionary"
+    somni_es_search_events_index: str = "somni_audio_search_events"
 
     mongo_uri: str = ""
     mongo_db: str = "Fullive"
@@ -54,8 +55,8 @@ class Settings(BaseSettings):
     somni_mongo_answers_collection: str = "somni_quiz_answers"
 
     sim_threshold: float = 0.7  # 内容形态向量模糊命中阈值（规范 §五-2）
-    # GetAudio query_text 与根标签向量相似度下限
-    get_audio_root_tag_sim_threshold: float = 0.85
+    # GetAudio query_text 与内容形态标签（含二级）向量相似度下限
+    get_audio_root_tag_sim_threshold: float = 0.75
     # 多路文本检索厌恶硬剔除阈值；≥ 该值 penalty=1.0 丢弃候选
     strong_dislike_sim_threshold: float = 0.85
     search_sleep_stage_filter_enabled: bool = True  # 检索步骤 1 是否按睡眠阶段过滤
@@ -89,8 +90,14 @@ class Settings(BaseSettings):
 
     # 功能手板 Redis（空 URL 表示关闭）
     redis_url: str = ""
-    # 量产 Redis（与手板隔离）
+    # 量产 Redis（独立实例；空则 GetHot 关闭，不回退 redis_url）
     somni_redis_url: str = ""
+    somni_hot_enabled: bool = True
+    somni_hot_top_n: int = 10
+    somni_hot_redis_key: str = "somni:audio:hot:v1"
+    somni_redis_max_connections: int = 128
+    somni_redis_connect_timeout_sec: float = 2.0
+    somni_redis_socket_timeout_sec: float = 2.0
     # 连接池需覆盖 HTTP 并发峰值；redis-py 默认仅 100，高并发易 Too many connections
     redis_max_connections: int = 512
     search_cache_max_size: int = 2048

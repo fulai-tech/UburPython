@@ -51,16 +51,20 @@ message GetAudioReq {
   optional string tag_code = 5;    // 内容形态标签 code；空则不按标签过滤
 }
 
-message PageInfo {
-  int32 page = 1;
-  int32 page_size = 2;
-  int32 total = 3;
-  int32 total_pages = 4;
+message AudioListItem {
+  optional string id = 1;
+  optional string audio_name = 2;
+  optional string audio_url = 3;
+  optional string cover_url = 4;
+  optional string description = 5;
+  optional int32 vip = 6;  // 库无该字段时显式返回 0
 }
 
 message GetAudioRes {
-  repeated google.protobuf.Struct materials = 1;
-  PageInfo page = 2;
+  repeated AudioListItem list = 1;
+  int32 page = 2;
+  int32 page_size = 3;
+  int32 total = 4;
 }
 
 message GetAudioTagReq {}
@@ -70,6 +74,9 @@ message TagDictItem {
   string code = 2;
   string name = 3;
   string name_en = 4;
+  string id = 5;
+  google.protobuf.Value parent_tag_id = 6;  // 库为 null/缺省时显式返回 null
+  string status = 7;
 }
 
 message GetAudioTagRes {
@@ -78,7 +85,14 @@ message GetAudioTagRes {
 
 message GetHotReq {}
 
-message GetHotRes {}
+message HotKeyword {
+  string keyword = 1;
+  int64 score = 2;
+}
+
+message GetHotRes {
+  repeated HotKeyword items = 1;
+}
 
 service AudioService {
   rpc GetAudio (GetAudioReq) returns (GetAudioRes);
