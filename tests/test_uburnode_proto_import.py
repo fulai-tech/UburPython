@@ -21,8 +21,7 @@ def test_somni_package() -> None:
     assert hasattr(uburnode_somni_pb2_grpc, "AudioServiceServicer")
     quiz = uburnode_somni_pb2.DESCRIPTOR.services_by_name["QuizService"]
     assert quiz.full_name == "uburnode.somni.v1.QuizService"
-    assert "tags" not in uburnode_somni_pb2.AnswerItem.DESCRIPTOR.fields_by_name
-    assert "values" not in uburnode_somni_pb2.AnswerItem.DESCRIPTOR.fields_by_name
-    value_field = uburnode_somni_pb2.AnswerItem.DESCRIPTOR.fields_by_name["value"]
-    assert value_field.number == 5
-    assert value_field.message_type.full_name == "google.protobuf.Value"
+    assert "AnswerItem" not in uburnode_somni_pb2.DESCRIPTOR.message_types_by_name
+    answers_field = uburnode_somni_pb2.GetAnswerRes.DESCRIPTOR.fields_by_name["answers"]
+    assert answers_field.type == answers_field.TYPE_STRING
+    assert not answers_field.is_repeated

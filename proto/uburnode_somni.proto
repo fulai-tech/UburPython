@@ -11,19 +11,9 @@ message GetAnswerReq {
   string answer_id = 2;  // 必传：答卷 _id
 }
 
-message AnswerItem {
-  string question_id = 1;
-  string input_type = 2;
-  string title = 3;
-  reserved 4;
-  reserved "tags";
-  reserved "values";
-  google.protobuf.Value value = 5;
-  string extra_input = 6;
-}
-
+// answers 为整份答卷数组的 JSON 文本（与库 answers 同形），客户端一次 JSON.parse。
 message GetAnswerRes {
-  repeated AnswerItem answers = 1;
+  string answers = 1;
 }
 
 service QuizService {

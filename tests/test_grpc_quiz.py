@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import AsyncMock, MagicMock
 
 import grpc
@@ -101,21 +102,24 @@ async def test_somni_get_answer_maps_answer_item() -> None:
         _context(),
     )
     payload = MessageToDict(res, preserving_proto_field_name=True)
-    assert len(payload["answers"]) == 5
-    assert payload["answers"][0]["value"] == {
-        "option_id": "A",
-        "option_text": "先生",
+    answers = json.loads(payload["answers"])
+    assert len(answers) == 5
+    assert answers[0] == {
+        "question_id": "q1",
+        "input_type": "radio",
+        "title": "您的性别是？",
+        "value": {"option_id": "A", "option_text": "先生"},
+        "extra_input": "",
     }
-    assert payload["answers"][1]["value"] == [
+    assert "tags" not in answers[0]
+    assert answers[1]["value"] == [
         {"option_id": "A", "option_text": "早期"},
         {"option_id": "B", "option_text": "VC"},
     ]
-    assert payload["answers"][2]["value"] == 2
-    assert payload["answers"][3]["value"] == "最近压力比较大"
-    assert payload["answers"][4]["value"] is True
-    assert "tags" not in payload["answers"][0]
-    assert "values" not in payload["answers"][0]
-
+    assert answers[2]["value"] == 2
+    assert answers[3]["value"] == "最近压力比较大"
+    assert answers[4]["value"] is True
+    assert json.loads(res.answers)[0]["title"] == "您的性别是？"
 
 @pytest.mark.asyncio
 async def test_somni_quiz_service_loads_from_collection() -> None:
