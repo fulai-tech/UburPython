@@ -16,7 +16,10 @@ from app.services.retrieval import (
     VOICE_MARKER,
     RetrievalService,
     ScoredCandidate,
+    VectorSimilaritySnapshot,
     _apply_voice_code_filter,
+    _cosine_similarity,
+    _cosine_similarity_matrix,
     _match_labels_from_text,
     _normalize_to_dictionary_labels,
     _strip_voice_mention_tags,
@@ -26,6 +29,42 @@ from app.services.retrieval import (
 )
 
 _VECTOR_DIM = 512
+
+
+def test_vectorized_cosine_matches_scalar_reference() -> None:
+    requests = [[1.0, 2.0, 3.0], [0.0, 0.0, 0.0], [-1.0, 0.5, 2.0]]
+    dictionary = [[3.0, 2.0, 1.0], [0.0, 0.0, 0.0], [1.0, -2.0, 0.5]]
+
+    actual = _cosine_similarity_matrix(requests, dictionary)
+
+    for row, request in enumerate(requests):
+        for column, candidate in enumerate(dictionary):
+            assert actual[row, column] == pytest.approx(
+                _cosine_similarity(request, candidate),
+                abs=1e-12,
+            )
+
+
+def test_vectorized_cosine_rejects_dimension_mismatch() -> None:
+    with pytest.raises(ValueError, match="dimension mismatch"):
+        _cosine_similarity_matrix([[1.0, 0.0]], [[1.0, 0.0, 0.0]])
+
+
+def test_similarity_snapshot_preserves_exclusive_tag_semantics() -> None:
+    snapshot = VectorSimilaritySnapshot.build(
+        [[1.0, 0.0], [1.0, 0.0]],
+        {"rain": [1.0, 0.0]},
+    )
+
+    assert (
+        snapshot.count_matches(
+            ["rain"],
+            ["白噪音", "雨声"],
+            row_offset=0,
+            threshold=0.8,
+        )
+        == 1
+    )
 
 
 def _tag_entries(prefix: str, labels: list[str]) -> list[dict[str, str]]:
@@ -169,6 +208,47 @@ async def test_search_uses_sleep_stage_cache_when_available() -> None:
     assert [r["audio_name"] for r in results] == ["缓存雨声"]
     sleep_cache.get.assert_awaited_once_with(["放松"])
     es_search.filter_by_sleep_stage.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_search_cache_miss_uses_on_demand_stage_loader() -> None:
+    cached_doc = _audio_doc("唤醒音乐", sleep_stage=["唤醒"], content_form=["音乐"])
+    sleep_cache = MagicMock()
+    sleep_cache.get = AsyncMock(return_value=None)
+    sleep_cache.get_or_load = AsyncMock(return_value=[cached_doc])
+    service, es_search, _encoder = _build_service()
+    service._sleep_stage_cache = sleep_cache
+    es_search.parse_tags = EsSearch.parse_tags
+
+    results = await service.search(
+        SearchAudioRequest(sleep_stage_tags=["唤醒"], content_tags=["音乐"], top_k=5)
+    )
+
+    assert [result["audio_name"] for result in results] == ["唤醒音乐"]
+    sleep_cache.get_or_load.assert_awaited_once_with(
+        ["唤醒"],
+        service._load_sleep_stage_candidates,
+    )
+    es_search.filter_by_sleep_stage.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_search_cache_loader_error_falls_back_to_es() -> None:
+    es_doc = _audio_doc("ES 唤醒音乐", sleep_stage=["唤醒"], content_form=["音乐"])
+    sleep_cache = MagicMock()
+    sleep_cache.get = AsyncMock(return_value=None)
+    sleep_cache.get_or_load = AsyncMock(side_effect=RuntimeError("Redis unavailable"))
+    service, es_search, _encoder = _build_service()
+    service._sleep_stage_cache = sleep_cache
+    es_search.parse_tags = EsSearch.parse_tags
+    es_search.filter_by_sleep_stage = AsyncMock(return_value=[es_doc])
+
+    results = await service.search(
+        SearchAudioRequest(sleep_stage_tags=["唤醒"], content_tags=["音乐"], top_k=5)
+    )
+
+    assert [result["audio_name"] for result in results] == ["ES 唤醒音乐"]
+    es_search.filter_by_sleep_stage.assert_awaited_once_with(["唤醒"])
 
 
 @pytest.mark.asyncio
@@ -367,9 +447,7 @@ async def test_text_query_normalizes_color_noise_alias_and_excludes_siblings(
     canonical_doc = _audio_doc(
         canonical, content_form=["颜色噪音", canonical], description_score=1.0
     )
-    sibling_doc = _audio_doc(
-        sibling, content_form=["颜色噪音", sibling], description_score=1.0
-    )
+    sibling_doc = _audio_doc(sibling, content_form=["颜色噪音", sibling], description_score=1.0)
     service, es_search, encoder = _build_service(
         settings=Settings(search_sleep_stage_filter_enabled=False)
     )
@@ -468,9 +546,7 @@ async def test_search_keeps_candidate_when_disliked_vector_below_threshold() -> 
     )
     es_search.parse_tags = EsSearch.parse_tags
     encoder.encode = AsyncMock(
-        side_effect=lambda texts: [
-            unit_vec if t == "白噪音" else orthogonal_vec for t in texts
-        ],
+        side_effect=lambda texts: [unit_vec if t == "白噪音" else orthogonal_vec for t in texts],
     )
     es_search.get_dictionary_vectors = AsyncMock(return_value={"cf_白噪音": unit_vec})
     request = SearchAudioRequest(
@@ -605,7 +681,6 @@ async def test_coarse_rank_runs_after_dislike_filter() -> None:
 
     assert call_order == ["dislike", "coarse"]
     assert [r["audio_name"] for r in results] == ["保留少命中"]
-
 
 
 @pytest.mark.asyncio
@@ -798,9 +873,7 @@ async def test_text_query_extracts_positive_and_negative_tags() -> None:
     )
     encoder.encode_one = AsyncMock(return_value=unit_rain)
     encoder.encode = AsyncMock(
-        side_effect=lambda texts: [
-            unit_noise if t == "嘈杂" else unit_rain for t in texts
-        ]
+        side_effect=lambda texts: [unit_noise if t == "嘈杂" else unit_rain for t in texts]
     )
     es_search.get_dictionary_vectors = AsyncMock(
         return_value={"cf_雨声": unit_rain, "cf_嘈杂": unit_noise}
@@ -1044,7 +1117,9 @@ async def test_warm_query_tag_vectors_encodes_dictionary_labels() -> None:
         ]
     )
     encoder.encode = AsyncMock(
-        side_effect=lambda texts: [[float(i)] + [0.0] * (_VECTOR_DIM - 1) for i, _ in enumerate(texts)],
+        side_effect=lambda texts: [
+            [float(i)] + [0.0] * (_VECTOR_DIM - 1) for i, _ in enumerate(texts)
+        ],
     )
 
     await service.warm_query_tag_vectors()
@@ -1076,9 +1151,7 @@ def test_dislike_penalty_respects_strong_threshold_from_settings() -> None:
     tags = EsSearch.parse_tags(_audio_doc("候选", content_form=["人声出现位置"]))
     dictionary = {"cf_人声出现位置": tag_vec}
 
-    soft_service, _, _ = _build_service(
-        settings=Settings(strong_dislike_sim_threshold=0.85)
-    )
+    soft_service, _, _ = _build_service(settings=Settings(strong_dislike_sim_threshold=0.85))
     soft_penalty = soft_service._dislike_penalty(
         tags,
         disliked_tags=["人声"],
@@ -1087,9 +1160,7 @@ def test_dislike_penalty_respects_strong_threshold_from_settings() -> None:
     )
     assert soft_penalty == 0.2
 
-    hard_service, _, _ = _build_service(
-        settings=Settings(strong_dislike_sim_threshold=0.78)
-    )
+    hard_service, _, _ = _build_service(settings=Settings(strong_dislike_sim_threshold=0.78))
     hard_penalty = hard_service._dislike_penalty(
         tags,
         disliked_tags=["人声"],
@@ -1106,15 +1177,17 @@ def test_tags_mention_voice_detects_substring() -> None:
 
 
 def test_strip_voice_mention_tags_removes_voice_related() -> None:
-    assert _strip_voice_mention_tags(
-        ["人声", "避免突发", "避免人声和语言引导", "节奏"]
-    ) == ["避免突发", "节奏"]
+    assert _strip_voice_mention_tags(["人声", "避免突发", "避免人声和语言引导", "节奏"]) == [
+        "避免突发",
+        "节奏",
+    ]
 
 
 def test_usable_dislike_tags_ignores_event_density() -> None:
-    assert _usable_dislike_tags(
-        ["人声", "声音事件密度", "避免突发", "声音事件密度"]
-    ) == ["人声", "避免突发"]
+    assert _usable_dislike_tags(["人声", "声音事件密度", "避免突发", "声音事件密度"]) == [
+        "人声",
+        "避免突发",
+    ]
 
 
 def test_voice_value_code_reads_nested_value() -> None:

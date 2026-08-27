@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import json
+import asyncio
 import hashlib
+import json
 from typing import Any
 
 import pytest
@@ -64,13 +65,15 @@ def test_key_builders() -> None:
     assert SLEEP_STAGE_DOC_KEY_PREFIX == "sleep_stage_v2_doc:"
     assert build_sleep_stage_index_key("放松") == f"{SLEEP_STAGE_INDEX_KEY_PREFIX}放松"
     assert build_sleep_stage_doc_key("https://cdn/a.mp3").startswith(SLEEP_STAGE_DOC_KEY_PREFIX)
-    assert SLEEP_STAGES == ("放松", "入睡", "守护", "清醒")
+    assert SLEEP_STAGES == ("放松", "入睡", "守护", "唤醒")
 
 
 def test_merge_urls_preserve_order() -> None:
-    assert merge_urls_preserve_order(
-        [["https://a", "https://b"], ["https://a", "https://c"]]
-    ) == ["https://a", "https://b", "https://c"]
+    assert merge_urls_preserve_order([["https://a", "https://b"], ["https://a", "https://c"]]) == [
+        "https://a",
+        "https://b",
+        "https://c",
+    ]
 
 
 @pytest.mark.asyncio
@@ -164,6 +167,110 @@ async def test_warm_loads_each_known_stage_from_loader() -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_or_load_only_populates_missing_stage() -> None:
+    redis = _FakeRedis()
+    cache = SleepStageCandidateCache(redis, ttl_sec=60)
+    relax = _doc("放松", "https://cdn/relax.mp3", ["放松"])
+    wake = _doc("唤醒", "https://cdn/wake.mp3", ["唤醒"])
+    await cache.set_stage("放松", [relax])
+    calls: list[str] = []
+
+    async def loader(stage: str) -> list[dict[str, Any]]:
+        calls.append(stage)
+        return [wake]
+
+    got = await cache.get_or_load(["放松", "唤醒"], loader)
+
+    assert calls == ["唤醒"]
+    assert [doc["audio_url"] for doc in got] == [
+        "https://cdn/relax.mp3",
+        "https://cdn/wake.mp3",
+    ]
+    assert await cache.get(["放松"]) == [relax]
+
+
+@pytest.mark.asyncio
+async def test_get_or_load_coalesces_concurrent_stage_misses() -> None:
+    redis = _FakeRedis()
+    cache = SleepStageCandidateCache(redis, ttl_sec=60)
+    wake = _doc("唤醒", "https://cdn/wake.mp3", ["唤醒"])
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    async def loader(stage: str) -> list[dict[str, Any]]:
+        nonlocal calls
+        assert stage == "唤醒"
+        calls += 1
+        started.set()
+        await release.wait()
+        return [wake]
+
+    first = asyncio.create_task(cache.get_or_load(["唤醒"], loader))
+    await started.wait()
+    second = asyncio.create_task(cache.get_or_load(["唤醒"], loader))
+    release.set()
+
+    assert await asyncio.gather(first, second) == [[wake], [wake]]
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_get_or_load_caches_empty_stage() -> None:
+    redis = _FakeRedis()
+    cache = SleepStageCandidateCache(redis, ttl_sec=60)
+    calls = 0
+
+    async def loader(stage: str) -> list[dict[str, Any]]:
+        nonlocal calls
+        calls += 1
+        return []
+
+    assert await cache.get_or_load(["唤醒"], loader) == []
+    assert await cache.get_or_load(["唤醒"], loader) == []
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_get_or_load_does_not_cache_loader_error() -> None:
+    redis = _FakeRedis()
+    cache = SleepStageCandidateCache(redis, ttl_sec=60)
+
+    async def failing_loader(stage: str) -> list[dict[str, Any]]:
+        raise RuntimeError("ES unavailable")
+
+    with pytest.raises(RuntimeError, match="ES unavailable"):
+        await cache.get_or_load(["唤醒"], failing_loader)
+
+    assert await cache.get(["唤醒"]) is None
+
+
+@pytest.mark.asyncio
+async def test_clear_waits_for_inflight_stage_load() -> None:
+    redis = _FakeRedis()
+    cache = SleepStageCandidateCache(redis, ttl_sec=60)
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def loader(stage: str) -> list[dict[str, Any]]:
+        started.set()
+        await release.wait()
+        return [_doc(stage, "https://cdn/wake.mp3", [stage])]
+
+    load_task = asyncio.create_task(cache.get_or_load(["唤醒"], loader))
+    await started.wait()
+    clear_task = asyncio.create_task(cache.clear_all())
+    await asyncio.sleep(0)
+    assert not clear_task.done()
+
+    release.set()
+    await load_task
+    await clear_task
+
+    assert redis.store == {}
+
+
+@pytest.mark.asyncio
 async def test_clear_all_removes_indexes_and_docs() -> None:
     redis = _FakeRedis()
     cache = SleepStageCandidateCache(redis, ttl_sec=60)
@@ -191,3 +298,14 @@ async def test_clear_all_removes_legacy_indexes_docs_and_candidate_keys() -> Non
     assert await redis.get("sleep_stage_index:放松") is None
     assert await redis.get(legacy_doc_key) is None
     assert await redis.get("sleep_stage_candidates:放松") is None
+
+
+@pytest.mark.asyncio
+async def test_clear_all_removes_stale_awake_stage_index() -> None:
+    redis = _FakeRedis()
+    cache = SleepStageCandidateCache(redis, ttl_sec=60)
+    await cache.set_stage("清醒", [_doc("旧清醒", "https://cdn/awake.mp3", ["清醒"])])
+
+    await cache.clear_all()
+
+    assert await redis.get(build_sleep_stage_index_key("清醒")) is None

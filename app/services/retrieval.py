@@ -17,6 +17,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
 from loguru import logger
 
 from app.core.config import Settings
@@ -95,6 +96,78 @@ class ExtractedQueryTags:
     disliked_tags: list[str]
 
 
+@dataclass(frozen=True)
+class VectorSimilaritySnapshot:
+    """请求向量与候选标签向量的一次性批量余弦结果。"""
+
+    scores: np.ndarray
+    tag_columns: dict[str, int]
+
+    @classmethod
+    def build(
+        cls,
+        request_vectors: list[list[float]],
+        dictionary_vectors: DictionaryVectors,
+    ) -> VectorSimilaritySnapshot:
+        dictionary_items = [
+            (tag_id, vector) for tag_id, vector in dictionary_vectors.items() if vector
+        ]
+        tag_columns = {tag_id: column for column, (tag_id, _vector) in enumerate(dictionary_items)}
+        if not request_vectors or not dictionary_items:
+            return cls(
+                scores=np.zeros(
+                    (len(request_vectors), len(dictionary_items)),
+                    dtype=np.float64,
+                ),
+                tag_columns=tag_columns,
+            )
+        scores = _cosine_similarity_matrix(
+            request_vectors,
+            [vector for _tag_id, vector in dictionary_items],
+        )
+        return cls(scores=scores, tag_columns=tag_columns)
+
+    def count_matches(
+        self,
+        tag_ids: list[str],
+        request_tags: list[str],
+        *,
+        row_offset: int,
+        threshold: float,
+    ) -> int:
+        columns = [self.tag_columns[tag_id] for tag_id in tag_ids if tag_id in self.tag_columns]
+        if not columns or not request_tags:
+            return 0
+        end = row_offset + len(request_tags)
+        if row_offset < 0 or end > self.scores.shape[0]:
+            raise ValueError("similarity snapshot row range is invalid")
+        block = self.scores[row_offset:end, columns]
+        return sum(
+            request_tag not in MUTUALLY_EXCLUSIVE_CONTENT_TAGS
+            and bool(np.any(block[row] >= threshold))
+            for row, request_tag in enumerate(request_tags)
+        )
+
+    def max_similarity(
+        self,
+        tag_ids: list[str],
+        request_tags: list[str],
+        *,
+        row_offset: int,
+    ) -> float:
+        columns = [self.tag_columns[tag_id] for tag_id in tag_ids if tag_id in self.tag_columns]
+        rows = [
+            row_offset + row
+            for row, request_tag in enumerate(request_tags)
+            if request_tag not in MUTUALLY_EXCLUSIVE_CONTENT_TAGS
+        ]
+        if not columns or not rows:
+            return 0.0
+        if rows[-1] >= self.scores.shape[0] or row_offset < 0:
+            raise ValueError("similarity snapshot row range is invalid")
+        return float(np.max(self.scores[np.ix_(rows, columns)]))
+
+
 class RetrievalService:
     """三维度检索：睡眠阶段 → 内容形态 → 厌恶剔除 → 粗排 → 精排。"""
 
@@ -147,18 +220,27 @@ class RetrievalService:
             candidates_raw,
             _normalize_color_noise_aliases(request.content_tags),
         )
-        dictionary_vectors, content_tags, disliked_tags, content_vectors, dislike_vectors = (
-            await self._prepare_content_admission_inputs(
-                candidates_raw,
-                request,
-                need_dictionary=need_dictionary,
-            )
+        (
+            dictionary_vectors,
+            content_tags,
+            disliked_tags,
+            content_vectors,
+            dislike_vectors,
+        ) = await self._prepare_content_admission_inputs(
+            candidates_raw,
+            request,
+            need_dictionary=need_dictionary,
+        )
+        similarity_snapshot = VectorSimilaritySnapshot.build(
+            [*content_vectors, *dislike_vectors],
+            dictionary_vectors,
         )
         admitted = await self._apply_content_admission(
             candidates_raw,
             content_tags,
             dictionary_vectors,
             request_vectors=content_vectors,
+            similarity_snapshot=similarity_snapshot,
         )
         step2_ms = _elapsed_ms(step2_started)
         logger.info(
@@ -178,6 +260,8 @@ class RetrievalService:
             vector_disliked,
             dictionary_vectors,
             dislike_vectors=dislike_vectors,
+            similarity_snapshot=similarity_snapshot,
+            similarity_row_offset=len(content_vectors),
         )
         filtered = _apply_voice_code_filter(
             filtered,
@@ -296,6 +380,11 @@ class RetrievalService:
             await asyncio.gather(dict_task, encode_task, return_exceptions=True)
             raise
 
+        similarity_snapshot = VectorSimilaritySnapshot.build(
+            [*content_vectors, *dislike_vectors],
+            dictionary_vectors,
+        )
+
         tag_candidates: list[ScoredCandidate] = []
         if content_tags:
             tag_candidates = await self._score_content_candidates(
@@ -303,6 +392,7 @@ class RetrievalService:
                 content_tags,
                 dictionary_vectors,
                 request_vectors=content_vectors,
+                similarity_snapshot=similarity_snapshot,
             )
 
         merged = await self._merge_and_rank_text_candidates(
@@ -313,6 +403,8 @@ class RetrievalService:
             voice_filter_tags=disliked_tags,
             dictionary_vectors=dictionary_vectors,
             dislike_vectors=dislike_vectors,
+            similarity_snapshot=similarity_snapshot,
+            similarity_row_offset=len(content_vectors),
             top_k=request.top_k,
         )
         rank_ms = _elapsed_ms(rank_started)
@@ -360,14 +452,29 @@ class RetrievalService:
             )
             return cached
 
-        candidates = await self._es_search.filter_by_sleep_stage(sleep_stage_tags)
-        await self._backfill_sleep_stage_cache()
+        candidates = await self._load_sleep_stage_candidates_on_miss(sleep_stage_tags)
         logger.info(
             "检索步骤1/4 睡眠阶段过滤：候选数={}，耗时={:.1f}毫秒",
             len(candidates),
             _elapsed_ms(started),
         )
         return candidates
+
+    async def _load_sleep_stage_candidates_on_miss(
+        self,
+        sleep_stage_tags: list[str],
+    ) -> list[dict[str, Any]]:
+        """缓存 miss 时只回填请求阶段；缓存故障则直接回退 ES。"""
+        if self._sleep_stage_cache is None:
+            return await self._es_search.filter_by_sleep_stage(sleep_stage_tags)
+        try:
+            return await self._sleep_stage_cache.get_or_load(
+                sleep_stage_tags,
+                self._load_sleep_stage_candidates,
+            )
+        except Exception as exc:
+            logger.warning("按需回填睡眠阶段候选缓存失败，回退 ES：{}", exc)
+            return await self._es_search.filter_by_sleep_stage(sleep_stage_tags)
 
     async def _get_sleep_stage_cached(
         self,
@@ -401,11 +508,7 @@ class RetrievalService:
         started = time.perf_counter()
         tags = await self._es_search.list_content_tag_vectors()
         labels = _unique_preserve_order(
-            [
-                label
-                for tag in tags
-                if (label := str(tag.get("label", "")).strip())
-            ]
+            [label for tag in tags if (label := str(tag.get("label", "")).strip())]
         )
         if not labels:
             logger.info("查询标签向量缓存预热跳过：内容词典为空")
@@ -604,6 +707,7 @@ class RetrievalService:
         dictionary_vectors: DictionaryVectors,
         *,
         request_vectors: list[list[float]] | None = None,
+        similarity_snapshot: VectorSimilaritySnapshot | None = None,
     ) -> list[ScoredCandidate]:
         """步骤 2：无 content_tags 时跳过准入，保留睡眠阶段候选全集。"""
         if not content_tags:
@@ -621,6 +725,10 @@ class RetrievalService:
 
         request_vectors = (
             await self._encode_texts(content_tags) if request_vectors is None else request_vectors
+        )
+        similarity_snapshot = similarity_snapshot or VectorSimilaritySnapshot.build(
+            request_vectors,
+            dictionary_vectors,
         )
         admitted: list[ScoredCandidate] = []
 
@@ -646,6 +754,7 @@ class RetrievalService:
                 content_tags,
                 request_vectors,
                 dictionary_vectors,
+                similarity_snapshot=similarity_snapshot,
             )
             if vector_hits > 0:
                 admitted.append(
@@ -667,6 +776,7 @@ class RetrievalService:
         dictionary_vectors: DictionaryVectors,
         *,
         request_vectors: list[list[float]] | None = None,
+        similarity_snapshot: VectorSimilaritySnapshot | None = None,
     ) -> list[ScoredCandidate]:
         """文本多路检索里的标签路：产出分数，不决定整体短路。"""
         if not candidates or not content_tags:
@@ -674,6 +784,10 @@ class RetrievalService:
 
         request_vectors = (
             await self._encode_texts(content_tags) if request_vectors is None else request_vectors
+        )
+        similarity_snapshot = similarity_snapshot or VectorSimilaritySnapshot.build(
+            request_vectors,
+            dictionary_vectors,
         )
         scored: list[ScoredCandidate] = []
         tag_count = max(len(content_tags), 1)
@@ -688,6 +802,7 @@ class RetrievalService:
                     content_tags,
                     request_vectors,
                     dictionary_vectors,
+                    similarity_snapshot=similarity_snapshot,
                 )
             match_count = len(exact_hits) if exact_hits else vector_hits
             if match_count <= 0:
@@ -713,25 +828,25 @@ class RetrievalService:
         request_tags: list[str],
         request_vectors: list[list[float]],
         dictionary_vectors: DictionaryVectors,
+        *,
+        similarity_snapshot: VectorSimilaritySnapshot | None = None,
+        similarity_row_offset: int = 0,
     ) -> int:
         """使用请求级向量快照计分；互斥标签只允许精确命中。"""
         tag_ids = EsSearch.content_tag_ids(tags)
         if not tag_ids or not request_vectors:
             return 0
 
-        threshold = self._settings.sim_threshold
-        matched = 0
-
-        for request_tag, req_vec in zip(request_tags, request_vectors, strict=True):
-            if request_tag in MUTUALLY_EXCLUSIVE_CONTENT_TAGS:
-                continue
-            for tid in tag_ids:
-                doc_vec = dictionary_vectors.get(tid)
-                if doc_vec and _cosine_similarity(req_vec, doc_vec) >= threshold:
-                    matched += 1
-                    break
-
-        return matched
+        snapshot = similarity_snapshot or VectorSimilaritySnapshot.build(
+            request_vectors,
+            dictionary_vectors,
+        )
+        return snapshot.count_matches(
+            tag_ids,
+            request_tags,
+            row_offset=similarity_row_offset,
+            threshold=self._settings.sim_threshold,
+        )
 
     async def _apply_dislike_filter(
         self,
@@ -740,15 +855,19 @@ class RetrievalService:
         dictionary_vectors: DictionaryVectors,
         *,
         dislike_vectors: list[list[float]] | None = None,
+        similarity_snapshot: VectorSimilaritySnapshot | None = None,
+        similarity_row_offset: int = 0,
     ) -> list[ScoredCandidate]:
         """步骤 3 前半：厌恶标签向量 vs 文档内容标签向量，余弦 ≥ SIM_THRESHOLD 则剔除。"""
         if not disliked_tags:
             return candidates
 
         dislike_vectors = (
-            await self._encode_texts(disliked_tags)
-            if dislike_vectors is None
-            else dislike_vectors
+            await self._encode_texts(disliked_tags) if dislike_vectors is None else dislike_vectors
+        )
+        similarity_snapshot = similarity_snapshot or VectorSimilaritySnapshot.build(
+            dislike_vectors,
+            dictionary_vectors,
         )
         result: list[ScoredCandidate] = []
         for candidate in candidates:
@@ -758,6 +877,8 @@ class RetrievalService:
                     disliked_tags,
                     dislike_vectors,
                     dictionary_vectors,
+                    similarity_snapshot=similarity_snapshot,
+                    similarity_row_offset=similarity_row_offset,
                 )
                 > 0
             ):
@@ -782,6 +903,8 @@ class RetrievalService:
         dictionary_vectors: DictionaryVectors,
         top_k: int | None,
         dislike_vectors: list[list[float]] | None = None,
+        similarity_snapshot: VectorSimilaritySnapshot | None = None,
+        similarity_row_offset: int = 0,
         voice_filter_tags: list[str] | None = None,
     ) -> list[ScoredCandidate]:
         merged: dict[str, ScoredCandidate] = {}
@@ -800,6 +923,10 @@ class RetrievalService:
             if disliked_tags and dislike_vectors is None
             else (dislike_vectors or [])
         )
+        similarity_snapshot = similarity_snapshot or VectorSimilaritySnapshot.build(
+            dislike_vectors,
+            dictionary_vectors,
+        )
         ranked: list[ScoredCandidate] = []
         for candidate in merged.values():
             penalty = self._dislike_penalty(
@@ -807,6 +934,8 @@ class RetrievalService:
                 disliked_tags,
                 dislike_vectors,
                 dictionary_vectors,
+                similarity_snapshot=similarity_snapshot,
+                similarity_row_offset=similarity_row_offset,
             )
             if penalty >= 1.0:
                 continue
@@ -841,11 +970,18 @@ class RetrievalService:
         exact_content_tags = _unique_preserve_order(
             [*color_intents, *_match_labels_from_text(positive_text, tag_vectors)]
         )
+        fragment_vectors = (
+            await self._encode_texts(negative_fragments) if negative_fragments else []
+        )
+        vector_labels, similarity_scores = _tag_vector_similarity_scores(
+            [query_vector, *fragment_vectors],
+            tag_vectors,
+        )
         content_tags = list(exact_content_tags)
         content_tags.extend(
-            _similar_labels_from_vector(
-                query_vector,
-                tag_vectors,
+            _similar_labels_from_scores(
+                similarity_scores[0] if similarity_scores.shape[0] else np.zeros(0),
+                vector_labels,
                 threshold=AUTO_TAG_SIM_THRESHOLD,
                 exclude=set(content_tags),
                 limit=AUTO_TAG_TOP_K - len(content_tags),
@@ -858,13 +994,12 @@ class RetrievalService:
 
         exact_disliked_tags = _match_labels_from_text(" ".join(negative_fragments), tag_vectors)
         disliked_tags = list(exact_disliked_tags)
-        if negative_fragments:
-            fragment_vectors = await self._encode_texts(negative_fragments)
-            for vector in fragment_vectors:
+        if fragment_vectors:
+            for row in range(1, len(fragment_vectors) + 1):
                 disliked_tags.extend(
-                    _similar_labels_from_vector(
-                        vector,
-                        tag_vectors,
+                    _similar_labels_from_scores(
+                        similarity_scores[row],
+                        vector_labels,
                         threshold=AUTO_DISLIKE_SIM_THRESHOLD,
                         exclude=set(disliked_tags),
                         limit=AUTO_TAG_TOP_K - len(disliked_tags),
@@ -890,6 +1025,9 @@ class RetrievalService:
         disliked_tags: list[str],
         dislike_vectors: list[list[float]],
         dictionary_vectors: DictionaryVectors,
+        *,
+        similarity_snapshot: VectorSimilaritySnapshot | None = None,
+        similarity_row_offset: int = 0,
     ) -> float:
         if not disliked_tags:
             return 0.0
@@ -902,6 +1040,8 @@ class RetrievalService:
             disliked_tags,
             dislike_vectors,
             dictionary_vectors,
+            similarity_snapshot=similarity_snapshot,
+            similarity_row_offset=similarity_row_offset,
         )
         if max_similarity >= self._settings.strong_dislike_sim_threshold:
             return 1.0
@@ -915,20 +1055,23 @@ class RetrievalService:
         request_tags: list[str],
         request_vectors: list[list[float]],
         dictionary_vectors: DictionaryVectors,
+        *,
+        similarity_snapshot: VectorSimilaritySnapshot | None = None,
+        similarity_row_offset: int = 0,
     ) -> float:
         tag_ids = EsSearch.content_tag_ids(tags)
         if not tag_ids or not request_vectors:
             return 0.0
 
-        max_similarity = 0.0
-        for request_tag, req_vec in zip(request_tags, request_vectors, strict=True):
-            if request_tag in MUTUALLY_EXCLUSIVE_CONTENT_TAGS:
-                continue
-            for tag_id in tag_ids:
-                doc_vec = dictionary_vectors.get(tag_id)
-                if doc_vec:
-                    max_similarity = max(max_similarity, _cosine_similarity(req_vec, doc_vec))
-        return max_similarity
+        snapshot = similarity_snapshot or VectorSimilaritySnapshot.build(
+            request_vectors,
+            dictionary_vectors,
+        )
+        return snapshot.max_similarity(
+            tag_ids,
+            request_tags,
+            row_offset=similarity_row_offset,
+        )
 
     def _candidate_from_doc(
         self,
@@ -1018,6 +1161,41 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
     if norm_a == 0 or norm_b == 0:
         return 0.0
     return dot / (norm_a * norm_b)
+
+
+def _cosine_similarity_matrix(
+    request_vectors: list[list[float]],
+    dictionary_vectors: list[list[float]],
+) -> np.ndarray:
+    """批量计算二维余弦矩阵，行对应请求向量、列对应词典向量。"""
+    try:
+        requests = np.asarray(request_vectors, dtype=np.float64)
+        dictionary = np.asarray(dictionary_vectors, dtype=np.float64)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("similarity vectors must form rectangular numeric matrices") from exc
+    if requests.ndim != 2 or dictionary.ndim != 2:
+        raise ValueError("similarity vectors must be two-dimensional")
+    if requests.shape[1] != dictionary.shape[1]:
+        raise ValueError(
+            "similarity vector dimension mismatch: "
+            f"request={requests.shape[1]}, dictionary={dictionary.shape[1]}"
+        )
+
+    request_norms = np.linalg.norm(requests, axis=1, keepdims=True)
+    dictionary_norms = np.linalg.norm(dictionary, axis=1, keepdims=True)
+    normalized_requests = np.divide(
+        requests,
+        request_norms,
+        out=np.zeros_like(requests),
+        where=request_norms != 0,
+    )
+    normalized_dictionary = np.divide(
+        dictionary,
+        dictionary_norms,
+        out=np.zeros_like(dictionary),
+        where=dictionary_norms != 0,
+    )
+    return normalized_requests @ normalized_dictionary.T
 
 
 def _candidate_key(source: dict[str, Any]) -> str:
@@ -1185,9 +1363,7 @@ def _normalize_to_dictionary_labels(
         ]
 
     dictionary = {
-        str(item["label"]).strip()
-        for item in tag_vectors
-        if str(item.get("label", "")).strip()
+        str(item["label"]).strip() for item in tag_vectors if str(item.get("label", "")).strip()
     }
     normalized: list[str] = []
     for raw in raw_tags:
@@ -1213,22 +1389,61 @@ def _similar_labels_from_vector(
     exclude: set[str],
     limit: int,
 ) -> list[str]:
+    labels, scores = _tag_vector_similarity_scores([query_vector], tag_vectors)
+    row = scores[0] if scores.shape[0] else np.zeros(0)
+    return _similar_labels_from_scores(
+        row,
+        labels,
+        threshold=threshold,
+        exclude=exclude,
+        limit=limit,
+    )
+
+
+def _tag_vector_similarity_scores(
+    query_vectors: list[list[float]],
+    tag_vectors: list[dict[str, Any]],
+) -> tuple[list[str], np.ndarray]:
+    """过滤无效词典项并一次计算全部查询与标签的余弦分数。"""
+    eligible: list[tuple[str, list[float]]] = []
+    for item in tag_vectors:
+        label = str(item.get("label", "")).strip()
+        vector = item.get("vector")
+        if not label or len(label) < MIN_AUTO_TAG_LABEL_LEN or not vector:
+            continue
+        eligible.append((label, vector))
+    if not query_vectors or not eligible:
+        return (
+            [label for label, _vector in eligible],
+            np.zeros((len(query_vectors), len(eligible)), dtype=np.float64),
+        )
+    return (
+        [label for label, _vector in eligible],
+        _cosine_similarity_matrix(
+            query_vectors,
+            [vector for _label, vector in eligible],
+        ),
+    )
+
+
+def _similar_labels_from_scores(
+    scores: np.ndarray,
+    labels: list[str],
+    *,
+    threshold: float,
+    exclude: set[str],
+    limit: int,
+) -> list[str]:
     if limit <= 0:
         return []
+    if scores.ndim != 1 or scores.shape[0] != len(labels):
+        raise ValueError("tag similarity scores and labels must have matching lengths")
     scored: list[tuple[float, str]] = []
-    for item in tag_vectors:
-        label = str(item["label"]).strip()
-        vector = item.get("vector")
-        if (
-            not label
-            or len(label) < MIN_AUTO_TAG_LABEL_LEN
-            or label in exclude
-            or not vector
-        ):
+    for score, label in zip(scores, labels, strict=True):
+        if label in exclude:
             continue
-        similarity = _cosine_similarity(query_vector, vector)
-        if similarity >= threshold:
-            scored.append((similarity, label))
+        if score >= threshold:
+            scored.append((float(score), label))
     scored.sort(key=lambda pair: pair[0], reverse=True)
     return _prefer_longer_labels([label for _, label in scored])[:limit]
 
