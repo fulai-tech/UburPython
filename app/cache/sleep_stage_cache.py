@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from collections.abc import Awaitable, Callable
@@ -15,7 +16,8 @@ from loguru import logger
 
 from app.core.config import Settings
 
-SLEEP_STAGES = ("放松", "入睡", "守护", "清醒")
+SLEEP_STAGES = ("放松", "入睡", "守护", "唤醒")
+_CACHE_CLEANUP_STAGES = (*SLEEP_STAGES, "清醒")
 SLEEP_STAGE_INDEX_KEY_PREFIX = "sleep_stage_v2_index:"
 SLEEP_STAGE_DOC_KEY_PREFIX = "sleep_stage_v2_doc:"
 # 兼容旧测试/调用名
@@ -92,6 +94,7 @@ class SleepStageCandidateCache:
             raise ValueError("ttl_sec must be >= 1")
         self._redis = redis
         self._ttl_sec = ttl_sec
+        self._mutation_lock = asyncio.Lock()
 
     async def get(self, stages: list[str]) -> list[dict[str, Any]] | None:
         """全部阶段索引命中且文档齐全才返回；否则 None。"""
@@ -158,18 +161,50 @@ class SleepStageCandidateCache:
             len(urls),
         )
 
+    async def get_or_load(
+        self,
+        stages: list[str],
+        loader: StageLoader,
+    ) -> list[dict[str, Any]]:
+        """读取缓存；未命中时仅加载缺失阶段，并合并同进程并发 miss。"""
+        normalized = _normalize_stages(stages)
+        cached = await self.get(normalized)
+        if cached is not None:
+            return cached
+
+        async with self._mutation_lock:
+            cached = await self.get(normalized)
+            if cached is not None:
+                return cached
+
+            for stage in normalized:
+                if await self.get([stage]) is not None:
+                    continue
+                docs = await loader(stage)
+                await self.set_stage(stage, docs)
+
+            loaded = await self.get(normalized)
+            if loaded is None:
+                raise RuntimeError("sleep stage cache load completed without a readable value")
+            return loaded
+
     async def warm(self, loader: StageLoader) -> None:
         """清空后按四个阶段从数据源重建索引与文档。"""
-        await self.clear_all()
-        for stage in SLEEP_STAGES:
-            docs = await loader(stage)
-            await self.set_stage(stage, docs)
+        async with self._mutation_lock:
+            await self._clear_all_unlocked()
+            for stage in SLEEP_STAGES:
+                docs = await loader(stage)
+                await self.set_stage(stage, docs)
         logger.info("睡眠阶段候选缓存预热完成，stages={}", list(SLEEP_STAGES))
 
     async def clear_all(self) -> None:
         """删除四个阶段索引及其引用的全部文档。"""
+        async with self._mutation_lock:
+            await self._clear_all_unlocked()
+
+    async def _clear_all_unlocked(self) -> None:
         urls: set[str] = set()
-        index_keys = [build_sleep_stage_index_key(stage) for stage in SLEEP_STAGES]
+        index_keys = [build_sleep_stage_index_key(stage) for stage in _CACHE_CLEANUP_STAGES]
         for key in index_keys:
             raw = await self._redis.get(key)
             if raw is None:
@@ -180,7 +215,7 @@ class SleepStageCandidateCache:
 
         legacy_urls: set[str] = set()
         legacy_index_keys = [
-            f"{_LEGACY_SLEEP_STAGE_INDEX_KEY_PREFIX}{stage}" for stage in SLEEP_STAGES
+            f"{_LEGACY_SLEEP_STAGE_INDEX_KEY_PREFIX}{stage}" for stage in _CACHE_CLEANUP_STAGES
         ]
         for key in legacy_index_keys:
             raw = await self._redis.get(key)
@@ -191,11 +226,9 @@ class SleepStageCandidateCache:
                 legacy_urls.update(str(item) for item in items if item)
 
         doc_keys = [build_sleep_stage_doc_key(url) for url in urls]
-        legacy_doc_keys = [
-            _build_legacy_sleep_stage_doc_key(url) for url in legacy_urls
-        ]
+        legacy_doc_keys = [_build_legacy_sleep_stage_doc_key(url) for url in legacy_urls]
         legacy_candidate_keys = [
-            f"{_LEGACY_SLEEP_STAGE_CANDIDATE_KEY_PREFIX}{stage}" for stage in SLEEP_STAGES
+            f"{_LEGACY_SLEEP_STAGE_CANDIDATE_KEY_PREFIX}{stage}" for stage in _CACHE_CLEANUP_STAGES
         ]
         to_delete = [
             *index_keys,

@@ -27,6 +27,11 @@ services:
     environment:
       ES_NODE: http://elasticsearch:9200
       REDIS_URL: redis://redis:6379/0
+      SOMNI_REDIS_URL: redis://redis-somni:6379/0
+    ports:
+      - "50065:50065"  # 功能手板 gRPC
+      - "50064:50064"  # 量产 gRPC
+      # HTTP 仍经 nginx :8001
     volumes:
       - hf_cache:/data/huggingface
       - ./logs:/app/logs  # 宿主机可直接看项目目录 logs/YYYY-MM-DD_ubur_log
@@ -39,12 +44,27 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      redis-somni:
+        condition: service_healthy
     restart: unless-stopped
 
   redis:
     image: redis:7.4-alpine
     container_name: uburnode-redis
     command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  redis-somni:
+    image: redis:7.4-alpine
+    container_name: uburnode-redis-somni
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes:
+      - redis_somni_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -76,3 +96,4 @@ services:
 volumes:
   es_data:
   hf_cache:
+  redis_somni_data:

@@ -20,6 +20,15 @@ class Settings(BaseSettings):
     app_port: int = 8080
     app_debug: bool = False
 
+    # 功能手板 gRPC（与 HTTP 同进程；false 时跳过该端口）
+    grpc_host: str = "0.0.0.0"
+    grpc_port: int = 50065
+    grpc_enabled: bool = True
+
+    # 量产 gRPC
+    somni_grpc_port: int = 50064
+    somni_grpc_enabled: bool = True
+
     es_node: str = "http://localhost:9200"
     es_audio_index: str = "somni_audio_materials"
     es_tag_vectors_index: str = "somni_audio_tag_dictionary"
@@ -27,16 +36,32 @@ class Settings(BaseSettings):
     es_request_timeout_sec: float = 30.0
     search_max_concurrency: int = 25  # 同时执行的检索流水线上限，防止打满 ES
 
+    # 量产 ES（与手板向量/节点隔离）
+    somni_es_node: str = ""
+    somni_es_audio_index: str = "somni_audio_materials"
+    somni_es_tag_vectors_index: str = "somni_audio_tag_dictionary"
+    somni_es_search_events_index: str = "somni_audio_search_events"
+
     mongo_uri: str = ""
     mongo_db: str = "Fullive"
     mongo_materials_collection: str = "somni_audio_materials"
     mongo_tag_dictionary_collection: str = "somni_audio_tag_dictionary"
 
-    comm_grpc_host: str = "bionode-test.fulai.tech"
-    comm_grpc_port: int = 443
-    comm_grpc_use_tls: bool = True  # 443 走 TLS；内网明文可设 false
+    # 量产 Mongo
+    somni_mongo_uri: str = ""
+    somni_mongo_db: str = "Somni"
+    somni_mongo_materials_collection: str = "somni_audio_materials"
+    somni_mongo_tag_dictionary_collection: str = "somni_audio_tag_dictionary"
+    somni_mongo_answers_collection: str = "somni_quiz_answers"
+    somni_mongo_devices_collection: str = "somni_devices"
+    somni_mongo_telemetry_collection: str = "somni_telemetry"
+    somni_mongo_records_collection: str = "somni_records"
+    somni_mongo_sleep_reports_collection: str = "somni_sleep_reports"
+    somni_mongo_events_collection: str = "somni_events"
 
     sim_threshold: float = 0.7  # 内容形态向量模糊命中阈值（规范 §五-2）
+    # GetAudio query_text 与内容形态标签（含二级）向量相似度下限
+    get_audio_root_tag_sim_threshold: float = 0.75
     # 多路文本检索厌恶硬剔除阈值；≥ 该值 penalty=1.0 丢弃候选
     strong_dislike_sim_threshold: float = 0.85
     search_sleep_stage_filter_enabled: bool = True  # 检索步骤 1 是否按睡眠阶段过滤
@@ -56,7 +81,8 @@ class Settings(BaseSettings):
 
     log_level: str = "INFO"
     log_dir: str = "logs"
-    # 按日滚动：文件名为 YYYY-MM-DD_ubur_log，见 app.core.logging
+    # 按日命名 YYYY-MM-DD_ubur_log；超大小则同日再开新文件，见 app.core.logging
+    log_rotation_size: str = "100 MB"
     log_retention: str = "7 days"
 
     # Mongo → ES 差异同步（服务内定时 + scripts/sync_es_from_comm.py 手动）
@@ -67,14 +93,27 @@ class Settings(BaseSettings):
     sync_backup_filename: str = "somni_audio_materials_backup.json"
     sync_tag_dictionary_backup_filename: str = "somni_audio_tag_dictionary_backup.json"
 
-    # 音频检索 Redis 缓存（空 URL 表示关闭）
+    # 功能手板 Redis（空 URL 表示关闭）
     redis_url: str = ""
+    # 量产 Redis（独立实例；空则 GetHot 关闭，不回退 redis_url）
+    somni_redis_url: str = ""
+    somni_hot_enabled: bool = True
+    somni_hot_top_n: int = 10
+    somni_hot_redis_key: str = "somni:audio:hot:v1"
+    somni_redis_max_connections: int = 128
+    somni_redis_connect_timeout_sec: float = 2.0
+    somni_redis_socket_timeout_sec: float = 2.0
     # 连接池需覆盖 HTTP 并发峰值；redis-py 默认仅 100，高并发易 Too many connections
     redis_max_connections: int = 512
     search_cache_max_size: int = 2048
     search_cache_ttl_sec: int = 604800  # 7 天
+    somni_audio_catalog_cache_ttl_sec: float = 60.0
     # CUD 后延时重建睡眠阶段候选缓存，窗口内多次写入只重建一次
     sleep_stage_cache_rewarm_delay_sec: float = 5.0
+
+    default_page_size: int = 20
+    max_page_size: int = 200
+    fetch_all_hard_limit: int = 5000
 
     @property
     def embedding_onnx_path(self) -> Path:
@@ -93,12 +132,13 @@ class Settings(BaseSettings):
         return Path(self.sync_backup_dir) / self.sync_tag_dictionary_backup_filename
 
     @property
-    def comm_grpc_target(self) -> str:
-        return f"{self.comm_grpc_host}:{self.comm_grpc_port}"
-
-    @property
     def log_dir_path(self) -> Path:
         return Path(self.log_dir)
+
+    @property
+    def effective_somni_es_node(self) -> str:
+        """量产 ES 节点；未配置时回退手板（仅本地兜底，生产应显式配置）。"""
+        return self.somni_es_node or self.es_node
 
 
 @lru_cache

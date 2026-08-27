@@ -1,64 +1,48 @@
 # UburPython
 
-BioNode 体系中的 **Somni 音频检索服务**：以三维度检索为核心，从 MongoDB 同步 Somni 原料与标签词典至 Elasticsearch，对外提供 HTTP 检索 API。
+**Somni / 功能手板音频检索服务**：三维度检索为核心；HTTP 保留；同进程再对外暴露功能手板与量产两套 gRPC。
 
-- **核心**：三维度音频检索（`somni_audio_materials` ES 召回 + 标签词典向量 + 四步精排流水线）
-- **数据源**：MongoDB `Fullive` 库（`somni_audio_materials`、`somni_audio_tag_dictionary`）
-- **索引**：Elasticsearch `somni_audio_materials`、`somni_audio_tag_dictionary`（字段含义见 mapping `meta.description`）
-- **写路径**：`POST/PUT /api/audio` 写 Mongo `somni_audio_materials`（Somni 文档体）；有 `audio_url` 时同步 upsert ES；`DELETE` 仍经 comm-service
+- **核心**：三维度音频检索（ES 召回 + 标签词典向量 + 精排）
+- **功能手板**：`MONGO_*` + `ES_NODE` + `REDIS_URL`；HTTP `:8080` + gRPC `:50065`
+- **量产**：`SOMNI_MONGO_*` + `SOMNI_ES_*` + `SOMNI_REDIS_URL`（独立 Redis 实例）；gRPC `:50064`
+- **写路径**：直连 Mongo，再同步本侧 ES（不再调用 BioNode）
+- **接口文档**：`docs/功能手板接口文档.md`、`docs/量产接口文档.md`
 
 ## 架构
 
 ```text
 算法端 / 调用方
     │
-    ▼
-对外 HTTP (FastAPI + Pydantic)
-    │
-    ├──读（检索）──► somni_audio_materials (ES)
-    │                  + somni_audio_tag_dictionary (ES 向量)
-    │                  + 进程内 Embedding (bge-small-zh-v1.5)
-    │
-    ├──写（创建/更新）──► Mongo somni_audio_materials ──► ES upsert（有 audio_url）
-    ├──写（删除）──► comm-service (gRPC) + ES delete
-    │
-    └──同步（定时/手动）──► MongoDB Somni 集合 ──► Elasticsearch
+    ├── HTTP :8080 ──► app/api/audio ──► server/handboard（Fullive）
+    ├── gRPC :50065 ─► uburnode.v1（手板 audio/quiz）
+    └── gRPC :50064 ─► uburnode.somni.v1（量产 ListTags/ListAudios/Search/GetAnswer）
 ```
-
-## 数据流
-
-| 环节 | 来源 | 目标 | 模块 |
-|------|------|------|------|
-| Mongo → ES 同步 | `somni_audio_materials`、`somni_audio_tag_dictionary` | 同名 ES 索引 | `scripts/sync_es_from_comm.py` |
-| 标签向量 | 词典 `name` / `name_en` | `name_vector` / `name_en_vector` | 同步脚本 + `app/embedding/` |
-| HTTP 检索 | ES 原料文档 | `data.results[].materials[]` 原样返回 | `app/services/retrieval.py` |
-| HTTP 创建/更新 | Somni 文档体（仅创建强制 `audio_name`） | Mongo + ES | `app/services/audio.py` |
-| HTTP 删除（遗留） | material_id | comm + ES delete | `app/services/audio.py` |
-
-字段命名全链路 **snake_case**。Somni 表结构详见仓库内 `音频表结构.md`。
 
 ## 目录结构
 
 ```text
 UburPython/
 ├── app/
-│   ├── main.py                 # FastAPI 入口 + lifespan
-│   ├── core/                   # 配置、日志、标签转换
-│   ├── api/audio.py            # 4 个 HTTP 端点
-│   ├── schemas/audio.py        # Pydantic 模型
-│   ├── services/               # AudioService、RetrievalService
-│   ├── mongo/materials.py      # Mongo somni_audio_materials 读写
-│   ├── es/
-│   │   ├── search.py           # EsSearch 读路径
-│   │   ├── sync.py             # EsSync（Somni upsert + 删除）
-│   │   ├── somni_docs.py       # description_text 等文档转换
-│   │   └── index_mappings.py   # ES 索引 mapping + 字段注释
-│   ├── embedding/encoder.py    # bge-small-zh-v1.5 向量编码
-│   └── bionode_grpc_clients/   # comm-service gRPC 客户端
+│   ├── main.py                 # FastAPI + lifespan（双 gRPC）
+│   ├── api/audio.py            # HTTP /api/audio
+│   ├── server/
+│   │   ├── bootstrap.py        # 启停手板/量产 gRPC
+│   │   ├── handboard/          # 功能手板 audio|quiz
+│   │   └── somni/              # 量产 audio|quiz
+│   ├── uburnode_grpc/grpc_gen/ # proto 生成 stub
+│   ├── core/                   # 配置、日志、bson 工具
+│   ├── schemas/
+│   ├── services/retrieval.py   # 检索流水线
+│   ├── es/                     # ES 读/写同步
+│   ├── embedding/
+│   ├── cache/
+│   └── middleware/
 ├── scripts/
 │   ├── sync_es_from_comm.py    # Mongo → ES 差异同步
-│   └── gen_proto.sh            # 生成 gRPC stub
-├── proto/                      # bionode_comm.proto
+│   └── gen_uburnode_proto.sh   # 生成对外 gRPC stub
+├── proto/
+│   ├── uburnode.proto
+│   └── uburnode_somni.proto
 ├── tests/
 ├── pyproject.toml
 └── .env.example
@@ -70,9 +54,9 @@ UburPython/
 # 1. 安装依赖（推荐 uv）
 uv sync --extra dev
 
-# 2. 生成 comm gRPC stub（CUD 接口需要）
-chmod +x scripts/gen_proto.sh
-./scripts/gen_proto.sh
+# 2. 生成对外 gRPC stub
+chmod +x scripts/gen_uburnode_proto.sh
+./scripts/gen_uburnode_proto.sh
 
 # 3. 本地 Elasticsearch
 docker compose -f docker-compose.es.yml up -d
@@ -80,12 +64,12 @@ curl -s http://localhost:9200
 
 # 4. 配置环境变量
 cp .env.example .env
-# 编辑 ES_NODE、MONGO_URI、EMBEDDING_ONNX_DIR、COMM_GRPC_* 等
+# 编辑 ES_NODE、MONGO_URI、SOMNI_MONGO_URI、SOMNI_ES_NODE、EMBEDDING_* 等
 
 # 5. 导出 ONNX 模型（若 models/ 目录尚无模型）
 # 见 scripts/export_onnx_model.py
 
-# 6. Mongo → ES 全量同步
+# 6. Mongo → ES 同步（手板库）
 uv run python scripts/sync_es_from_comm.py --dry-run
 uv run python scripts/sync_es_from_comm.py
 

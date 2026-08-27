@@ -12,6 +12,7 @@ dependencies = [
     "elasticsearch>=8.15.0,<9",
     "aiohttp>=3.11.0",
     "grpcio>=1.68.0",
+    "grpcio-reflection>=1.68.0",
     "onnxruntime>=1.19.0",
     "transformers>=4.40.0",
     "numpy>=1.26.0",
@@ -47,6 +48,9 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+extend-exclude = [
+    "app/uburnode_grpc/grpc_gen",
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
