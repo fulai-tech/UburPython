@@ -163,6 +163,24 @@ async def test_get_audio_tag_maps_fields() -> None:
     assert res.tags[0].status == "启用"
 
 
+@pytest.mark.asyncio
+async def test_get_hot_passes_language_en() -> None:
+    rpc, service = _make_rpc()
+    service.get_hot = AsyncMock(return_value={"items": []})
+    await rpc.GetHot(uburnode_somni_pb2.GetHotReq(language="en"), _context())
+    service.get_hot.assert_awaited_once_with(language="en", kind="query")
+
+
+@pytest.mark.asyncio
+async def test_get_hot_passes_kind_tag() -> None:
+    rpc, service = _make_rpc()
+    service.get_hot = AsyncMock(return_value={"items": []})
+    await rpc.GetHot(
+        uburnode_somni_pb2.GetHotReq(language="zh", kind="tag"),
+        _context(),
+    )
+    service.get_hot.assert_awaited_once_with(language="zh", kind="tag")
+
 
 @pytest.mark.asyncio
 async def test_get_hot_maps_items() -> None:
@@ -171,8 +189,17 @@ async def test_get_hot_maps_items() -> None:
         return_value={"items": [{"keyword": "雨声", "score": 5}]}
     )
     res = await rpc.GetHot(uburnode_somni_pb2.GetHotReq(), _context())
-    service.get_hot.assert_awaited_once_with()
+    service.get_hot.assert_awaited_once_with(language="zh", kind="query")
     assert res.items[0].keyword == "雨声"
     assert res.items[0].score == 5
 
 
+@pytest.mark.asyncio
+async def test_get_hot_rejects_invalid_kind() -> None:
+    rpc, service = _make_rpc()
+    ctx = _context()
+    ctx.abort = AsyncMock(side_effect=grpc.aio.AbortError())
+    with pytest.raises(grpc.aio.AbortError):
+        await rpc.GetHot(uburnode_somni_pb2.GetHotReq(kind="other"), ctx)
+    service.get_hot.assert_not_called()
+    ctx.abort.assert_awaited_once()
