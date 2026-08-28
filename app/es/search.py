@@ -325,16 +325,23 @@ class EsSearch:
             source = hit.get("_source") or {}
             label = source.get("name")
             vector = source.get("name_vector")
-            if label and vector:
-                tags.append(
-                    {
-                        "id": hit.get("_id", ""),
-                        "label": label,
-                        "dimension": source.get("type", ""),
-                        "vector": vector,
-                        "parent_tag_id": str(source.get("parent_tag_id") or ""),
-                    }
-                )
+            vector_en = source.get("name_en_vector")
+            if not label:
+                continue
+            if not vector and not vector_en:
+                continue
+            tags.append(
+                {
+                    "id": hit.get("_id", ""),
+                    "label": label,
+                    "name_en": str(source.get("name_en") or ""),
+                    "code": str(source.get("code") or ""),
+                    "dimension": source.get("type", ""),
+                    "vector": vector or [],
+                    "vector_en": vector_en or [],
+                    "parent_tag_id": str(source.get("parent_tag_id") or ""),
+                }
+            )
         return tags
 
     async def search_by_description_vector(
@@ -392,12 +399,17 @@ class EsSearch:
             ids.extend(item.vector_id for item in dim)
         return ids
 
-    async def list_audio_catalog_docs(self, *, size: int) -> list[dict[str, Any]]:
-        """量产 GetAudio：音频全量（不含 embedding），供内存过滤。"""
+    async def list_audio_catalog_docs(
+        self,
+        *,
+        size: int,
+        language: str,
+    ) -> list[dict[str, Any]]:
+        """量产 GetAudio：按 language 拉取音频（不含 embedding），供内存过滤。"""
         response = await self._client.search(
             index=self.audio_index,
             body={
-                "query": {"match_all": {}},
+                "query": {"term": {"language": language}},
                 "size": max(1, size),
                 "_source": {"excludes": ["embedding", "description_vector"]},
             },
