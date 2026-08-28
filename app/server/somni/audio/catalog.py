@@ -17,14 +17,10 @@ from app.core.config import Settings
 from app.core.exceptions import AppError, EncoderNotReadyError
 from app.embedding.encoder import Encoder
 from app.es.search import EsSearch
-from app.server.somni.audio.hot import HotTracker
+from app.server.somni.audio.hot import HotTracker, normalize_tag_code
 
 _TAG_ENABLED = "启用"
 _CONTENT_FORM = "content_form"
-
-
-def _normalize_tag_code(code: str) -> str:
-    return code.strip().casefold()
 
 
 @dataclass(frozen=True)
@@ -90,30 +86,59 @@ class AudioCatalogService:
         language: str = "zh",
     ) -> dict[str, Any]:
         text = query_text.strip()
-        code = _normalize_tag_code(tag_code)
+        code = normalize_tag_code(tag_code)
         docs = await self._load_audios(from_es=bool(text), language=language)
+        hot_tag_codes: set[str] = set()
         if code:
             docs = [doc for doc in docs if _has_content_form_code(doc, code)]
+            hot_tag_codes.add(code)
         if text:
             matched = await self._content_form_tags_by_text(text, language=language)
             docs = [doc for doc in docs if _has_content_form_tag_id(doc, matched.ids)]
+            hot_tag_codes |= matched.codes
         payload = _paginate_docs(docs, page, page_size, fetch_all, self._settings)
         payload["list"] = [_to_audio_list_item(item) for item in payload["list"]]
-        self._schedule_hot(query_text, int(payload.get("total") or 0))
+        self._schedule_hot(
+            query_text,
+            language,
+            int(payload.get("total") or 0),
+            tag_codes=hot_tag_codes,
+        )
         return payload
 
-    async def get_hot(self) -> dict[str, Any]:
+    async def get_hot(
+        self,
+        *,
+        language: str = "zh",
+        kind: str = "query",
+    ) -> dict[str, Any]:
         if self._hot is None:
             raise AppError(
                 message="量产 Redis 未配置，无法获取热点",
                 status_code=HttpStatus.SERVICE_UNAVAILABLE,
             )
-        return {"items": await self._hot.list_hot()}
+        return {"items": await self._hot.list_hot(language=language, kind=kind)}
 
-    def _schedule_hot(self, query_text: str, hit_count: int) -> None:
-        if self._hot is None or not query_text.strip():
+    def _schedule_hot(
+        self,
+        query_text: str,
+        language: str,
+        hit_count: int,
+        *,
+        tag_codes: set[str] | None = None,
+    ) -> None:
+        if self._hot is None:
             return
-        task = asyncio.create_task(self._record_hot_safely(query_text, hit_count))
+        if not query_text.strip() and not tag_codes:
+            return
+        task = asyncio.create_task(
+            self._record_hot_safely(
+                query_text,
+                language,
+                hit_count,
+                tag_codes=tag_codes or set(),
+            )
+        )
         self._hot_tasks.add(task)
         task.add_done_callback(self._hot_tasks.discard)
 
@@ -130,10 +155,22 @@ class AudioCatalogService:
             logger.warning("量产热点后台任务关闭超时，已取消 {} 个", len(still))
         _ = done
 
-    async def _record_hot_safely(self, query_text: str, hit_count: int) -> None:
+    async def _record_hot_safely(
+        self,
+        query_text: str,
+        language: str,
+        hit_count: int,
+        *,
+        tag_codes: set[str],
+    ) -> None:
         async with self._hot_sem:
             try:
-                await self._hot.record_search(query_text, hit_count=hit_count)
+                await self._hot.record_search(
+                    query_text,
+                    language=language,
+                    hit_count=hit_count,
+                    tag_codes=tag_codes,
+                )
             except Exception as exc:
                 logger.warning("量产热点后台记账失败：{}", exc)
 

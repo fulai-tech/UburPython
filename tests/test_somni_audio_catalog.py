@@ -212,8 +212,8 @@ async def test_get_audio_tag_code_filter_is_case_insensitive() -> None:
     )
     assert [item["id"] for item in payload["list"]] == ["a1"]
     await asyncio.sleep(0)
-    # tag_code 无 query_text 时不记搜索热词
-    hot.record_search.assert_not_called()
+    hot.record_search.assert_awaited_once()
+    assert hot.record_search.await_args.kwargs["tag_codes"] == {"steady_rain"}
 
 
 @pytest.mark.asyncio
@@ -421,6 +421,63 @@ async def test_get_audio_query_text_returns_empty_when_child_unused() -> None:
     assert payload["total"] == 0
 
 
+@pytest.mark.asyncio
+async def test_get_audio_records_tag_hot_codes_when_query_hits() -> None:
+    rain = {
+        "_id": "a-rain",
+        "audio_name": "Heavy Rain",
+        "language": "en",
+        "content_form_tags": [
+            {
+                "tag_id": "tag-heavy-rain",
+                "code": "heavy_rain",
+                "name": "大雨",
+                "parent_tag_id": "root",
+            }
+        ],
+    }
+    encoder = MagicMock()
+    encoder.is_loaded = True
+    encoder.encode_one = AsyncMock(return_value=[1.0, 0.0])
+    es_search = MagicMock()
+    es_search.list_content_tag_vectors = AsyncMock(
+        return_value=[
+            {
+                "id": "tag-heavy-rain",
+                "dimension": "content_form",
+                "code": "heavy_rain",
+                "label": "大雨",
+                "name_en": "Heavy Rain",
+                "parent_tag_id": "root",
+                "vector": [0.0, 1.0],
+                "vector_en": [0.0, 1.0],
+            }
+        ]
+    )
+    es_search.list_audio_catalog_docs = AsyncMock(return_value=[rain])
+    hot = MagicMock()
+    hot.record_search = AsyncMock()
+    svc = _service(
+        _mongo_collection([rain]),
+        es_search=es_search,
+        encoder=encoder,
+        hot=hot,
+    )
+    await svc.get_audio(
+        page=1,
+        page_size=10,
+        fetch_all=False,
+        query_text="rain",
+        tag_code="",
+        language="en",
+    )
+    await asyncio.sleep(0)
+    hot.record_search.assert_awaited_once()
+    kwargs = hot.record_search.await_args.kwargs
+    assert kwargs["language"] == "en"
+    assert kwargs["hit_count"] == 1
+    assert kwargs["tag_codes"] == {"heavy_rain"}
+
 
 @pytest.mark.asyncio
 async def test_get_audio_records_hot_when_query() -> None:
@@ -458,7 +515,12 @@ async def test_get_audio_records_hot_when_query() -> None:
     )
     await asyncio.sleep(0)
 
-    hot.record_search.assert_awaited_once_with(" 雨声 ", hit_count=1)
+    hot.record_search.assert_awaited_once_with(
+        " 雨声 ",
+        language="zh",
+        hit_count=1,
+        tag_codes={"natural_sound"},
+    )
 
 
 @pytest.mark.asyncio
@@ -711,11 +773,13 @@ async def test_drain_hot_tasks_waits_for_pending_recording() -> None:
     hot = MagicMock()
     hot.record_search = AsyncMock(side_effect=_slow_record)
     svc = _service(_mongo_collection([_RAIN]), hot=hot)
-    svc._schedule_hot("雨声", 1)
+    svc._schedule_hot("雨声", "zh", 1)
 
     await started.wait()
     release.set()
     await svc.drain_hot_tasks(timeout_sec=1.0)
 
     assert not svc._hot_tasks
-    hot.record_search.assert_awaited_once_with("雨声", hit_count=1)
+    hot.record_search.assert_awaited_once_with(
+        "雨声", language="zh", hit_count=1, tag_codes=set()
+    )

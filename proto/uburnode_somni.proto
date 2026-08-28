@@ -194,7 +194,10 @@ message GetAudioTagRes {
   repeated TagDictItem tags = 1;
 }
 
-message GetHotReq {}
+message GetHotReq {
+  optional string language = 1;  // 音频语言 zh / en；缺省 zh
+  optional string kind = 2;      // query 搜索词热榜 / tag 标签热榜；缺省 query
+}
 
 message HotKeyword {
   string keyword = 1;
