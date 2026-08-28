@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+from dataclasses import dataclass
 from time import monotonic
 from typing import Any
 
@@ -16,10 +17,16 @@ from app.core.config import Settings
 from app.core.exceptions import AppError, EncoderNotReadyError
 from app.embedding.encoder import Encoder
 from app.es.search import EsSearch
-from app.server.somni.audio.hot import HotTracker
+from app.server.somni.audio.hot import HotTracker, normalize_tag_code
 
 _TAG_ENABLED = "启用"
 _CONTENT_FORM = "content_form"
+
+
+@dataclass(frozen=True)
+class _MatchedContentTags:
+    ids: set[str]
+    codes: set[str]
 
 
 class InvalidAudioQueryError(AppError):
@@ -42,7 +49,7 @@ class AudioCatalogService:
         self._es_search = es_search
         self._encoder = encoder
         self._hot = hot
-        self._audio_cache: dict[bool, tuple[float, list[dict[str, Any]]]] = {}
+        self._audio_cache: dict[tuple[bool, str], tuple[float, list[dict[str, Any]]]] = {}
         self._audio_cache_lock = asyncio.Lock()
         self._hot_tasks: set[asyncio.Task[None]] = set()
         self._hot_sem = asyncio.Semaphore(32)
@@ -76,32 +83,62 @@ class AudioCatalogService:
         fetch_all: bool,
         query_text: str,
         tag_code: str,
+        language: str = "zh",
     ) -> dict[str, Any]:
         text = query_text.strip()
-        code = tag_code.strip()
-        docs = await self._load_audios(from_es=bool(text))
+        code = normalize_tag_code(tag_code)
+        docs = await self._load_audios(from_es=bool(text), language=language)
+        hot_tag_codes: set[str] = set()
         if code:
             docs = [doc for doc in docs if _has_content_form_code(doc, code)]
+            hot_tag_codes.add(code)
         if text:
-            tag_ids = await self._content_form_tag_ids_by_text(text)
-            docs = [doc for doc in docs if _has_content_form_tag_id(doc, tag_ids)]
+            matched = await self._content_form_tags_by_text(text, language=language)
+            docs = [doc for doc in docs if _has_content_form_tag_id(doc, matched.ids)]
+            hot_tag_codes |= matched.codes
         payload = _paginate_docs(docs, page, page_size, fetch_all, self._settings)
         payload["list"] = [_to_audio_list_item(item) for item in payload["list"]]
-        self._schedule_hot(query_text, int(payload.get("total") or 0))
+        self._schedule_hot(
+            query_text,
+            language,
+            int(payload.get("total") or 0),
+            tag_codes=hot_tag_codes,
+        )
         return payload
 
-    async def get_hot(self) -> dict[str, Any]:
+    async def get_hot(
+        self,
+        *,
+        language: str = "zh",
+        kind: str = "query",
+    ) -> dict[str, Any]:
         if self._hot is None:
             raise AppError(
                 message="量产 Redis 未配置，无法获取热点",
                 status_code=HttpStatus.SERVICE_UNAVAILABLE,
             )
-        return {"items": await self._hot.list_hot()}
+        return {"items": await self._hot.list_hot(language=language, kind=kind)}
 
-    def _schedule_hot(self, query_text: str, hit_count: int) -> None:
-        if self._hot is None or not query_text.strip():
+    def _schedule_hot(
+        self,
+        query_text: str,
+        language: str,
+        hit_count: int,
+        *,
+        tag_codes: set[str] | None = None,
+    ) -> None:
+        if self._hot is None:
             return
-        task = asyncio.create_task(self._record_hot_safely(query_text, hit_count))
+        if not query_text.strip() and not tag_codes:
+            return
+        task = asyncio.create_task(
+            self._record_hot_safely(
+                query_text,
+                language,
+                hit_count,
+                tag_codes=tag_codes or set(),
+            )
+        )
         self._hot_tasks.add(task)
         task.add_done_callback(self._hot_tasks.discard)
 
@@ -118,39 +155,57 @@ class AudioCatalogService:
             logger.warning("量产热点后台任务关闭超时，已取消 {} 个", len(still))
         _ = done
 
-    async def _record_hot_safely(self, query_text: str, hit_count: int) -> None:
+    async def _record_hot_safely(
+        self,
+        query_text: str,
+        language: str,
+        hit_count: int,
+        *,
+        tag_codes: set[str],
+    ) -> None:
         async with self._hot_sem:
             try:
-                await self._hot.record_search(query_text, hit_count=hit_count)
+                await self._hot.record_search(
+                    query_text,
+                    language=language,
+                    hit_count=hit_count,
+                    tag_codes=tag_codes,
+                )
             except Exception as exc:
                 logger.warning("量产热点后台记账失败：{}", exc)
 
-    async def _load_audios(self, *, from_es: bool) -> list[dict[str, Any]]:
+    async def _load_audios(self, *, from_es: bool, language: str) -> list[dict[str, Any]]:
+        cache_key = (from_es, language)
         now = monotonic()
-        cached = self._audio_cache.get(from_es)
+        cached = self._audio_cache.get(cache_key)
         if cached is not None and self._is_cache_fresh(cached[0], now):
             return cached[1]
         async with self._audio_cache_lock:
-            cached = self._audio_cache.get(from_es)
+            cached = self._audio_cache.get(cache_key)
             if cached is not None and self._is_cache_fresh(cached[0], now):
                 return cached[1]
-            raw = await self._fetch_audios_es() if from_es else await self._fetch_audios_mongo()
+            raw = (
+                await self._fetch_audios_es(language)
+                if from_es
+                else await self._fetch_audios_mongo(language)
+            )
             docs = [_map_material(doc) for doc in raw]
-            self._audio_cache[from_es] = (now, docs)
+            self._audio_cache[cache_key] = (now, docs)
             return docs
 
     def _is_cache_fresh(self, loaded_at: float, now: float) -> bool:
         ttl = self._settings.somni_audio_catalog_cache_ttl_sec
         return ttl > 0 and now - loaded_at < ttl
 
-    async def _fetch_audios_mongo(self) -> list[dict[str, Any]]:
+    async def _fetch_audios_mongo(self, language: str) -> list[dict[str, Any]]:
         collection = self._materials()
-        total = await collection.count_documents({})
+        query = {"language": language}
+        total = await collection.count_documents(query)
         self._reject_over_limit(total)
-        cursor = collection.find({}, {"embedding": 0})
+        cursor = collection.find(query, {"embedding": 0})
         return [bson_to_jsonable(doc) async for doc in cursor]
 
-    async def _fetch_audios_es(self) -> list[dict[str, Any]]:
+    async def _fetch_audios_es(self, language: str) -> list[dict[str, Any]]:
         if self._es_search is None:
             raise AppError(
                 message="Elasticsearch 未就绪，无法按搜索词查询音频",
@@ -158,11 +213,17 @@ class AudioCatalogService:
             )
         docs = await self._es_search.list_audio_catalog_docs(
             size=self._settings.fetch_all_hard_limit + 1,
+            language=language,
         )
         self._reject_over_limit(len(docs))
         return docs
 
-    async def _content_form_tag_ids_by_text(self, text: str) -> set[str]:
+    async def _content_form_tags_by_text(
+        self,
+        text: str,
+        *,
+        language: str,
+    ) -> _MatchedContentTags:
         if self._encoder is None or not self._encoder.is_loaded:
             raise EncoderNotReadyError()
         if self._es_search is None:
@@ -174,19 +235,32 @@ class AudioCatalogService:
         tags = await self._es_search.list_content_tag_vectors()
         threshold = self._settings.get_audio_root_tag_sim_threshold
         scored: list[tuple[float, str]] = []
+        lexical_ids: set[str] = set()
+        id_to_code: dict[str, str] = {}
         for tag in tags:
             if not _is_content_form_dict(tag):
                 continue
-            vector = tag.get("vector")
+            tag_id = str(tag.get("id") or "").strip()
+            if not tag_id:
+                continue
+            code = str(tag.get("code") or "").strip()
+            if code:
+                id_to_code[tag_id] = code
+            if _lexical_match_content_tag(tag, text):
+                lexical_ids.add(tag_id)
+            vector = _tag_vector_for_language(tag, language)
             if not isinstance(vector, list) or not vector:
                 continue
             sim = _cosine_similarity(query_vector, vector)
             if sim <= threshold:
                 continue
-            tag_id = str(tag.get("id") or "").strip()
-            if tag_id:
-                scored.append((sim, tag_id))
-        return _select_matched_tag_ids(scored)
+            scored.append((sim, tag_id))
+        matched_ids = lexical_ids | _select_matched_tag_ids(scored)
+        return _MatchedContentTags(
+            ids=matched_ids,
+            codes={id_to_code[i] for i in matched_ids if i in id_to_code},
+        )
+
 
     def _tags(self) -> AsyncIOMotorCollection:
         return self._db()[self._settings.somni_mongo_tag_dictionary_collection]
@@ -313,6 +387,34 @@ def _to_vip(value: Any) -> int:
     return 1 if bool(value) else 0
 
 
+def _tag_vector_for_language(tag: dict[str, Any], language: str) -> list[float] | None:
+    """en 优先 name_en_vector，zh 优先 name_vector；缺省回退另一侧。"""
+    primary = "vector_en" if language == "en" else "vector"
+    fallback = "vector" if language == "en" else "vector_en"
+    for key in (primary, fallback):
+        value = tag.get(key)
+        if isinstance(value, list) and value:
+            return value
+    return None
+
+
+def _lexical_match_content_tag(tag: dict[str, Any], text: str) -> bool:
+    """短英文词（如 rain）靠向量难过阈值时，用 code / 英文名词法命中。"""
+    needle = text.strip().casefold()
+    if not needle:
+        return False
+    code = str(tag.get("code") or "").strip().casefold()
+    name = str(tag.get("label") or "").strip().casefold()
+    name_en = str(tag.get("name_en") or "").strip().casefold()
+    if needle in {code, name, name_en}:
+        return True
+    if code and needle in code.split("_"):
+        return True
+    if name_en and needle in name_en.replace("/", " ").split():
+        return True
+    return False
+
+
 def _is_blank(value: Any) -> bool:
     return value is None or str(value).strip() in ("", "None")
 
@@ -327,8 +429,13 @@ def _is_root_content_form_dict(tag: dict[str, Any]) -> bool:
 
 
 def _has_content_form_code(doc: dict[str, Any], tag_code: str) -> bool:
+    needle = tag_code.casefold()
+    if not needle:
+        return False
     for item in doc.get("content_form_tags") or []:
-        if isinstance(item, dict) and str(item.get("code") or "") == tag_code:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("code") or "").strip().casefold() == needle:
             return True
     return False
 

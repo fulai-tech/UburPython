@@ -159,6 +159,7 @@ message GetAudioReq {
   optional bool fetch_all = 3;     // true 时分页字段忽略，拉全量
   optional string query_text = 4;  // 搜索词，如「雨声」；空则不过滤
   optional string tag_code = 5;    // 内容形态标签 code；空则不按标签过滤
+  optional string language = 6;    // 音频语言 zh / en；缺省 zh
 }
 
 message AudioListItem {
@@ -193,7 +194,10 @@ message GetAudioTagRes {
   repeated TagDictItem tags = 1;
 }
 
-message GetHotReq {}
+message GetHotReq {
+  optional string language = 1;  // 音频语言 zh / en；缺省 zh
+  optional string kind = 2;      // query 搜索词热榜 / tag 标签热榜；缺省 query
+}
 
 message HotKeyword {
   string keyword = 1;
