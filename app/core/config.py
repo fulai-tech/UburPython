@@ -92,6 +92,11 @@ class Settings(BaseSettings):
     sync_backup_dir: str = "data/sync_backup"
     sync_backup_filename: str = "somni_audio_materials_backup.json"
     sync_tag_dictionary_backup_filename: str = "somni_audio_tag_dictionary_backup.json"
+    # 量产 CLI 同步备份（与手板文件名隔离，避免互相覆盖）
+    somni_sync_backup_filename: str = "somni_prod_audio_materials_backup.json"
+    somni_sync_tag_dictionary_backup_filename: str = (
+        "somni_prod_audio_tag_dictionary_backup.json"
+    )
 
     # 功能手板 Redis（空 URL 表示关闭）
     redis_url: str = ""
@@ -130,6 +135,14 @@ class Settings(BaseSettings):
     @property
     def sync_tag_dictionary_backup_path(self) -> Path:
         return Path(self.sync_backup_dir) / self.sync_tag_dictionary_backup_filename
+
+    @property
+    def somni_sync_backup_path(self) -> Path:
+        return Path(self.sync_backup_dir) / self.somni_sync_backup_filename
+
+    @property
+    def somni_sync_tag_dictionary_backup_path(self) -> Path:
+        return Path(self.sync_backup_dir) / self.somni_sync_tag_dictionary_backup_filename
 
     @property
     def log_dir_path(self) -> Path:

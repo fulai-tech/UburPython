@@ -38,7 +38,8 @@ UburPython/
 │   ├── cache/
 │   └── middleware/
 ├── scripts/
-│   ├── sync_es_from_comm.py    # Mongo → ES 差异同步
+│   ├── sync_es_from_comm.py    # 手板 Mongo → ES 全量同步
+│   ├── sync_es_from_somni.py   # 量产 Mongo → ES 全量同步
 │   └── gen_uburnode_proto.sh   # 生成对外 gRPC stub
 ├── proto/
 │   ├── uburnode.proto
@@ -69,9 +70,13 @@ cp .env.example .env
 # 5. 导出 ONNX 模型（若 models/ 目录尚无模型）
 # 见 scripts/export_onnx_model.py
 
-# 6. Mongo → ES 同步（手板库）
+# 6. Mongo → ES 同步
+# 手板库
 uv run python scripts/sync_es_from_comm.py --dry-run
 uv run python scripts/sync_es_from_comm.py
+# 量产库
+uv run python scripts/sync_es_from_somni.py --dry-run
+uv run python scripts/sync_es_from_somni.py
 
 # 7. 启动服务
 uv run uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
@@ -178,15 +183,20 @@ OpenAPI 文档：启动后访问 `http://localhost:8080/docs`。
 ## Mongo → ES 同步
 
 ```bash
+# 手板（MONGO_URI / ES_NODE）
 uv run python scripts/sync_es_from_comm.py          # 正式同步
 uv run python scripts/sync_es_from_comm.py --dry-run # 仅比对统计
+
+# 量产（SOMNI_MONGO_URI / SOMNI_ES_NODE）
+uv run python scripts/sync_es_from_somni.py
+uv run python scripts/sync_es_from_somni.py --dry-run
 ```
 
 - 先同步 `somni_audio_tag_dictionary`（写入 `name_vector`、`name_en_vector`）
 - 再同步 `somni_audio_materials`（1:1 镜像 Mongo 文档）
 - 启动时删除旧索引 `audio_materials`、`tag_vectors`
 
-服务内按 `SYNC_INTERVAL_DAYS` 定时执行（需配置 `MONGO_URI`）。
+手板服务内按 `SYNC_INTERVAL_DAYS` 定时执行（需配置 `MONGO_URI`）。量产同步目前仅 CLI。
 
 ## 环境变量（节选）
 
