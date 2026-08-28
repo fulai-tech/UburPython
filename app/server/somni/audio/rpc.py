@@ -7,7 +7,9 @@ from typing import TYPE_CHECKING, Any
 from google.protobuf.struct_pb2 import Value
 
 from app.core.exceptions import ServiceNotReadyError
-from app.server.errors import abort_from_app_error, run_rpc_call
+from app.server.errors import abort_from_app_error, abort_invalid, run_rpc_call
+from app.server.somni.audio.hot import parse_hot_kind
+from app.server.somni.metadata import parse_language
 from app.uburnode_grpc.grpc_gen import uburnode_somni_pb2, uburnode_somni_pb2_grpc
 
 if TYPE_CHECKING:
@@ -20,9 +22,18 @@ class AudioRpc(uburnode_somni_pb2_grpc.AudioServiceServicer):
 
     async def GetAudio(self, request, context):
         service = await self._require(context)
+        try:
+            language = parse_language(
+                request.language if request.HasField("language") else None
+            )
+        except ValueError as exc:
+            await abort_invalid(context, str(exc))
 
         async def _do():
-            payload = await service.get_audio(**_get_audio_kwargs(request))
+            payload = await service.get_audio(
+                **_get_audio_kwargs(request),
+                language=language,
+            )
             return _to_audio_res(payload)
 
         return await run_rpc_call(context, _do)
@@ -38,11 +49,17 @@ class AudioRpc(uburnode_somni_pb2_grpc.AudioServiceServicer):
         return await run_rpc_call(context, _do)
 
     async def GetHot(self, request, context):
-        del request
         service = await self._require(context)
+        try:
+            language = parse_language(
+                request.language if request.HasField("language") else None
+            )
+            kind = parse_hot_kind(request.kind if request.HasField("kind") else None)
+        except ValueError as exc:
+            await abort_invalid(context, str(exc))
 
         async def _do():
-            payload = await service.get_hot()
+            payload = await service.get_hot(language=language, kind=kind)
             return _to_hot_res(payload)
 
         return await run_rpc_call(context, _do)

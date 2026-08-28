@@ -15,6 +15,8 @@ _MAPPING = {
         "properties": {
             "keyword": {"type": "keyword"},
             "raw_query": {"type": "keyword"},
+            "language": {"type": "keyword"},
+            "kind": {"type": "keyword"},
             "created_at": {"type": "date"},
             "hit_count": {"type": "integer"},
             "request_id": {"type": "keyword"},
@@ -27,12 +29,16 @@ def _build_event_doc(
     *,
     keyword: str,
     raw_query: str,
+    language: str,
     hit_count: int,
+    kind: str,
     request_id: str,
 ) -> dict[str, Any]:
     return {
         "keyword": keyword,
         "raw_query": raw_query,
+        "language": language,
+        "kind": kind,
         "created_at": datetime.now(UTC).isoformat(),
         "hit_count": int(hit_count),
         "request_id": request_id,
@@ -53,6 +59,10 @@ class SearchEventsStore:
             if self._index_ready:
                 return
             if await self._client.indices.exists(index=self._index):
+                await self._client.indices.put_mapping(
+                    index=self._index,
+                    body=_MAPPING["mappings"],
+                )
                 self._index_ready = True
                 return
             try:
@@ -61,6 +71,10 @@ class SearchEventsStore:
             except Exception as exc:
                 if not _is_already_exists_error(exc):
                     raise
+                await self._client.indices.put_mapping(
+                    index=self._index,
+                    body=_MAPPING["mappings"],
+                )
             self._index_ready = True
 
     async def index_event(
@@ -68,14 +82,18 @@ class SearchEventsStore:
         *,
         keyword: str,
         raw_query: str,
+        language: str,
         hit_count: int,
+        kind: str = "query",
         request_id: str = "",
     ) -> None:
         await self.ensure_index()
         doc = _build_event_doc(
             keyword=keyword,
             raw_query=raw_query,
+            language=language,
             hit_count=hit_count,
+            kind=kind,
             request_id=request_id,
         )
         await self._client.index(index=self._index, document=doc)
