@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
+import grpc
 import pytest
 
 from app.server.somni.audio.rpc import AudioRpc
@@ -20,6 +21,36 @@ def _make_rpc() -> tuple[AudioRpc, MagicMock]:
     service.get_audio_tag = AsyncMock()
     service.get_hot = AsyncMock()
     return AudioRpc(service), service
+
+
+@pytest.mark.asyncio
+async def test_get_audio_passes_language_en() -> None:
+    rpc, service = _make_rpc()
+    service.get_audio = AsyncMock(
+        return_value={"list": [], "page": 1, "page_size": 20, "total": 0}
+    )
+    req = uburnode_somni_pb2.GetAudioReq(page=1, page_size=20, language="en")
+    await rpc.GetAudio(req, _context())
+    service.get_audio.assert_awaited_once_with(
+        page=1,
+        page_size=20,
+        fetch_all=False,
+        query_text="",
+        tag_code="",
+        language="en",
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_audio_rejects_invalid_language() -> None:
+    rpc, service = _make_rpc()
+    ctx = _context()
+    ctx.abort = AsyncMock(side_effect=grpc.aio.AbortError())
+    req = uburnode_somni_pb2.GetAudioReq(language="fr")
+    with pytest.raises(grpc.aio.AbortError):
+        await rpc.GetAudio(req, ctx)
+    service.get_audio.assert_not_called()
+    ctx.abort.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -50,6 +81,7 @@ async def test_get_audio_passes_page_and_query() -> None:
         fetch_all=False,
         query_text="雨声",
         tag_code="",
+        language="zh",
     )
     assert res.list[0].audio_name == "雨声"
     assert res.list[0].vip == 0
@@ -77,6 +109,7 @@ async def test_get_audio_fetch_all() -> None:
         fetch_all=True,
         query_text="",
         tag_code="",
+        language="zh",
     )
 
 
@@ -99,6 +132,7 @@ async def test_get_audio_passes_tag_code() -> None:
         fetch_all=False,
         query_text="",
         tag_code="steady_rain",
+        language="zh",
     )
 
 
@@ -129,6 +163,7 @@ async def test_get_audio_tag_maps_fields() -> None:
     assert res.tags[0].status == "启用"
 
 
+
 @pytest.mark.asyncio
 async def test_get_hot_maps_items() -> None:
     rpc, service = _make_rpc()
@@ -139,3 +174,5 @@ async def test_get_hot_maps_items() -> None:
     service.get_hot.assert_awaited_once_with()
     assert res.items[0].keyword == "雨声"
     assert res.items[0].score == 5
+
+

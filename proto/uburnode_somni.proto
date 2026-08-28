@@ -159,6 +159,7 @@ message GetAudioReq {
   optional bool fetch_all = 3;     // true 时分页字段忽略，拉全量
   optional string query_text = 4;  // 搜索词，如「雨声」；空则不过滤
   optional string tag_code = 5;    // 内容形态标签 code；空则不按标签过滤
+  optional string language = 6;    // 音频语言 zh / en；缺省 zh
 }
 
 message AudioListItem {
