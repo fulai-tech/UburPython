@@ -131,6 +131,11 @@ class ReportServiceStub:
                 request_serializer=uburnode__somni__pb2.ReportDateReq.SerializeToString,
                 response_deserializer=uburnode__somni__pb2.GetSleepQualityRes.FromString,
                 _registered_method=True)
+        self.GetProfile = channel.unary_unary(
+                '/uburnode.somni.v1.ReportService/GetProfile',
+                request_serializer=uburnode__somni__pb2.ReportDateReq.SerializeToString,
+                response_deserializer=uburnode__somni__pb2.GetProfileRes.FromString,
+                _registered_method=True)
 
 
 class ReportServiceServicer:
@@ -166,6 +171,12 @@ class ReportServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def GetProfile(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_ReportServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -193,6 +204,11 @@ def add_ReportServiceServicer_to_server(servicer, server):
                     servicer.GetSleepQuality,
                     request_deserializer=uburnode__somni__pb2.ReportDateReq.FromString,
                     response_serializer=uburnode__somni__pb2.GetSleepQualityRes.SerializeToString,
+            ),
+            'GetProfile': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetProfile,
+                    request_deserializer=uburnode__somni__pb2.ReportDateReq.FromString,
+                    response_serializer=uburnode__somni__pb2.GetProfileRes.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -330,6 +346,33 @@ class ReportService:
             '/uburnode.somni.v1.ReportService/GetSleepQuality',
             uburnode__somni__pb2.ReportDateReq.SerializeToString,
             uburnode__somni__pb2.GetSleepQualityRes.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetProfile(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/uburnode.somni.v1.ReportService/GetProfile',
+            uburnode__somni__pb2.ReportDateReq.SerializeToString,
+            uburnode__somni__pb2.GetProfileRes.FromString,
             options,
             channel_credentials,
             insecure,

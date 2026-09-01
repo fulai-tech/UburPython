@@ -145,12 +145,17 @@ message GetSleepQualityRes {
   SleepQuality sleep_quality = 1;
 }
 
+message GetProfileRes {
+  string profile_text = 1;
+}
+
 service ReportService {
   rpc GetSummary (ReportDateReq) returns (GetSummaryRes);
   rpc GetEvents (ReportDateReq) returns (GetEventsRes);
   rpc GetEnvironment (ReportDateReq) returns (GetEnvironmentRes);
   rpc GetStructure (ReportDateReq) returns (GetStructureRes);
   rpc GetSleepQuality (ReportDateReq) returns (GetSleepQualityRes);
+  rpc GetProfile (ReportDateReq) returns (GetProfileRes);
 }
 
 message GetAudioReq {
