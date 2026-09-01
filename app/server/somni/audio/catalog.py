@@ -97,7 +97,9 @@ class AudioCatalogService:
             docs = [doc for doc in docs if _has_content_form_tag_id(doc, matched.ids)]
             hot_tag_codes |= matched.codes
         payload = _paginate_docs(docs, page, page_size, fetch_all, self._settings)
-        payload["list"] = [_to_audio_list_item(item) for item in payload["list"]]
+        payload["list"] = [
+            _to_audio_list_item(item, language=language) for item in payload["list"]
+        ]
         self._schedule_hot(
             query_text,
             language,
@@ -360,7 +362,7 @@ def _map_material(doc: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _to_audio_list_item(doc: dict[str, Any]) -> dict[str, Any]:
+def _to_audio_list_item(doc: dict[str, Any], *, language: str) -> dict[str, Any]:
     return {
         "id": str(doc.get("id") or ""),
         "audio_name": str(doc.get("audio_name") or ""),
@@ -368,7 +370,28 @@ def _to_audio_list_item(doc: dict[str, Any]) -> dict[str, Any]:
         "cover_url": str(doc.get("cover_url") or ""),
         "description": str(doc.get("description") or ""),
         "vip": _to_vip(doc.get("vip")),
+        "tag": _map_audio_tags(doc.get("content_form_tags"), language=language),
     }
+
+
+def _map_audio_tags(raw: Any, *, language: str) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    names: list[str] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        names.append(_tag_display_name(item, language))
+    return names
+
+
+def _tag_display_name(item: dict[str, Any], language: str) -> str:
+    """zh 返回 name；en 优先 name_en，缺省回退 name。"""
+    name = str(item.get("name") or "")
+    name_en = str(item.get("name_en") or "")
+    if language == "en":
+        return name_en or name
+    return name
 
 
 def _to_vip(value: Any) -> int:

@@ -194,8 +194,62 @@ async def test_get_audio_filters_content_form_code_then_pages() -> None:
         "cover_url",
         "description",
         "vip",
+        "tag",
     }
     assert payload["list"][0]["vip"] == 0
+    assert payload["list"][0]["tag"] == ["自然声", "中雨/稳定雨声"]
+
+
+@pytest.mark.asyncio
+async def test_get_audio_tag_uses_name_en_when_language_en() -> None:
+    doc = {
+        **_RAIN,
+        "language": "en",
+        "content_form_tags": [
+            {
+                "tag_id": "root-rain",
+                "code": "natural_sound",
+                "name": "自然声",
+                "name_en": "Natural Sound",
+                "parent_tag_id": None,
+            },
+            {
+                "tag_id": "child-rain",
+                "code": "steady_rain",
+                "name": "中雨/稳定雨声",
+                "name_en": "Steady Rain",
+                "parent_tag_id": "root-rain",
+            },
+        ],
+    }
+    svc = _service(_mongo_collection([doc]))
+    payload = await svc.get_audio(
+        page=1,
+        page_size=10,
+        fetch_all=False,
+        query_text="",
+        tag_code="",
+        language="en",
+    )
+    assert payload["list"][0]["tag"] == ["Natural Sound", "Steady Rain"]
+
+
+@pytest.mark.asyncio
+async def test_get_audio_tag_empty_when_no_content_form_tags() -> None:
+    doc = {
+        "_id": "bare",
+        "audio_name": "无标签",
+        "language": "zh",
+    }
+    svc = _service(_mongo_collection([doc]))
+    payload = await svc.get_audio(
+        page=1,
+        page_size=10,
+        fetch_all=False,
+        query_text="",
+        tag_code="",
+    )
+    assert payload["list"][0]["tag"] == []
 
 
 @pytest.mark.asyncio
