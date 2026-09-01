@@ -125,14 +125,15 @@ def _to_audio_res(payload: dict[str, Any]) -> uburnode_somni_pb2.GetAudioRes:
         total=int(payload.get("total") or 0),
     )
     for item in payload.get("list") or []:
-        res.list.append(
-            uburnode_somni_pb2.AudioListItem(
-                id=str(item.get("id") or ""),
-                audio_name=str(item.get("audio_name") or ""),
-                audio_url=str(item.get("audio_url") or ""),
-                cover_url=str(item.get("cover_url") or ""),
-                description=str(item.get("description") or ""),
-                vip=int(item.get("vip") or 0),
-            )
+        entry = uburnode_somni_pb2.AudioListItem(
+            id=str(item.get("id") or ""),
+            audio_name=str(item.get("audio_name") or ""),
+            audio_url=str(item.get("audio_url") or ""),
+            cover_url=str(item.get("cover_url") or ""),
+            description=str(item.get("description") or ""),
+            vip=int(item.get("vip") or 0),
         )
+        for tag in item.get("tag") or []:
+            entry.tag.append(str(tag))
+        res.list.append(entry)
     return res
