@@ -76,6 +76,9 @@ def _make_rpc() -> tuple[ReportRpc, MagicMock]:
             }
         }
     )
+    service.get_profile = AsyncMock(
+        return_value={"profile_text": "画像摘要文本"}
+    )
     return ReportRpc(service), service
 
 
@@ -98,6 +101,7 @@ async def test_report_requires_uid_and_record_date() -> None:
         ("GetEnvironment", "get_environment"),
         ("GetStructure", "get_structure"),
         ("GetSleepQuality", "get_sleep_quality"),
+        ("GetProfile", "get_profile"),
     ],
 )
 async def test_report_rpcs_call_service(method_name: str, service_name: str) -> None:
@@ -118,3 +122,30 @@ async def test_get_summary_maps_fields() -> None:
     payload = MessageToDict(res, preserving_proto_field_name=True)
     assert payload["sleep_summary"]["avg_heart_rate"] == 62
     assert payload["sleep_summary"]["body_battery_status"] == "Energy At Its Peak"
+
+
+@pytest.mark.asyncio
+async def test_get_profile_maps_profile_text() -> None:
+    rpc, _service = _make_rpc()
+    res = await rpc.GetProfile(
+        uburnode_somni_pb2.ReportDateReq(uid="u1", record_date="2026-08-30"),
+        _context(),
+    )
+    assert res.profile_text == "画像摘要文本"
+
+
+@pytest.mark.asyncio
+async def test_get_profile_not_found_aborts() -> None:
+    from app.core.codes import HttpStatus
+    from app.core.exceptions import AppError
+
+    service = MagicMock()
+    service.get_profile = AsyncMock(
+        side_effect=AppError(message="画像不存在：u1/2026-08-30", status_code=HttpStatus.NOT_FOUND)
+    )
+    rpc = ReportRpc(service)
+    with pytest.raises(grpc.aio.AbortError):
+        await rpc.GetProfile(
+            uburnode_somni_pb2.ReportDateReq(uid="u1", record_date="2026-08-30"),
+            _context(),
+        )

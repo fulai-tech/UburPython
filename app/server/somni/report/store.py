@@ -59,6 +59,13 @@ class ReportStore:
             self._settings.somni_mongo_sleep_reports_collection
         ].find_one({"uid": uid, "record_date": record_date})
 
+    async def find_user_profile(
+        self, uid: str, record_date: str
+    ) -> dict[str, Any] | None:
+        return await self._db()[
+            self._settings.somni_mongo_user_profiles_collection
+        ].find_one({"uid": uid, "record_date": record_date})
+
     async def list_events(self, uid: str, record_date: str) -> list[dict[str, Any]]:
         doc = await self._db()[self._settings.somni_mongo_events_collection].find_one(
             {"uid": uid, "record_date": record_date}

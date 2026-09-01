@@ -33,6 +33,9 @@ class ReportRpc(uburnode_somni_pb2_grpc.ReportServiceServicer):
             request, context, "get_sleep_quality", _to_sleep_quality_res
         )
 
+    async def GetProfile(self, request, context):
+        return await self._call(request, context, "get_profile", _to_profile_res)
+
     async def _call(self, request, context, method_name: str, to_res):
         if not request.uid.strip() or not request.record_date.strip():
             await abort_invalid(context, "uid 与 record_date 均不能为空")
@@ -50,6 +53,12 @@ class ReportRpc(uburnode_somni_pb2_grpc.ReportServiceServicer):
         if self._service is None:
             await abort_from_app_error(context, ServiceNotReadyError())
         return self._service  # type: ignore[return-value]
+
+
+def _to_profile_res(payload: dict[str, Any]) -> uburnode_somni_pb2.GetProfileRes:
+    return uburnode_somni_pb2.GetProfileRes(
+        profile_text=str(payload.get("profile_text") or "")
+    )
 
 
 def _to_summary_res(payload: dict[str, Any]) -> uburnode_somni_pb2.GetSummaryRes:

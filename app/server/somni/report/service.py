@@ -7,7 +7,9 @@ from typing import Any
 from loguru import logger
 from motor.motor_asyncio import AsyncIOMotorClient
 
+from app.core.codes import HttpStatus
 from app.core.config import Settings
+from app.core.exceptions import AppError
 from app.server.somni.report import calc
 from app.server.somni.report.store import ReportStore
 
@@ -87,6 +89,15 @@ class ReportService:
                 "deep_sleep": parts["deep_sleep"],
             }
         }
+
+    async def get_profile(self, uid: str, record_date: str) -> dict[str, Any]:
+        doc = await self._store.find_user_profile(uid, record_date)
+        if doc is None:
+            raise AppError(
+                message=f"画像不存在：{uid}/{record_date}",
+                status_code=HttpStatus.NOT_FOUND,
+            )
+        return {"profile_text": str(doc.get("profile_text") or "")}
 
     async def get_sleep_quality(self, uid: str, record_date: str) -> dict[str, Any]:
         record = await self._store.find_record(uid, record_date)
