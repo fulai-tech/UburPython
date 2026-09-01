@@ -66,6 +66,7 @@ async def test_get_audio_passes_page_and_query() -> None:
                     "cover_url": "https://cdn.example/a.png",
                     "description": "desc",
                     "vip": 0,
+                    "tag": ["自然声", "中雨/稳定雨声"],
                 }
             ],
             "page": 1,
@@ -88,6 +89,7 @@ async def test_get_audio_passes_page_and_query() -> None:
     assert res.total == 1
     assert res.page == 1
     assert res.page_size == 20
+    assert list(res.list[0].tag) == ["自然声", "中雨/稳定雨声"]
 
 
 @pytest.mark.asyncio
