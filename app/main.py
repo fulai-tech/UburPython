@@ -67,6 +67,7 @@ from app.server.handboard.audio.service import AudioService
 from app.server.handboard.audio.store import MaterialsStore, create_materials_store
 from app.server.somni.audio.catalog import AudioCatalogService as SomniAudioService
 from app.server.somni.audio.hot import HotTracker
+from app.server.somni.profile.service import ProfileService as SomniProfileService
 from app.server.somni.quiz.service import QuizService as SomniQuizService
 from app.server.somni.report.service import ReportService as SomniReportService
 from app.services.retrieval import RetrievalService
@@ -87,6 +88,7 @@ class AppState:
     audio_service: AudioService | None = None
     somni_quiz_service: SomniQuizService | None = None
     somni_report_service: SomniReportService | None = None
+    somni_profile_service: SomniProfileService | None = None
     somni_audio_service: SomniAudioService | None = None
     search_cache: AudioSearchCache | None = None
     sleep_stage_cache: SleepStageCandidateCache | None = None
@@ -181,6 +183,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     _app_state.somni_quiz_service = SomniQuizService(somni_mongo, settings)
     _app_state.somni_report_service = SomniReportService(somni_mongo, settings)
+    _app_state.somni_profile_service = SomniProfileService(somni_mongo, settings)
     somni_es_client = create_es_client(
         settings,
         node=settings.effective_somni_es_node,
