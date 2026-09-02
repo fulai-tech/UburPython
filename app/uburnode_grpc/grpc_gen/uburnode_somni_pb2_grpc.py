@@ -540,3 +540,75 @@ class AudioService:
             timeout,
             metadata,
             _registered_method=True)
+
+
+class ProfileServiceStub:
+    """Missing associated documentation comment in .proto file."""
+
+    def __init__(self, channel):
+        """Constructor.
+
+        Args:
+            channel: A grpc.Channel.
+        """
+        self.GetUserProfile = channel.unary_unary(
+                '/uburnode.somni.v1.ProfileService/GetUserProfile',
+                request_serializer=uburnode__somni__pb2.GetUserProfileReq.SerializeToString,
+                response_deserializer=uburnode__somni__pb2.GetUserProfileRes.FromString,
+                _registered_method=True)
+
+
+class ProfileServiceServicer:
+    """Missing associated documentation comment in .proto file."""
+
+    def GetUserProfile(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+
+def add_ProfileServiceServicer_to_server(servicer, server):
+    rpc_method_handlers = {
+            'GetUserProfile': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetUserProfile,
+                    request_deserializer=uburnode__somni__pb2.GetUserProfileReq.FromString,
+                    response_serializer=uburnode__somni__pb2.GetUserProfileRes.SerializeToString,
+            ),
+    }
+    generic_handler = grpc.method_handlers_generic_handler(
+            'uburnode.somni.v1.ProfileService', rpc_method_handlers)
+    server.add_generic_rpc_handlers((generic_handler,))
+    server.add_registered_method_handlers('uburnode.somni.v1.ProfileService', rpc_method_handlers)
+
+
+ # This class is part of an EXPERIMENTAL API.
+class ProfileService:
+    """Missing associated documentation comment in .proto file."""
+
+    @staticmethod
+    def GetUserProfile(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/uburnode.somni.v1.ProfileService/GetUserProfile',
+            uburnode__somni__pb2.GetUserProfileReq.SerializeToString,
+            uburnode__somni__pb2.GetUserProfileRes.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)

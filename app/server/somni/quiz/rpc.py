@@ -18,8 +18,8 @@ class QuizRpc(uburnode_somni_pb2_grpc.QuizServiceServicer):
         self._service = service
 
     async def GetAnswer(self, request, context):
-        if not request.uid.strip() or not request.answer_id.strip():
-            await abort_invalid(context, "uid 与 answer_id 均不能为空")
+        if not request.uid.strip():
+            await abort_invalid(context, "uid 不能为空")
         service = await self._require(context)
 
         async def _do():
