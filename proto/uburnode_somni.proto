@@ -8,7 +8,7 @@ import "google/protobuf/struct.proto";
 
 message GetAnswerReq {
   string uid = 1;        // 必传
-  string answer_id = 2;  // 必传：答卷 _id
+  string answer_id = 2;  // 可选：答卷 _id；空则按 uid 取 create_time 最新一条
 }
 
 // answers 为整份答卷数组的 JSON 文本（与库 answers 同形），客户端一次 JSON.parse。
@@ -218,4 +218,22 @@ service AudioService {
   rpc GetAudio (GetAudioReq) returns (GetAudioRes);
   rpc GetAudioTag (GetAudioTagReq) returns (GetAudioTagRes);
   rpc GetHot (GetHotReq) returns (GetHotRes);
+}
+
+message GetUserProfileReq {
+  string uid = 1;          // 必传
+  string type = 2;         // 必传：long_terms | short_terms | both
+  string record_date = 3;  // short_terms / both 时必传
+}
+
+// profile 为结构化画像 JSON：
+// long_terms → long_term_profile 内容；
+// short_terms → short_term_profile 内容；
+// both → {"long_term_profile":...,"short_term_profile":...}。
+message GetUserProfileRes {
+  string profile = 1;
+}
+
+service ProfileService {
+  rpc GetUserProfile (GetUserProfileReq) returns (GetUserProfileRes);
 }

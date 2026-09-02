@@ -1,4 +1,4 @@
-"""量产问卷：按 uid + answer_id 查 somni_quiz_answers。"""
+"""量产问卷：按 uid + answer_id 查 somni_quiz_answers；无 answer_id 取最新。"""
 
 from __future__ import annotations
 
@@ -25,12 +25,16 @@ class QuizService:
         collection = self._client[self._settings.somni_mongo_db][
             self._settings.somni_mongo_answers_collection
         ]
-        doc = await collection.find_one({"uid": uid, **_id_query(answer_id)})
+        if answer_id.strip():
+            doc = await collection.find_one({"uid": uid, **_id_query(answer_id)})
+            missing_msg = f"答卷不存在：{answer_id}"
+        else:
+            cursor = collection.find({"uid": uid}).sort("create_time", -1).limit(1)
+            docs = await cursor.to_list(length=1)
+            doc = docs[0] if docs else None
+            missing_msg = "该用户暂无答卷"
         if doc is None:
-            raise AppError(
-                message=f"答卷不存在：{answer_id}",
-                status_code=HttpStatus.NOT_FOUND,
-            )
+            raise AppError(message=missing_msg, status_code=HttpStatus.NOT_FOUND)
         raw = bson_to_jsonable(doc)
         answers = [_normalize_answer(item) for item in (raw.get("answers") or [])]
         return {"answers": answers}
