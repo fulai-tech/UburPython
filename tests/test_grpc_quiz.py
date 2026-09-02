@@ -42,10 +42,22 @@ async def test_handboard_get_answer_requires_fields() -> None:
 
 
 @pytest.mark.asyncio
-async def test_somni_get_answer_requires_fields() -> None:
+async def test_somni_get_answer_requires_uid() -> None:
     rpc = SomniQuizRpc(MagicMock())
     with pytest.raises(grpc.aio.AbortError):
         await rpc.GetAnswer(uburnode_somni_pb2.GetAnswerReq(), _context())
+
+
+@pytest.mark.asyncio
+async def test_somni_get_answer_allows_empty_answer_id() -> None:
+    service = MagicMock()
+    service.get_answer = AsyncMock(return_value={"answers": []})
+    rpc = SomniQuizRpc(service)
+    await rpc.GetAnswer(
+        uburnode_somni_pb2.GetAnswerReq(uid="u1", answer_id=""),
+        _context(),
+    )
+    service.get_answer.assert_awaited_once_with("u1", "")
 
 
 @pytest.mark.asyncio
@@ -209,6 +221,61 @@ async def test_somni_quiz_service_not_found() -> None:
     with pytest.raises(AppError) as exc:
         await svc.get_answer("u1", "missing-id")
     assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_somni_quiz_service_loads_latest_when_answer_id_empty() -> None:
+    doc = {
+        "_id": ObjectId(),
+        "uid": "user-001",
+        "create_time": "2026-09-02T10:00:00Z",
+        "answers": [
+            {
+                "question_id": "q1",
+                "input_type": "radio",
+                "title": "您的性别是？",
+                "value": {"option_id": "A", "option_text": "先生"},
+            }
+        ],
+    }
+    cursor = MagicMock()
+    cursor.sort = MagicMock(return_value=cursor)
+    cursor.limit = MagicMock(return_value=cursor)
+    cursor.to_list = AsyncMock(return_value=[doc])
+    collection = MagicMock()
+    collection.find = MagicMock(return_value=cursor)
+    db = MagicMock()
+    db.__getitem__ = MagicMock(return_value=collection)
+    client = MagicMock()
+    client.__getitem__ = MagicMock(return_value=db)
+
+    svc = QuizService(client, Settings(somni_mongo_answers_collection="somni_quiz_answers"))
+    payload = await svc.get_answer("user-001", "")
+
+    collection.find.assert_called_once_with({"uid": "user-001"})
+    cursor.sort.assert_called_once_with("create_time", -1)
+    cursor.limit.assert_called_once_with(1)
+    assert payload["answers"][0]["question_id"] == "q1"
+
+
+@pytest.mark.asyncio
+async def test_somni_quiz_service_latest_not_found() -> None:
+    cursor = MagicMock()
+    cursor.sort = MagicMock(return_value=cursor)
+    cursor.limit = MagicMock(return_value=cursor)
+    cursor.to_list = AsyncMock(return_value=[])
+    collection = MagicMock()
+    collection.find = MagicMock(return_value=cursor)
+    db = MagicMock()
+    db.__getitem__ = MagicMock(return_value=collection)
+    client = MagicMock()
+    client.__getitem__ = MagicMock(return_value=db)
+
+    svc = QuizService(client, Settings(somni_mongo_answers_collection="somni_quiz_answers"))
+    with pytest.raises(AppError) as exc:
+        await svc.get_answer("u1", "")
+    assert exc.value.status_code == 404
+    assert "暂无答卷" in exc.value.message
 
 
 @pytest.mark.asyncio
