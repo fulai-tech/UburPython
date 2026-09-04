@@ -172,7 +172,7 @@ message AudioListItem {
   optional string audio_name = 2;
   optional string audio_url = 3;
   optional string cover_url = 4;
-  optional string description = 5;
+  optional string description = 5;  // 量产列表用短描述 short_description 填充；缺省空串
   optional int32 vip = 6;  // 库无该字段时显式返回 0
   repeated string tag = 7;  // 内容形态标签名；zh 取 name，en 取 name_en（缺省回退 name）
 }
