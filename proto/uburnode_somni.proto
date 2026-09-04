@@ -175,6 +175,7 @@ message AudioListItem {
   optional string description = 5;
   optional int32 vip = 6;  // 库无该字段时显式返回 0
   repeated string tag = 7;  // 内容形态标签名；zh 取 name，en 取 name_en（缺省回退 name）
+  optional string short_description = 8;  // 短描述；库无该字段时返回空串
 }
 
 message GetAudioRes {
