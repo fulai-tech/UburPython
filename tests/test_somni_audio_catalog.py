@@ -197,7 +197,27 @@ async def test_get_audio_filters_content_form_code_then_pages() -> None:
         "tag",
     }
     assert payload["list"][0]["vip"] == 0
+    assert payload["list"][0]["description"] == ""
     assert payload["list"][0]["tag"] == ["自然声", "中雨/稳定雨声"]
+
+
+@pytest.mark.asyncio
+async def test_get_audio_maps_short_description_into_description() -> None:
+    doc = {
+        **_RAIN,
+        "description": "长描述不应返回",
+        "short_description": "轻柔雨声助眠",
+    }
+    svc = _service(_mongo_collection([doc]))
+    payload = await svc.get_audio(
+        page=1,
+        page_size=10,
+        fetch_all=False,
+        query_text="",
+        tag_code="",
+    )
+    assert payload["list"][0]["description"] == "轻柔雨声助眠"
+    assert "short_description" not in payload["list"][0]
 
 
 @pytest.mark.asyncio
