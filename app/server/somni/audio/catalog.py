@@ -369,8 +369,8 @@ def _to_audio_list_item(doc: dict[str, Any], *, language: str) -> dict[str, Any]
         "audio_name": str(doc.get("audio_name") or ""),
         "audio_url": str(doc.get("audio_url") or ""),
         "cover_url": str(doc.get("cover_url") or ""),
-        "description": str(doc.get("description") or ""),
-        "short_description": str(doc.get("short_description") or ""),
+        # 量产列表展示用短描述，写入 description 出参（不单独返回 short_description）
+        "description": str(doc.get("short_description") or ""),
         "vip": _to_vip(doc.get("vip")),
         "tag": _map_audio_tags(doc.get("content_form_tags"), language=language),
     }
