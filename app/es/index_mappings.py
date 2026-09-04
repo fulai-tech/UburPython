@@ -48,7 +48,7 @@ def build_somni_audio_materials_mapping(embedding_dim: int) -> dict[str, Any]:
                 "language": "音频语言：zh 中文 / en 英文，量产 GetAudio 按 language 过滤",
                 "audio_name": "音频名称，用于后台管理、展示与检索出参",
                 "description": "音频描述，说明内容、声音特点或适用场景",
-                "short_description": "音频短描述，量产 GetAudio 列表展示用",
+                "short_description": "音频短描述；量产 GetAudio 写入 description 出参",
                 "description_text": "用于语义检索的拼接文本：名称 + 描述 + 标签名",
                 "description_vector": f"description_text 的 {embedding_dim} 维 embedding",
                 "status": "是否启用；true 表示可参与检索与同步",
@@ -94,7 +94,7 @@ def build_somni_audio_materials_mapping(embedding_dim: int) -> dict[str, Any]:
             ),
             "short_description": _field(
                 "text",
-                "音频短描述，量产 GetAudio 列表展示用",
+                "音频短描述；量产 GetAudio 写入 description 出参",
             ),
             "description_text": _field(
                 "text",

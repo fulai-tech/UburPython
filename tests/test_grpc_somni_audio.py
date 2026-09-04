@@ -64,8 +64,7 @@ async def test_get_audio_passes_page_and_query() -> None:
                     "audio_name": "雨声",
                     "audio_url": "https://cdn.example/a.mp3",
                     "cover_url": "https://cdn.example/a.png",
-                    "description": "desc",
-                    "short_description": "短描述",
+                    "description": "短描述",
                     "vip": 0,
                     "tag": ["自然声", "中雨/稳定雨声"],
                 }
@@ -87,7 +86,7 @@ async def test_get_audio_passes_page_and_query() -> None:
     )
     assert res.list[0].audio_name == "雨声"
     assert res.list[0].vip == 0
-    assert res.list[0].short_description == "短描述"
+    assert res.list[0].description == "短描述"
     assert res.total == 1
     assert res.page == 1
     assert res.page_size == 20
