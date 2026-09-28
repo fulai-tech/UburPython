@@ -65,6 +65,13 @@ class Settings(BaseSettings):
     somni_mongo_user_profiles_short_terms_collection: str = (
         "somni_user_profiles_short_terms"
     )
+    somni_mongo_wearable_raw_points_collection: str = "somni_wearable_raw_points"
+    somni_mongo_calendar_daily_data_collection: str = "somni_calendar_daily_data"
+    somni_mongo_alarms_collection: str = "somni_alarms"
+
+    # Apple Watch 步数 tonight_risk 阈值
+    applewatch_steps_level_low: int = 5000
+    applewatch_steps_level_medium: int = 10000
 
     sim_threshold: float = 0.7  # 内容形态向量模糊命中阈值（规范 §五-2）
     # GetAudio query_text 与内容形态标签（含二级）向量相似度下限

@@ -149,6 +149,39 @@ message GetProfileRes {
   string profile_text = 1;
 }
 
+// GetVitals：三种互斥模式 —— session_id | uid+时间窗 | device_id+时间窗
+message GetVitalsReq {
+  string uid = 1;
+  string device_id = 2;
+  string session_id = 3;
+  string start_time = 4;  // ISO8601
+  string end_time = 5;    // ISO8601
+}
+
+message VitalPoint {
+  string collected_at = 1;
+  double value = 2;
+}
+
+message VitalSeries {
+  double value = 1;              // 序列算术平均；无样本为 0
+  repeated VitalPoint series = 2;
+}
+
+message BaselineSeries {
+  double value = 1;
+  double personal_baseline = 2;
+  double vs_baseline_percent = 3;
+  repeated VitalPoint series = 4;
+}
+
+message GetVitalsRes {
+  VitalSeries hr = 1;
+  VitalSeries br = 2;
+  BaselineSeries hrv = 3;  // 本期固定样例
+  BaselineSeries brv = 4;  // 本期固定样例
+}
+
 service ReportService {
   rpc GetSummary (ReportDateReq) returns (GetSummaryRes);
   rpc GetEvents (ReportDateReq) returns (GetEventsRes);
@@ -156,6 +189,88 @@ service ReportService {
   rpc GetStructure (ReportDateReq) returns (GetStructureRes);
   rpc GetSleepQuality (ReportDateReq) returns (GetSleepQualityRes);
   rpc GetProfile (ReportDateReq) returns (GetProfileRes);
+  rpc GetVitals (GetVitalsReq) returns (GetVitalsRes);
+}
+
+message GetDailyAggregateReq {
+  string start_time = 1;   // ISO8601，半开区间起点
+  string end_time = 2;     // ISO8601，半开区间终点（须晚于 start_time）
+  string uid = 3;
+  string device_id = 4;
+  string timezone = 5;     // IANA
+}
+
+message Temperature {
+  int32 min = 1;
+  int32 max = 2;
+}
+
+message UvIndex {
+  string level = 1;
+}
+
+message Weather {
+  string date = 1;
+  Temperature temperature = 2;
+  string condition_code = 3;
+  string sunrise_at = 4;
+  string sunset_at = 5;
+  UvIndex uv_index = 6;
+  int32 humidity_percent = 7;
+  string aqi = 8;
+}
+
+message StepPoint {
+  string start_at = 1;
+  int32 value = 2;
+}
+
+message TonightRisk {
+  string level = 1;         // low | medium | excellent
+  string display_text = 2;  // 如 LOW RISKS FOR TONIGHT
+}
+
+message Steps {
+  string date = 1;
+  int32 total = 2;
+  repeated StepPoint series = 3;
+  TonightRisk tonight_risk = 4;
+}
+
+message EmotionRecords {
+  string state = 1;
+  string stage = 2;
+}
+
+message Schedule {
+  string schedule_name = 1;
+  string start_at = 2;      // 日程开始时间 ISO8601
+  string current_clock = 3; // 闹钟 wake_time
+}
+
+message GetDailyAggregateRes {
+  Weather weather = 1;
+  Steps steps = 2;
+  EmotionRecords emotion_records = 3;
+  Schedule schedule = 4;
+}
+
+service AppleWatchService {
+  rpc GetDailyAggregate (GetDailyAggregateReq) returns (GetDailyAggregateRes);
+}
+
+message GetWeatherReq {
+  string record_date = 1;
+  string uid = 2;
+  string timezone = 3;
+}
+
+message GetWeatherRes {
+  Weather weather = 1;
+}
+
+service WeatherService {
+  rpc GetWeather (GetWeatherReq) returns (GetWeatherRes);
 }
 
 message GetAudioReq {

@@ -76,3 +76,26 @@ class ReportStore:
         if isinstance(nested, list):
             return [item for item in nested if isinstance(item, dict)]
         return [doc]
+
+    async def list_device_ids_by_uid(self, uid: str) -> list[str]:
+        cursor = self._db()[self._settings.somni_mongo_devices_collection].find(
+            {"bind_uid": uid},
+            {"device_id": 1},
+        )
+        docs = await cursor.to_list(length=1000)
+        result: list[str] = []
+        for doc in docs:
+            device_id = doc.get("device_id")
+            if device_id:
+                result.append(str(device_id))
+        return result
+
+    async def list_telemetry_by_filter(
+        self, query: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        cursor = (
+            self._db()[self._settings.somni_mongo_telemetry_collection]
+            .find(query)
+            .sort("ts", 1)
+        )
+        return await cursor.to_list(length=50_000)
