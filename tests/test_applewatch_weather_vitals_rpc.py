@@ -77,7 +77,7 @@ async def test_applewatch_rpc() -> None:
             "emotion_records": {"state": "Slightly Stressful", "stage": "Extended Unwind"},
             "schedule": {
                 "schedule_name": "Morning meeting",
-                "start_at": "2026-09-24T09:00:00+08:00",
+                "start_at": "9:00",
                 "current_clock": "7:20",
             },
         }
@@ -106,7 +106,7 @@ async def test_get_vitals_rpc() -> None:
             "hr": {"value": 68.0, "series": [{"collected_at": "t", "value": 68.0}]},
             "br": {"value": 15.0, "series": []},
             "hrv": {
-                "value": 39.2,
+                "value": 39.0,
                 "personal_baseline": 35.0,
                 "vs_baseline_percent": 12.0,
                 "series": [],
@@ -126,4 +126,4 @@ async def test_get_vitals_rpc() -> None:
     )
     data = MessageToDict(res, preserving_proto_field_name=True)
     assert data["hr"]["value"] == 68.0
-    assert data["hrv"]["value"] == 39.2
+    assert data["hrv"]["value"] == 39.0

@@ -164,12 +164,12 @@ message VitalPoint {
 }
 
 message VitalSeries {
-  double value = 1;              // 序列算术平均；无样本为 0
+  double value = 1;              // 序列算术平均后向下取整；无样本为 0
   repeated VitalPoint series = 2;
 }
 
 message BaselineSeries {
-  double value = 1;
+  double value = 1;              // 数值均向下取整
   double personal_baseline = 2;
   double vs_baseline_percent = 3;
   repeated VitalPoint series = 4;
@@ -244,8 +244,8 @@ message EmotionRecords {
 
 message Schedule {
   string schedule_name = 1;
-  string start_at = 2;      // 日程开始时间 ISO8601
-  string current_clock = 3; // 闹钟 wake_time
+  string start_at = 2;      // 日程开始时刻，如 9:00
+  string current_clock = 3; // 闹钟 wake_time，如 7:20
 }
 
 message GetDailyAggregateRes {

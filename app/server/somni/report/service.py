@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import math
 from typing import Any
 
 from loguru import logger
@@ -367,7 +368,7 @@ def _metric_series(docs: list[dict[str, Any]], key: str) -> list[dict[str, Any]]
         points.append(
             {
                 "collected_at": calc.format_collected_at(doc.get("ts")),
-                "value": float(num),
+                "value": float(math.floor(num)),
             }
         )
     return points
@@ -377,4 +378,4 @@ def _avg_series(series: list[dict[str, Any]]) -> dict[str, Any]:
     if not series:
         return {"value": 0.0, "series": []}
     values = [float(item["value"]) for item in series]
-    return {"value": sum(values) / len(values), "series": series}
+    return {"value": float(math.floor(sum(values) / len(values))), "series": series}

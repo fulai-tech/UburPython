@@ -78,4 +78,4 @@ async def test_get_daily_aggregate_builds_payload() -> None:
     # 日程固定，不读日历
     assert payload["schedule"]["schedule_name"] == "Morning meeting"
     assert payload["schedule"]["current_clock"] == "7:20"
-    assert payload["schedule"]["start_at"].startswith("2026-09-24T09:00:00")
+    assert payload["schedule"]["start_at"] == "9:00"
