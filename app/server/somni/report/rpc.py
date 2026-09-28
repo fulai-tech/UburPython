@@ -36,6 +36,31 @@ class ReportRpc(uburnode_somni_pb2_grpc.ReportServiceServicer):
     async def GetProfile(self, request, context):
         return await self._call(request, context, "get_profile", _to_profile_res)
 
+    async def GetVitals(self, request, context):
+        uid = request.uid.strip()
+        device_id = request.device_id.strip()
+        session_id = request.session_id.strip()
+        start_time = request.start_time.strip()
+        end_time = request.end_time.strip()
+        if not _vitals_mode_ok(uid, device_id, session_id, start_time, end_time):
+            await abort_invalid(
+                context,
+                "GetVitals 仅支持：session_id | uid+start_time+end_time | device_id+start_time+end_time",
+            )
+        service = await self._require(context)
+
+        async def _do():
+            payload = await service.get_vitals(
+                uid=uid,
+                device_id=device_id,
+                session_id=session_id,
+                start_time=start_time,
+                end_time=end_time,
+            )
+            return _to_vitals_res(payload)
+
+        return await run_rpc_call(context, _do)
+
     async def _call(self, request, context, method_name: str, to_res):
         if not request.uid.strip() or not request.record_date.strip():
             await abort_invalid(context, "uid 与 record_date 均不能为空")
@@ -206,3 +231,55 @@ def _sleep_event_item(item: dict[str, Any]) -> uburnode_somni_pb2.SleepEventItem
         )
     )
     return event
+
+
+def _vitals_mode_ok(
+    uid: str, device_id: str, session_id: str, start_time: str, end_time: str
+) -> bool:
+    has_window = bool(start_time and end_time)
+    if session_id and not has_window:
+        return True
+    if has_window and uid and not device_id:
+        return True
+    if has_window and device_id and not uid:
+        return True
+    return False
+
+
+def _to_vitals_res(payload: dict[str, Any]) -> uburnode_somni_pb2.GetVitalsRes:
+    return uburnode_somni_pb2.GetVitalsRes(
+        hr=_vital_series(payload.get("hr")),
+        br=_vital_series(payload.get("br")),
+        hrv=_baseline_series(payload.get("hrv")),
+        brv=_baseline_series(payload.get("brv")),
+    )
+
+
+def _vital_series(item: Any) -> uburnode_somni_pb2.VitalSeries:
+    data = item if isinstance(item, dict) else {}
+    series = uburnode_somni_pb2.VitalSeries(value=float(data.get("value") or 0.0))
+    for point in data.get("series") or []:
+        series.series.append(
+            uburnode_somni_pb2.VitalPoint(
+                collected_at=str(point.get("collected_at") or ""),
+                value=float(point.get("value") or 0.0),
+            )
+        )
+    return series
+
+
+def _baseline_series(item: Any) -> uburnode_somni_pb2.BaselineSeries:
+    data = item if isinstance(item, dict) else {}
+    series = uburnode_somni_pb2.BaselineSeries(
+        value=float(data.get("value") or 0.0),
+        personal_baseline=float(data.get("personal_baseline") or 0.0),
+        vs_baseline_percent=float(data.get("vs_baseline_percent") or 0.0),
+    )
+    for point in data.get("series") or []:
+        series.series.append(
+            uburnode_somni_pb2.VitalPoint(
+                collected_at=str(point.get("collected_at") or ""),
+                value=float(point.get("value") or 0.0),
+            )
+        )
+    return series

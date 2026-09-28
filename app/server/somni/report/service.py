@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from loguru import logger
@@ -12,6 +13,7 @@ from app.core.config import Settings
 from app.core.exceptions import AppError
 from app.server.somni.report import calc
 from app.server.somni.report.store import ReportStore
+from app.server.somni.report.vitals_fixed import fixed_brv, fixed_hrv
 
 _INTERVENTION_FIELDS = (
     "type",
@@ -114,6 +116,31 @@ class ReportService:
                 "wake_up_time": calc.format_hhmm(wake_up),
                 "awake_after_onset_minutes": calc.minutes_between(wake, wake_up),
             }
+        }
+
+    async def get_vitals(
+        self,
+        *,
+        uid: str = "",
+        device_id: str = "",
+        session_id: str = "",
+        start_time: str = "",
+        end_time: str = "",
+    ) -> dict[str, Any]:
+        query = await _build_vitals_query(
+            self._store,
+            uid=uid,
+            device_id=device_id,
+            session_id=session_id,
+            start_time=start_time,
+            end_time=end_time,
+        )
+        docs = await self._store.list_telemetry_by_filter(query)
+        return {
+            "hr": _avg_series(_metric_series(docs, "hr")),
+            "br": _avg_series(_metric_series(docs, "br")),
+            "hrv": fixed_hrv(),
+            "brv": fixed_brv(),
         }
 
     async def _telemetry(
@@ -265,3 +292,89 @@ def _to_sleep_event_item(doc: dict[str, Any]) -> dict[str, Any]:
 
 def _to_intervention(doc: dict[str, Any]) -> dict[str, str]:
     return {field: str(doc.get(field) or "") for field in _INTERVENTION_FIELDS}
+
+
+async def _build_vitals_query(
+    store: ReportStore,
+    *,
+    uid: str,
+    device_id: str,
+    session_id: str,
+    start_time: str,
+    end_time: str,
+) -> dict[str, Any]:
+    sid = session_id.strip()
+    did = device_id.strip()
+    user = uid.strip()
+    start = start_time.strip()
+    end = end_time.strip()
+    has_window = bool(start and end)
+
+    # 模式 1：有 session_id 且未给时间窗 → 按会话（其它字段忽略）
+    if sid and not has_window:
+        return {"session_id": sid, "metric": "sleep"}
+
+    if not has_window:
+        raise AppError(
+            message="GetVitals 入参模式非法",
+            status_code=HttpStatus.BAD_REQUEST,
+        )
+
+    start_dt = _parse_iso(start)
+    end_dt = _parse_iso(end)
+    if end_dt <= start_dt:
+        raise AppError(
+            message="end_time 须晚于 start_time",
+            status_code=HttpStatus.BAD_REQUEST,
+        )
+
+    # 模式 2：uid + 时间窗，且未指定 device_id
+    if user and not did:
+        device_ids = await store.list_device_ids_by_uid(user)
+        return {
+            "device_id": {"$in": device_ids},
+            "metric": "sleep",
+            "ts": {"$gte": start_dt, "$lte": end_dt},
+        }
+
+    # 模式 3：device_id + 时间窗
+    if did and not user:
+        return {
+            "device_id": did,
+            "metric": "sleep",
+            "ts": {"$gte": start_dt, "$lte": end_dt},
+        }
+
+    raise AppError(
+        message="GetVitals 入参模式非法",
+        status_code=HttpStatus.BAD_REQUEST,
+    )
+
+
+def _parse_iso(value: str) -> datetime:
+    return datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+
+
+def _metric_series(docs: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
+    points: list[dict[str, Any]] = []
+    for doc in docs:
+        data = doc.get("data") or {}
+        if not isinstance(data, dict):
+            continue
+        num = calc.as_float(data.get(key))
+        if num is None:
+            continue
+        points.append(
+            {
+                "collected_at": calc.format_collected_at(doc.get("ts")),
+                "value": float(num),
+            }
+        )
+    return points
+
+
+def _avg_series(series: list[dict[str, Any]]) -> dict[str, Any]:
+    if not series:
+        return {"value": 0.0, "series": []}
+    values = [float(item["value"]) for item in series]
+    return {"value": sum(values) / len(values), "series": series}
