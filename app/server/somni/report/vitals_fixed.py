@@ -1,7 +1,8 @@
-"""GetVitals 固定 HRV / BRV 样例。"""
+"""GetVitals 固定 HRV / BRV 样例（数值均向下取整）。"""
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 _FIXED_SERIES = [
@@ -21,19 +22,33 @@ _FIXED_BRV_SERIES = [
 ]
 
 
+def _floor_num(value: float) -> float:
+    return float(math.floor(value))
+
+
+def _floor_series(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "collected_at": str(item["collected_at"]),
+            "value": _floor_num(float(item["value"])),
+        }
+        for item in items
+    ]
+
+
 def fixed_hrv() -> dict[str, Any]:
     return {
-        "value": 39.2,
-        "personal_baseline": 35.0,
-        "vs_baseline_percent": 12.0,
-        "series": [dict(item) for item in _FIXED_SERIES],
+        "value": _floor_num(39.2),
+        "personal_baseline": _floor_num(35.0),
+        "vs_baseline_percent": _floor_num(12.0),
+        "series": _floor_series(_FIXED_SERIES),
     }
 
 
 def fixed_brv() -> dict[str, Any]:
     return {
-        "value": 56.0,
-        "personal_baseline": 50.0,
-        "vs_baseline_percent": 12.0,
-        "series": [dict(item) for item in _FIXED_BRV_SERIES],
+        "value": _floor_num(56.0),
+        "personal_baseline": _floor_num(50.0),
+        "vs_baseline_percent": _floor_num(12.0),
+        "series": _floor_series(_FIXED_BRV_SERIES),
     }

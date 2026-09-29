@@ -20,8 +20,7 @@ _FIXED_EMOTION = {
 }
 
 _FIXED_SCHEDULE_NAME = "Morning meeting"
-_FIXED_SCHEDULE_HOUR = 9
-_FIXED_SCHEDULE_MINUTE = 0
+_FIXED_SCHEDULE_START_AT = "9:00"  # 固定日程开始时刻（与 current_clock 同为 H:MM）
 
 _TONIGHT_RISK_COPY = {
     "low": "LOW RISKS FOR TONIGHT",
@@ -139,19 +138,7 @@ class AppleWatchService:
         timezone: str,
         anchor: datetime,
     ) -> dict[str, Any]:
-        tz = ZoneInfo(timezone)
-        local = anchor.astimezone(tz)
-        # 日程名称与开始时间固定；current_clock 仍查 somni_alarms
-        start_at = datetime(
-            local.year,
-            local.month,
-            local.day,
-            _FIXED_SCHEDULE_HOUR,
-            _FIXED_SCHEDULE_MINUTE,
-            0,
-            tzinfo=tz,
-        ).isoformat()
-
+        # 日程名称与开始时刻固定；current_clock 仍查 somni_alarms
         week_day = week_day_from_instant(anchor, timezone)
         alarm = await self._store.find_alarm(
             uid=uid, device_id=device_id, week_day=week_day
@@ -164,7 +151,7 @@ class AppleWatchService:
 
         return {
             "schedule_name": _FIXED_SCHEDULE_NAME,
-            "start_at": start_at,
+            "start_at": _FIXED_SCHEDULE_START_AT,
             "current_clock": current_clock,
         }
 

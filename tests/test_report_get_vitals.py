@@ -31,7 +31,8 @@ async def test_get_vitals_by_session() -> None:
     payload = await service.get_vitals(session_id="session-001")
     assert payload["hr"]["value"] == 70.0
     assert len(payload["hr"]["series"]) == 2
-    assert payload["hrv"]["value"] == 39.2
+    assert payload["hr"]["series"][0]["value"] == 72.0
+    assert payload["hrv"]["value"] == 39.0
     assert payload["brv"]["personal_baseline"] == 50.0
     query = store.list_telemetry_by_filter.await_args.args[0]
     assert query == {"session_id": "session-001", "metric": "sleep"}
@@ -66,6 +67,31 @@ async def test_get_vitals_by_device_window() -> None:
     )
     query = store.list_telemetry_by_filter.await_args.args[0]
     assert query["device_id"] == "device-001"
+
+
+@pytest.mark.asyncio
+async def test_get_vitals_floors_average() -> None:
+    store = MagicMock()
+    store.list_telemetry_by_filter = AsyncMock(
+        return_value=[
+            {
+                "ts": datetime(2026, 9, 23, 15, 0, tzinfo=timezone.utc),
+                "data": {"hr": 72.9, "br": 16.8},
+            },
+            {
+                "ts": datetime(2026, 9, 23, 17, 0, tzinfo=timezone.utc),
+                "data": {"hr": 69.1, "br": 14.2},
+            },
+        ]
+    )
+    service = ReportService(None, Settings(), store=store)
+    payload = await service.get_vitals(session_id="session-floor")
+    # 点值先 floor：72 / 69；均值 (72+69)/2=70.5 → 70
+    assert payload["hr"]["series"][0]["value"] == 72.0
+    assert payload["hr"]["series"][1]["value"] == 69.0
+    assert payload["hr"]["value"] == 70.0
+    assert payload["br"]["series"][0]["value"] == 16.0
+    assert payload["br"]["value"] == 15.0
 
 
 @pytest.mark.asyncio
