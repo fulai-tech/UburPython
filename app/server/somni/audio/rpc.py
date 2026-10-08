@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from google.protobuf.struct_pb2 import Value
+from google.protobuf.struct_pb2 import Struct, Value
+from google.protobuf.json_format import ParseDict
 
 from app.core.exceptions import ServiceNotReadyError
 from app.server.errors import abort_from_app_error, abort_invalid, run_rpc_call
@@ -45,6 +46,39 @@ class AudioRpc(uburnode_somni_pb2_grpc.AudioServiceServicer):
         async def _do():
             payload = await service.get_audio_tag()
             return _to_tag_res(payload)
+
+        return await run_rpc_call(context, _do)
+
+    async def SearchPrescriptionAudio(self, request, context):
+        service = await self._require(context)
+        if not request.tasks or len(request.tasks) > 64:
+            await abort_invalid(context, "tasks 须为 1..64 项")
+        ids = [item.task_id.strip() for item in request.tasks]
+        if any(not task_id for task_id in ids) or len(set(ids)) != len(ids):
+            await abort_invalid(context, "task_id 必须非空且唯一")
+
+        async def _do():
+            response = uburnode_somni_pb2.SearchPrescriptionAudioRes()
+            for task in request.tasks:
+                if (
+                    task.top_k < 1 or task.top_k > 20 or len(task.query_text) > 1000
+                    or not task.sleep_stage_tags
+                ):
+                    raise ValueError("invalid prescription search task")
+                candidates = await service.search_prescription_audio({
+                    "query_text": task.query_text,
+                    "sleep_stage_tags": list(task.sleep_stage_tags),
+                    "content_tag_codes": list(task.content_tag_codes),
+                    "content_tags": list(task.content_tags),
+                    "disliked_tags": list(task.disliked_tags),
+                    "top_k": task.top_k,
+                })
+                result = response.results.add(task_id=task.task_id)
+                for rank, candidate in enumerate(candidates, start=1):
+                    structured = {**candidate, "retrieval_rank": rank}
+                    struct = ParseDict(structured, Struct())
+                    result.candidates.add().CopyFrom(struct)
+            return response
 
         return await run_rpc_call(context, _do)
 

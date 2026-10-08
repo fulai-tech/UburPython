@@ -744,10 +744,13 @@ async def test_search_returns_projected_material() -> None:
         "audio_url": doc["audio_url"],
         "cover_url": "",
         "content_form_tags": [{"name": "雨声", "parent_tag_id": "p1"}],
+        "sleep_stage_tags": [{"tag_id": "ss_放松", "code": "放松", "name": "放松"}],
+        "mechanism_tags": [],
         "audio_engineering_tags": [],
+        "medical_risk_tags": [],
+        "evidence_level_tags": [{"tag_id": "ev_B", "code": "B", "name": "中等证据"}],
     }
-    assert "sleep_stage_tags" not in results[0]
-    assert "evidence_level_tags" not in results[0]
+    assert "status" not in results[0]
 
 
 @pytest.mark.asyncio
@@ -784,10 +787,13 @@ async def test_text_query_can_return_description_only_recall() -> None:
         "audio_url": "https://cdn.example.com/描述命中.mp3",
         "cover_url": "",
         "content_form_tags": [{"name": "海浪", "parent_tag_id": "p2"}],
+        "sleep_stage_tags": [],
+        "mechanism_tags": [],
         "audio_engineering_tags": [],
+        "medical_risk_tags": [],
+        "evidence_level_tags": [{"tag_id": "ev_B", "code": "B", "name": "中等证据"}],
     }
-    assert "sleep_stage_tags" not in results[0]
-    assert "evidence_level_tags" not in results[0]
+    assert "status" not in results[0]
     es_search.search_by_description_vector.assert_awaited_once()
     es_search.list_all_audio_candidates.assert_not_called()
 

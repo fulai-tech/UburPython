@@ -5,7 +5,7 @@ import warnings
 
 from . import uburnode_pb2 as uburnode__pb2
 
-GRPC_GENERATED_VERSION = '1.81.0'
+GRPC_GENERATED_VERSION = '1.80.0'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -25,7 +25,7 @@ if _version_not_supported:
     )
 
 
-class AudioServiceStub:
+class AudioServiceStub(object):
     """Missing associated documentation comment in .proto file."""
 
     def __init__(self, channel):
@@ -56,7 +56,7 @@ class AudioServiceStub:
                 _registered_method=True)
 
 
-class AudioServiceServicer:
+class AudioServiceServicer(object):
     """Missing associated documentation comment in .proto file."""
 
     def CreateAudio(self, request, context):
@@ -114,7 +114,7 @@ def add_AudioServiceServicer_to_server(servicer, server):
 
 
  # This class is part of an EXPERIMENTAL API.
-class AudioService:
+class AudioService(object):
     """Missing associated documentation comment in .proto file."""
 
     @staticmethod
@@ -226,7 +226,7 @@ class AudioService:
             _registered_method=True)
 
 
-class QuizServiceStub:
+class QuizServiceStub(object):
     """Missing associated documentation comment in .proto file."""
 
     def __init__(self, channel):
@@ -242,7 +242,7 @@ class QuizServiceStub:
                 _registered_method=True)
 
 
-class QuizServiceServicer:
+class QuizServiceServicer(object):
     """Missing associated documentation comment in .proto file."""
 
     def GetAnswer(self, request, context):
@@ -267,7 +267,7 @@ def add_QuizServiceServicer_to_server(servicer, server):
 
 
  # This class is part of an EXPERIMENTAL API.
-class QuizService:
+class QuizService(object):
     """Missing associated documentation comment in .proto file."""
 
     @staticmethod

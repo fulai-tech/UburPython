@@ -16,7 +16,7 @@ from app.core.codes import HttpStatus
 from app.core.config import Settings
 from app.core.exceptions import AppError, EncoderNotReadyError
 from app.embedding.encoder import Encoder
-from app.es.search import EsSearch
+from app.es.search import CONTENT_TAG_TYPES, EsSearch
 from app.server.somni.audio.hot import HotTracker, normalize_tag_code
 
 _TAG_ENABLED = "启用"
@@ -43,12 +43,14 @@ class AudioCatalogService:
         es_search: EsSearch | None = None,
         encoder: Encoder | None = None,
         hot: HotTracker | None = None,
+        retrieval: Any | None = None,
     ) -> None:
         self._client = client
         self._settings = settings
         self._es_search = es_search
         self._encoder = encoder
         self._hot = hot
+        self._retrieval = retrieval
         self._audio_cache: dict[tuple[bool, str], tuple[float, list[dict[str, Any]]]] = {}
         self._audio_cache_lock = asyncio.Lock()
         self._hot_tasks: set[asyncio.Task[None]] = set()
@@ -107,6 +109,51 @@ class AudioCatalogService:
             tag_codes=hot_tag_codes,
         )
         return payload
+
+    async def search_prescription_audio(self, task: dict[str, Any]) -> list[dict[str, Any]]:
+        """Use the configured ranked retrieval service without recording hot queries."""
+        if self._retrieval is None:
+            raise AppError(message="检索服务未就绪", status_code=HttpStatus.SERVICE_UNAVAILABLE)
+        from app.schemas.audio import SearchAudioRequest
+
+        codes = list(dict.fromkeys(str(item).strip() for item in task.get("content_tag_codes") or [] if str(item).strip()))
+        resolved: dict[str, str] = {}
+        if codes:
+            cursor = self._tags().find(
+                {"code": {"$in": codes}, "type": {"$in": list(CONTENT_TAG_TYPES)}, "status": _TAG_ENABLED},
+                {"code": 1, "name": 1},
+            )
+            matches: dict[str, set[tuple[str, str]]] = {code: set() for code in codes}
+            async for row in cursor:
+                code = str(row.get("code") or "")
+                tag_type = str(row.get("type") or "")
+                label = str(row.get("name") or "")
+                if code and tag_type and label:
+                    matches.setdefault(code, set()).add((tag_type, label))
+            if any(len(matches.get(code, set())) != 1 for code in codes):
+                # An unresolved code must not be replaced with an approximate tag.
+                return []
+            resolved = {code: next(iter(matches[code]))[1] for code in codes}
+        request = SearchAudioRequest(
+            query_text=str(task.get("query_text") or ""),
+            sleep_stage_tags=list(task.get("sleep_stage_tags") or []),
+            content_tags=[*resolved.values(), *(str(x) for x in task.get("content_tags") or [])],
+            content_tag_codes=codes,
+            disliked_tags=list(task.get("disliked_tags") or []),
+            top_k=max(1, min(int(task.get("top_k") or 5), 20)),
+        )
+        materials = await self._retrieval.search(request)
+        stages = {str(item).strip().casefold() for item in request.sleep_stage_tags if str(item).strip()}
+        if not stages:
+            return []
+        return [
+            item for item in materials
+            if stages.intersection({
+                str(value).strip().casefold()
+                for tag in item.get("sleep_stage_tags", []) if isinstance(tag, dict)
+                for value in (tag.get("code"), tag.get("name")) if value
+            })
+        ]
 
     async def get_hot(
         self,
