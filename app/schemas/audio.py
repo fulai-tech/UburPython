@@ -183,6 +183,7 @@ class SearchAudioRequest(BaseModel):
     query_text: str | None = None
     sleep_stage_tags: list[str] = Field(default_factory=list)
     content_tags: list[str] = Field(default_factory=list)
+    content_tag_codes: list[str] = Field(default_factory=list)
     disliked_tags: list[str] = Field(default_factory=list)
     top_k: int | None = Field(default=None, ge=1)
 

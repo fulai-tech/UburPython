@@ -238,9 +238,14 @@ async def test_filter_by_sleep_stage_uses_terms_and_includes_pipeline_fields() -
     assert results[0]["audio_name"] == "雨声"
     assert "status" not in results[0]
     body = client.search.await_args.kwargs["body"]
-    assert body["query"] == {"terms": {"sleep_stage_names": ["放松", "入睡"]}}
+    assert body["query"] == {
+        "bool": {
+            "filter": [{"term": {"status": True}}],
+            "must": [{"terms": {"sleep_stage_names": ["放松", "入睡"]}}],
+        }
+    }
     assert body["_source"]["includes"] == list(SEARCH_CANDIDATE_SOURCE_INCLUDES)
-    assert "status" not in body["_source"]["includes"]
+    assert "status" in body["_source"]["includes"]
     assert "description_vector" not in body["_source"]["includes"]
     assert "nested" not in str(body)
 
@@ -280,7 +285,9 @@ async def test_list_all_audio_candidates_includes_pipeline_fields() -> None:
     assert results[0]["_id"] == "a1"
     assert "id" not in results[0]
     body = client.search.await_args.kwargs["body"]
-    assert body["query"] == {"match_all": {}}
+    assert body["query"] == {
+        "bool": {"filter": [{"term": {"status": True}}], "must": [{"match_all": {}}]}
+    }
     assert body["_source"]["includes"] == list(SEARCH_CANDIDATE_SOURCE_INCLUDES)
     assert "description_vector" not in body["_source"]["includes"]
 
@@ -323,3 +330,6 @@ async def test_search_by_description_vector_includes_pipeline_fields() -> None:
     assert "description_vector" not in body["_source"]["includes"]
     assert body["knn"]["field"] == "description_vector"
     assert body["knn"]["query_vector"] == query_vector
+    assert body["knn"]["filter"] == {
+        "bool": {"filter": [{"term": {"status": True}}, {"terms": {"sleep_stage_names": ["放松"]}}]}
+    }

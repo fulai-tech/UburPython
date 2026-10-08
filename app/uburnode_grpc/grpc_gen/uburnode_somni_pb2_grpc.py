@@ -5,7 +5,7 @@ import warnings
 
 from . import uburnode_somni_pb2 as uburnode__somni__pb2
 
-GRPC_GENERATED_VERSION = '1.81.0'
+GRPC_GENERATED_VERSION = '1.80.0'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -25,7 +25,7 @@ if _version_not_supported:
     )
 
 
-class QuizServiceStub:
+class QuizServiceStub(object):
     """Missing associated documentation comment in .proto file."""
 
     def __init__(self, channel):
@@ -41,7 +41,7 @@ class QuizServiceStub:
                 _registered_method=True)
 
 
-class QuizServiceServicer:
+class QuizServiceServicer(object):
     """Missing associated documentation comment in .proto file."""
 
     def GetAnswer(self, request, context):
@@ -66,7 +66,7 @@ def add_QuizServiceServicer_to_server(servicer, server):
 
 
  # This class is part of an EXPERIMENTAL API.
-class QuizService:
+class QuizService(object):
     """Missing associated documentation comment in .proto file."""
 
     @staticmethod
@@ -97,7 +97,7 @@ class QuizService:
             _registered_method=True)
 
 
-class ReportServiceStub:
+class ReportServiceStub(object):
     """Missing associated documentation comment in .proto file."""
 
     def __init__(self, channel):
@@ -138,7 +138,7 @@ class ReportServiceStub:
                 _registered_method=True)
 
 
-class ReportServiceServicer:
+class ReportServiceServicer(object):
     """Missing associated documentation comment in .proto file."""
 
     def GetSummary(self, request, context):
@@ -218,7 +218,7 @@ def add_ReportServiceServicer_to_server(servicer, server):
 
 
  # This class is part of an EXPERIMENTAL API.
-class ReportService:
+class ReportService(object):
     """Missing associated documentation comment in .proto file."""
 
     @staticmethod
@@ -384,7 +384,7 @@ class ReportService:
             _registered_method=True)
 
 
-class AudioServiceStub:
+class AudioServiceStub(object):
     """Missing associated documentation comment in .proto file."""
 
     def __init__(self, channel):
@@ -408,9 +408,14 @@ class AudioServiceStub:
                 request_serializer=uburnode__somni__pb2.GetHotReq.SerializeToString,
                 response_deserializer=uburnode__somni__pb2.GetHotRes.FromString,
                 _registered_method=True)
+        self.SearchPrescriptionAudio = channel.unary_unary(
+                '/uburnode.somni.v1.AudioService/SearchPrescriptionAudio',
+                request_serializer=uburnode__somni__pb2.SearchPrescriptionAudioReq.SerializeToString,
+                response_deserializer=uburnode__somni__pb2.SearchPrescriptionAudioRes.FromString,
+                _registered_method=True)
 
 
-class AudioServiceServicer:
+class AudioServiceServicer(object):
     """Missing associated documentation comment in .proto file."""
 
     def GetAudio(self, request, context):
@@ -426,6 +431,12 @@ class AudioServiceServicer:
         raise NotImplementedError('Method not implemented!')
 
     def GetHot(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SearchPrescriptionAudio(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -449,6 +460,11 @@ def add_AudioServiceServicer_to_server(servicer, server):
                     request_deserializer=uburnode__somni__pb2.GetHotReq.FromString,
                     response_serializer=uburnode__somni__pb2.GetHotRes.SerializeToString,
             ),
+            'SearchPrescriptionAudio': grpc.unary_unary_rpc_method_handler(
+                    servicer.SearchPrescriptionAudio,
+                    request_deserializer=uburnode__somni__pb2.SearchPrescriptionAudioReq.FromString,
+                    response_serializer=uburnode__somni__pb2.SearchPrescriptionAudioRes.SerializeToString,
+            ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
             'uburnode.somni.v1.AudioService', rpc_method_handlers)
@@ -457,7 +473,7 @@ def add_AudioServiceServicer_to_server(servicer, server):
 
 
  # This class is part of an EXPERIMENTAL API.
-class AudioService:
+class AudioService(object):
     """Missing associated documentation comment in .proto file."""
 
     @staticmethod
@@ -541,8 +557,35 @@ class AudioService:
             metadata,
             _registered_method=True)
 
+    @staticmethod
+    def SearchPrescriptionAudio(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/uburnode.somni.v1.AudioService/SearchPrescriptionAudio',
+            uburnode__somni__pb2.SearchPrescriptionAudioReq.SerializeToString,
+            uburnode__somni__pb2.SearchPrescriptionAudioRes.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
 
-class ProfileServiceStub:
+
+class ProfileServiceStub(object):
     """Missing associated documentation comment in .proto file."""
 
     def __init__(self, channel):
@@ -558,7 +601,7 @@ class ProfileServiceStub:
                 _registered_method=True)
 
 
-class ProfileServiceServicer:
+class ProfileServiceServicer(object):
     """Missing associated documentation comment in .proto file."""
 
     def GetUserProfile(self, request, context):
@@ -583,7 +626,7 @@ def add_ProfileServiceServicer_to_server(servicer, server):
 
 
  # This class is part of an EXPERIMENTAL API.
-class ProfileService:
+class ProfileService(object):
     """Missing associated documentation comment in .proto file."""
 
     @staticmethod
@@ -603,6 +646,207 @@ class ProfileService:
             '/uburnode.somni.v1.ProfileService/GetUserProfile',
             uburnode__somni__pb2.GetUserProfileReq.SerializeToString,
             uburnode__somni__pb2.GetUserProfileRes.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+
+class GenerationDataServiceStub(object):
+    """Missing associated documentation comment in .proto file."""
+
+    def __init__(self, channel):
+        """Constructor.
+
+        Args:
+            channel: A grpc.Channel.
+        """
+        self.GetProfileInputs = channel.unary_unary(
+                '/uburnode.somni.v1.GenerationDataService/GetProfileInputs',
+                request_serializer=uburnode__somni__pb2.GetProfileInputsReq.SerializeToString,
+                response_deserializer=uburnode__somni__pb2.GetProfileInputsRes.FromString,
+                _registered_method=True)
+        self.GetPlanInputs = channel.unary_unary(
+                '/uburnode.somni.v1.GenerationDataService/GetPlanInputs',
+                request_serializer=uburnode__somni__pb2.GetPlanInputsReq.SerializeToString,
+                response_deserializer=uburnode__somni__pb2.GetPlanInputsRes.FromString,
+                _registered_method=True)
+        self.GetEpisodeEvidence = channel.unary_unary(
+                '/uburnode.somni.v1.GenerationDataService/GetEpisodeEvidence',
+                request_serializer=uburnode__somni__pb2.GetEpisodeEvidenceReq.SerializeToString,
+                response_deserializer=uburnode__somni__pb2.GetEpisodeEvidenceRes.FromString,
+                _registered_method=True)
+        self.GetBedtimeReminderInputs = channel.unary_unary(
+                '/uburnode.somni.v1.GenerationDataService/GetBedtimeReminderInputs',
+                request_serializer=uburnode__somni__pb2.GetBedtimeReminderInputsReq.SerializeToString,
+                response_deserializer=uburnode__somni__pb2.GetBedtimeReminderInputsRes.FromString,
+                _registered_method=True)
+
+
+class GenerationDataServiceServicer(object):
+    """Missing associated documentation comment in .proto file."""
+
+    def GetProfileInputs(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetPlanInputs(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetEpisodeEvidence(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetBedtimeReminderInputs(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+
+def add_GenerationDataServiceServicer_to_server(servicer, server):
+    rpc_method_handlers = {
+            'GetProfileInputs': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetProfileInputs,
+                    request_deserializer=uburnode__somni__pb2.GetProfileInputsReq.FromString,
+                    response_serializer=uburnode__somni__pb2.GetProfileInputsRes.SerializeToString,
+            ),
+            'GetPlanInputs': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetPlanInputs,
+                    request_deserializer=uburnode__somni__pb2.GetPlanInputsReq.FromString,
+                    response_serializer=uburnode__somni__pb2.GetPlanInputsRes.SerializeToString,
+            ),
+            'GetEpisodeEvidence': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetEpisodeEvidence,
+                    request_deserializer=uburnode__somni__pb2.GetEpisodeEvidenceReq.FromString,
+                    response_serializer=uburnode__somni__pb2.GetEpisodeEvidenceRes.SerializeToString,
+            ),
+            'GetBedtimeReminderInputs': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetBedtimeReminderInputs,
+                    request_deserializer=uburnode__somni__pb2.GetBedtimeReminderInputsReq.FromString,
+                    response_serializer=uburnode__somni__pb2.GetBedtimeReminderInputsRes.SerializeToString,
+            ),
+    }
+    generic_handler = grpc.method_handlers_generic_handler(
+            'uburnode.somni.v1.GenerationDataService', rpc_method_handlers)
+    server.add_generic_rpc_handlers((generic_handler,))
+    server.add_registered_method_handlers('uburnode.somni.v1.GenerationDataService', rpc_method_handlers)
+
+
+ # This class is part of an EXPERIMENTAL API.
+class GenerationDataService(object):
+    """Missing associated documentation comment in .proto file."""
+
+    @staticmethod
+    def GetProfileInputs(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/uburnode.somni.v1.GenerationDataService/GetProfileInputs',
+            uburnode__somni__pb2.GetProfileInputsReq.SerializeToString,
+            uburnode__somni__pb2.GetProfileInputsRes.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetPlanInputs(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/uburnode.somni.v1.GenerationDataService/GetPlanInputs',
+            uburnode__somni__pb2.GetPlanInputsReq.SerializeToString,
+            uburnode__somni__pb2.GetPlanInputsRes.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetEpisodeEvidence(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/uburnode.somni.v1.GenerationDataService/GetEpisodeEvidence',
+            uburnode__somni__pb2.GetEpisodeEvidenceReq.SerializeToString,
+            uburnode__somni__pb2.GetEpisodeEvidenceRes.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetBedtimeReminderInputs(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/uburnode.somni.v1.GenerationDataService/GetBedtimeReminderInputs',
+            uburnode__somni__pb2.GetBedtimeReminderInputsReq.SerializeToString,
+            uburnode__somni__pb2.GetBedtimeReminderInputsRes.FromString,
             options,
             channel_credentials,
             insecure,

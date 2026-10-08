@@ -857,3 +857,83 @@ async def test_drain_hot_tasks_waits_for_pending_recording() -> None:
     hot.record_search.assert_awaited_once_with(
         "雨声", language="zh", hit_count=1, tag_codes=set()
     )
+
+
+@pytest.mark.asyncio
+async def test_prescription_search_resolves_codes_and_uses_ranked_search_without_hot(monkeypatch) -> None:
+    retrieval = MagicMock()
+    retrieval.search = AsyncMock(return_value=[{"id": "a1", "audio_url": "https://cdn/a.mp3", "_score": 0.9, "sleep_stage_tags": [{"code": "unwind"}]}])
+    service = _service(MagicMock(), hot=MagicMock())
+    service._retrieval = retrieval
+
+    class Cursor:
+        def __aiter__(self):
+            self.items = iter([{"code": "breathing_guidance", "type": "content_form", "name": "呼吸引导"}])
+            return self
+        async def __anext__(self):
+            try:
+                return next(self.items)
+            except StopIteration:
+                raise StopAsyncIteration
+
+    tags = MagicMock()
+    tags.find.return_value = Cursor()
+    monkeypatch.setattr(service, "_tags", lambda: tags)
+    result = await service.search_prescription_audio({
+        "query_text": "gentle breathing", "sleep_stage_tags": ["unwind"],
+        "content_tag_codes": ["breathing_guidance"], "content_tags": ["rain"],
+        "disliked_tags": ["thunder"], "top_k": 5,
+    })
+    assert result[0]["id"] == "a1"
+    request = retrieval.search.await_args.args[0]
+    assert request.sleep_stage_tags == ["unwind"]
+    assert request.content_tags == ["呼吸引导", "rain"]
+    assert request.disliked_tags == ["thunder"]
+    service._hot.record_search.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_prescription_search_fails_closed_on_unknown_tag_code(monkeypatch) -> None:
+    retrieval = MagicMock()
+    retrieval.search = AsyncMock(return_value=[{"id": "must-not-return"}])
+    service = _service(MagicMock())
+    service._retrieval = retrieval
+
+    class EmptyCursor:
+        def __aiter__(self): return self
+        async def __anext__(self): raise StopAsyncIteration
+
+    tags = MagicMock()
+    tags.find.return_value = EmptyCursor()
+    monkeypatch.setattr(service, "_tags", lambda: tags)
+    assert await service.search_prescription_audio({"query_text": "rain", "content_tag_codes": ["missing_code"]}) == []
+    retrieval.search.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_prescription_search_fails_closed_on_ambiguous_tag_code(monkeypatch) -> None:
+    retrieval = MagicMock()
+    retrieval.search = AsyncMock(return_value=[{"id": "must-not-return"}])
+    service = _service(MagicMock())
+    service._retrieval = retrieval
+
+    class Cursor:
+        def __aiter__(self):
+            self.items = iter([
+                {"code": "shared", "type": "content_form", "name": "相同名称"},
+                {"code": "shared", "type": "mechanism", "name": "相同名称"},
+            ])
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self.items)
+            except StopIteration:
+                raise StopAsyncIteration
+
+    tags = MagicMock()
+    tags.find.return_value = Cursor()
+    monkeypatch.setattr(service, "_tags", lambda: tags)
+
+    assert await service.search_prescription_audio({"query_text": "rain", "content_tag_codes": ["shared"]}) == []
+    retrieval.search.assert_not_called()

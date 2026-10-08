@@ -34,6 +34,7 @@ SEARCH_CANDIDATE_SOURCE_INCLUDES = (
     "medical_risk_tags",
     "evidence_level_tags",
     "recommend_weight",
+    "status",
 )
 
 
@@ -87,8 +88,14 @@ def _candidate_from_hit(hit: dict[str, Any]) -> dict[str, Any]:
 
 def _candidate_search_body(query: dict[str, Any], *, size: int = 1000) -> dict[str, Any]:
     """检索候选查询体：只取流水线必要字段。"""
+    active_query = {
+        "bool": {
+            "filter": [{"term": {"status": True}}],
+            "must": [query],
+        }
+    }
     return {
-        "query": query,
+        "query": active_query,
         "size": size,
         "_source": {"includes": list(SEARCH_CANDIDATE_SOURCE_INCLUDES)},
     }
@@ -361,8 +368,10 @@ class EsSearch:
             "k": size,
             "num_candidates": max(size * 3, 50),
         }
+        filters = [{"term": {"status": True}}]
         if sleep_stage_tags:
-            knn["filter"] = _sleep_stage_filter(sleep_stage_tags)
+            filters.append(_sleep_stage_filter(sleep_stage_tags))
+        knn["filter"] = {"bool": {"filter": filters}}
 
         response = await self._client.search(
             index=self.audio_index,

@@ -206,3 +206,23 @@ async def test_get_hot_rejects_invalid_kind() -> None:
         await rpc.GetHot(uburnode_somni_pb2.GetHotReq(kind="other"), ctx)
     service.get_hot.assert_not_called()
     ctx.abort.assert_awaited_once()
+
+@pytest.mark.asyncio
+async def test_search_prescription_audio_batches_by_task_without_hot_api() -> None:
+    rpc, service = _make_rpc()
+    service.search_prescription_audio = AsyncMock(return_value=[{
+        "id": "audio-1", "audio_name": "rain", "audio_url": "https://cdn.example/rain.mp3",
+        "tags": ["steady_rain"], "_score": 0.87,
+    }])
+    request = uburnode_somni_pb2.SearchPrescriptionAudioReq(tasks=[
+        uburnode_somni_pb2.PrescriptionAudioSearchTask(
+            task_id="task-1", problem_code="C1.1", intervention_code="breathing_guidance",
+            query_text="gentle breathing", content_tag_codes=["breathing_guidance"], sleep_stage_tags=["unwind"], top_k=5,
+        )
+    ])
+    result = await rpc.SearchPrescriptionAudio(request, _context())
+    assert len(result.results) == 1
+    assert result.results[0].task_id == "task-1"
+    assert result.results[0].candidates[0].fields["id"].string_value == "audio-1"
+    service.search_prescription_audio.assert_awaited_once()
+    service.get_hot.assert_not_called()
