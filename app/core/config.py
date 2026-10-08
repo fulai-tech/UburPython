@@ -62,6 +62,9 @@ class Settings(BaseSettings):
     somni_mongo_user_profiles_collection: str = "somni_user_profiles"
     somni_mongo_user_profile_long_terms_collection: str = "somni_user_profile_long_terms"
     somni_mongo_user_profiles_short_terms_collection: str = "somni_user_profiles_short_terms"
+    somni_mongo_wearable_raw_points_collection: str = "somni_wearable_raw_points"
+    somni_mongo_calendar_daily_data_collection: str = "somni_calendar_daily_data"
+    somni_mongo_alarms_collection: str = "somni_alarms"
 
     somni_mongo_users_collection: str = "somni_users"
     somni_mongo_schedules_collection: str = "somni_schedules"
@@ -82,9 +85,6 @@ class Settings(BaseSettings):
     generation_response_bytes: int = Field(default=2000000, ge=1, le=4000000)
     generation_cursor_ttl_sec: int = Field(default=900, ge=1, le=86400)
     generation_cursor_secret: str = ""
-    somni_mongo_wearable_raw_points_collection: str = "somni_wearable_raw_points"
-    somni_mongo_calendar_daily_data_collection: str = "somni_calendar_daily_data"
-    somni_mongo_alarms_collection: str = "somni_alarms"
 
     # Apple Watch 步数 tonight_risk 阈值
     applewatch_steps_level_low: int = 5000
@@ -125,9 +125,7 @@ class Settings(BaseSettings):
     sync_tag_dictionary_backup_filename: str = "somni_audio_tag_dictionary_backup.json"
     # 量产 CLI 同步备份（与手板文件名隔离，避免互相覆盖）
     somni_sync_backup_filename: str = "somni_prod_audio_materials_backup.json"
-    somni_sync_tag_dictionary_backup_filename: str = (
-        "somni_prod_audio_tag_dictionary_backup.json"
-    )
+    somni_sync_tag_dictionary_backup_filename: str = "somni_prod_audio_tag_dictionary_backup.json"
 
     # 功能手板 Redis（空 URL 表示关闭）
     redis_url: str = ""

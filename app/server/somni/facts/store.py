@@ -155,17 +155,12 @@ class FactsStore:
             "sleep_date_local state received_at evidence_complete",
         )
 
-    async def load_questionnaires(
-        self, uid: str, read_at: datetime, answer_id: str = ""
-    ) -> list[dict]:
-        if answer_id and (answer_id != answer_id.strip() or len(answer_id) > 256):
-            raise DataError("INVALID_ARGUMENT", "invalid_answer_id")
-        query = {"uid": uid, "is_completed": True, "completed_at": {"$lte": read_at}}
-        if answer_id:
-            query["answer_id"] = answer_id
+    async def load_questionnaires(self, uid: str, read_at: datetime) -> list[dict]:
         answers = await self._read(
             "answers",
-            self._visible(query, read_at),
+            self._visible(
+                {"uid": uid, "is_completed": True, "completed_at": {"$lte": read_at}}, read_at
+            ),
             "answer_id survey_code survey_version answer_revision completed_at received_at answers",
             [("completed_at", -1), ("answer_revision", -1), ("_id", -1)],
         )
@@ -291,19 +286,6 @@ class FactsStore:
                 {"user_id": uid, "status": 1, "activity_date": {"$gte": start, "$lt": end}}, read_at
             ),
             self._daily_fields(),
-        )
-
-    async def list_daily_sleep_reports(
-        self, uid: str, start: str, end: str, read_at: datetime
-    ) -> list[dict]:
-        return await self._read(
-            "sleep_reports",
-            self._visible(
-                {"uid": uid, "record_date": {"$gte": start, "$lt": end}},
-                read_at,
-            ),
-            "uid reports_id record_date language overnight_vitals",
-            [("record_date", 1), ("language", 1), ("reports_id", 1), ("_id", 1)],
         )
 
     async def load_upload_status(self, uid: str, ids: list[str], read_at: datetime) -> list[dict]:

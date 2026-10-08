@@ -30,10 +30,6 @@ def profile() -> dict:
 def service() -> tuple:
     store = AsyncMock()
     store.load_active_plan.return_value = []
-    store.load_profile.return_value = (None, None)
-    store.list_sleep_episodes.return_value = []
-    store.load_daily_metrics.return_value = []
-    store.list_daily_sleep_reports.return_value = []
     store.load_permissions.return_value = {
         "status": "active",
         "privacy_switches": {
@@ -46,137 +42,6 @@ def service() -> tuple:
     }
     settings = Settings(_env_file=None, generation_cursor_secret="synthetic-test-key-" * 3)
     return GenerationDataService(None, settings, store), store
-
-
-async def test_build_facts_projects_daily_report_vitals_with_provenance() -> None:
-    svc, store = service()
-    store.list_sleep_episodes.return_value = []
-    store.load_daily_metrics.return_value = []
-    store.list_daily_sleep_reports.return_value = [
-        {
-            "uid": "u",
-            "reports_id": "report-20261007",
-            "record_date": "2026-10-07",
-            "language": "en",
-            "overnight_vitals": {"hr": {"value": 61.5}, "br": {"value": 14.25}},
-        }
-    ]
-    from app.server.somni.facts.time import resolve_scope
-
-    manifest = {}
-    facts = await svc.build_facts(
-        "u", resolve_scope("2026-10-08", "+00:00"), datetime(2026, 10, 8, tzinfo=UTC), manifest
-    )
-
-    series = {item["metric_id"]: item for item in facts["value"]["series"]}
-    assert series["sleep_hr_mean_bpm"]["daily"][0]["value"] == 61.5
-    assert series["sleep_resp_mean_per_min"]["daily"][0]["value"] == 14.25
-    assert manifest["sleep_reports:report-20261007"]["record_id"] == "report-20261007"
-
-
-async def test_build_facts_deduplicates_equal_language_report_values() -> None:
-    svc, store = service()
-    store.list_daily_sleep_reports.return_value = [
-        {
-            "uid": "u",
-            "reports_id": "report-en",
-            "record_date": "2026-10-07",
-            "language": "en",
-            "overnight_vitals": {"hr": {"value": 60}, "br": {"value": 14}},
-        },
-        {
-            "uid": "u",
-            "reports_id": "report-zh",
-            "record_date": "2026-10-07",
-            "language": "zh",
-            "overnight_vitals": {"hr": {"value": 60.0}, "br": {"value": 14.0}},
-        },
-    ]
-    from app.server.somni.facts.time import resolve_scope
-
-    facts = await svc.build_facts(
-        "u", resolve_scope("2026-10-08", "+00:00"), datetime(2026, 10, 8, tzinfo=UTC), {}
-    )
-
-    hr = next(item for item in facts["value"]["series"] if item["metric_id"] == "sleep_hr_mean_bpm")
-    assert hr["stats_28d"]["valid_count"] == 1
-    assert len(hr["daily"][0]["source_refs"]) == 2
-
-
-async def test_build_facts_omits_conflicting_language_report_values() -> None:
-    svc, store = service()
-    store.list_daily_sleep_reports.return_value = [
-        {
-            "uid": "u",
-            "reports_id": "report-en",
-            "record_date": "2026-10-07",
-            "language": "en",
-            "overnight_vitals": {"hr": {"value": 60}, "br": {"value": 14}},
-        },
-        {
-            "uid": "u",
-            "reports_id": "report-zh",
-            "record_date": "2026-10-07",
-            "language": "zh",
-            "overnight_vitals": {"hr": {"value": 72}, "br": {"value": 14}},
-        },
-    ]
-    from app.server.somni.facts.time import resolve_scope
-
-    facts = await svc.build_facts(
-        "u", resolve_scope("2026-10-08", "+00:00"), datetime(2026, 10, 8, tzinfo=UTC), {}
-    )
-
-    assert not any(item["metric_id"] == "sleep_hr_mean_bpm" for item in facts["value"]["series"])
-    assert any(
-        reason.startswith("sleep_report_language_conflict:sleep_hr_mean_bpm:")
-        for reason in facts["missing_reasons"]
-    )
-
-
-async def test_build_facts_prefers_usable_daily_fact_over_report_projection() -> None:
-    svc, store = service()
-    store.list_sleep_episodes.return_value = [
-        {
-            "_id": "daily-fact-1",
-            "episode_id": "episode-1",
-            "source": "wearable",
-            "record_date": "2026-10-07",
-            "revision": 1,
-            "main_sleep": True,
-            "selection_policy_version": "main_sleep_v1",
-            "device_algorithm": "wearable_v1",
-            "definition_version": "metrics_v1",
-            "quality": {"valid": True},
-            "sleep": {
-                "start_at": "2026-10-06T22:00:00Z",
-                "end_at": "2026-10-07T06:00:00Z",
-            },
-            "physiology": {
-                "heart_rate_sleep_avg_bpm": 58,
-                "respiratory_rate_sleep_avg": 13,
-            },
-        }
-    ]
-    store.list_daily_sleep_reports.return_value = [
-        {
-            "uid": "u",
-            "reports_id": "report-20261007",
-            "record_date": "2026-10-07",
-            "language": "en",
-            "overnight_vitals": {"hr": {"value": 70}, "br": {"value": 17}},
-        }
-    ]
-    from app.server.somni.facts.time import resolve_scope
-
-    facts = await svc.build_facts(
-        "u", resolve_scope("2026-10-08", "+00:00"), datetime(2026, 10, 8, tzinfo=UTC), {}
-    )
-
-    series = {item["metric_id"]: item for item in facts["value"]["series"]}
-    assert series["sleep_hr_mean_bpm"]["source"] == "wearable"
-    assert series["sleep_hr_mean_bpm"]["daily"][0]["value"] == 58
-    assert series["sleep_resp_mean_per_min"]["daily"][0]["value"] == 13
 
 
 async def test_plan_inline_no_health_queries() -> None:
@@ -358,9 +223,6 @@ async def test_explicit_id_missing_and_consent() -> None:
     store.reset_mock()
     store.load_permissions.return_value = {"status": "active", "privacy_switches": {}}
     result = await svc.get_plan_inputs("u", "req", profile_snapshot_id="missing")
-    store.list_sleep_episodes.return_value = []
-    store.load_daily_metrics.return_value = []
-    store.list_daily_sleep_reports.return_value = []
     assert result["data"]["profile"]["status"] == "unsupported"
     store.load_profile.assert_not_called()
 
@@ -424,21 +286,6 @@ async def test_exact_original_final_diff_and_revert() -> None:
         "u", session, datetime(2026, 9, 21, tzinfo=UTC), {}, generation
     )
     assert result["user_adjusted"] is True and result["diff"] == []
-
-
-async def test_profile_refresh_purpose_is_accepted() -> None:
-    svc, store = service()
-    result = await svc.get_profile_inputs(
-        "u",
-        "refresh-request",
-        purpose="profile_refresh",
-        review_end_local_date="2026-10-08",
-        timezone_offset="+00:00",
-        requested_sections=["prior_profile"],
-    )
-
-    assert result["data"]["prior_profile"]["status"] == "not_found"
-    store.load_profile.assert_awaited_once()
 
 
 async def test_weekly_requires_generation_before_queries() -> None:
