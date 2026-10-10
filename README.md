@@ -234,6 +234,14 @@ cd /opt/uburpython && docker compose up -d --build
 生产访问：`http://<服务器IP>:8001/docs`（nginx 映射宿主机 8001 → 容器 80）。
 
 
+## GenerationData Internal Access
+
+GenerationData RPCs are internal interfaces for DeepHealth. They do not authenticate
+callers; network access to the Somni gRPC port must be restricted to trusted services.
+Do not expose this port publicly. The caller supplies the UID. UID validation,
+account status, privacy switches, and record ownership checks remain enforced;
+these checks do not authenticate the caller.
+
 ## 测试
 
 ```bash

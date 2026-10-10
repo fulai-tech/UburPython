@@ -94,7 +94,6 @@ async def _start_somni(state: AppState, settings: Settings) -> grpc.aio.Server:
     uburnode_somni_pb2_grpc.add_GenerationDataServiceServicer_to_server(
         GenerationDataRpc(
             getattr(state, "generation_data_service", None),
-            getattr(state, "generation_data_authorizer", None),
         ),
         server,
     )

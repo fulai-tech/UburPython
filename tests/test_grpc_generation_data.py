@@ -15,9 +15,9 @@ from app.uburnode_grpc.grpc_gen import uburnode_somni_pb2_grpc as rpc
 
 
 @asynccontextmanager
-async def channel(service, authorizer=None):
+async def channel(service):
     server = grpc.aio.server()
-    rpc.add_GenerationDataServiceServicer_to_server(GenerationDataRpc(service, authorizer), server)
+    rpc.add_GenerationDataServiceServicer_to_server(GenerationDataRpc(service), server)
     port = server.add_insecure_port("127.0.0.1:0")
     await server.start()
     try:
@@ -25,10 +25,6 @@ async def channel(service, authorizer=None):
             yield rpc.GenerationDataServiceStub(connection)
     finally:
         await server.stop(0)
-
-
-async def allow_synthetic(context, uid):
-    return uid == "u"
 
 
 def make_service():
@@ -58,19 +54,38 @@ def make_service():
     return GenerationDataService(None, Settings(_env_file=None), store), store
 
 
-async def test_default_deny_and_uid_authorization() -> None:
+async def test_internal_call_keeps_account_permission_check() -> None:
     svc, store = make_service()
-    request = pb.GetPlanInputsReq(uid="u", request_id="r", profile_snapshot_id="s")
+    request = pb.GetPlanInputsReq(uid="u", request_id="r", target_local_date="2026-10-10")
     async with channel(svc) as client:
-        with pytest.raises(grpc.aio.AioRpcError) as caught:
-            await client.GetPlanInputs(request)
-        assert caught.value.code() == grpc.StatusCode.UNAUTHENTICATED
-    store.load_permissions.assert_not_called()
-    request.uid = "other"
-    async with channel(svc, allow_synthetic) as client:
+        response = await client.GetPlanInputs(request)
+        assert response.uid == "u"
+        store.load_permissions.assert_awaited_once_with("u")
+        store.load_permissions.return_value = None
         with pytest.raises(grpc.aio.AioRpcError) as caught:
             await client.GetPlanInputs(request)
         assert caught.value.code() == grpc.StatusCode.PERMISSION_DENIED
+
+
+@pytest.mark.parametrize("uid", ["", " u ", "u" * 257])
+async def test_internal_call_rejects_invalid_uid_before_query(uid: str) -> None:
+    svc, store = make_service()
+    request = pb.GetPlanInputsReq(uid=uid, request_id="r", target_local_date="2026-10-10")
+    async with channel(svc) as client:
+        with pytest.raises(grpc.aio.AioRpcError) as caught:
+            await client.GetPlanInputs(request)
+        assert caught.value.code() == grpc.StatusCode.INVALID_ARGUMENT
+    store.load_permissions.assert_not_called()
+
+
+async def test_internal_call_keeps_privacy_switches() -> None:
+    svc, store = make_service()
+    store.load_permissions.return_value = {"status": "active", "privacy_switches": {}}
+    request = pb.GetPlanInputsReq(uid="u", request_id="r", target_local_date="2026-10-10")
+    async with channel(svc) as client:
+        response = await client.GetPlanInputs(request)
+    assert response.data.target_plan.status == pb.unsupported
+    store.load_active_plan.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -81,7 +96,7 @@ async def test_default_deny_and_uid_authorization() -> None:
         ("2024-02-29", "2024-03-01", "+05:30"),
     ],
 )
-async def test_bedtime_roundtrip_dates_and_default_deny(reminder, target, offset):
+async def test_bedtime_roundtrip_dates(reminder, target, offset):
     from tests.test_somni_sleep_debt import night
 
     svc, store = make_service()
@@ -90,11 +105,6 @@ async def test_bedtime_roundtrip_dates_and_default_deny(reminder, target, offset
         uid="u", request_id="r", reminder_local_date=reminder, timezone_offset=offset
     )
     async with channel(svc) as client:
-        with pytest.raises(grpc.aio.AioRpcError) as caught:
-            await client.GetBedtimeReminderInputs(request)
-        assert caught.value.code() == grpc.StatusCode.UNAUTHENTICATED
-    store.load_permissions.assert_not_called()
-    async with channel(svc, allow_synthetic) as client:
         response = await client.GetBedtimeReminderInputs(request)
         assert response.target_local_date == target
         assert response.data.weather.status == pb.unsupported
@@ -137,7 +147,7 @@ async def test_plan_round_trip_hash_and_missing_id() -> None:
         },
         pb.GetPlanInputsReq(),
     )
-    async with channel(svc, allow_synthetic) as client:
+    async with channel(svc) as client:
         response = await client.GetPlanInputs(request)
         assert response.data.profile.status == pb.ok
         assert response.data.previous_blueprint.status == pb.not_found
@@ -169,7 +179,7 @@ async def test_profile_refresh_answer_id_round_trip_over_wire() -> None:
         requested_sections=["questionnaires"],
         answer_id="answer-exact",
     )
-    async with channel(svc, allow_synthetic) as client:
+    async with channel(svc) as client:
         response = await client.GetProfileInputs(request)
 
     assert response.data.questionnaires.status == pb.ok
@@ -197,7 +207,7 @@ async def test_feedback_observation_round_trip_over_wire() -> None:
         target_local_date="2026-09-23",
         feedback_record_id="answer-observation-1",
     )
-    async with channel(svc, allow_synthetic) as client:
+    async with channel(svc) as client:
         response = await client.GetPlanInputs(request)
     assert response.data.feedback.status == pb.ok
     assert len(response.data.feedback.value) == 1
@@ -209,7 +219,7 @@ async def test_feedback_observation_round_trip_over_wire() -> None:
 
 async def test_profile_sections_and_presence_over_wire() -> None:
     svc, store = make_service()
-    async with channel(svc, allow_synthetic) as client:
+    async with channel(svc) as client:
         response = await client.GetProfileInputs(
             pb.GetProfileInputsReq(
                 uid="u",
@@ -230,7 +240,7 @@ async def test_profile_sections_and_presence_over_wire() -> None:
 async def test_episode_missing_and_response_budget() -> None:
     svc, store = make_service()
     store.find_episode.return_value = None
-    async with channel(svc, allow_synthetic) as client:
+    async with channel(svc) as client:
         with pytest.raises(grpc.aio.AioRpcError) as caught:
             await client.GetEpisodeEvidence(
                 pb.GetEpisodeEvidenceReq(uid="u", episode_id="e", source="s")
@@ -309,7 +319,7 @@ async def test_populated_episode_and_weekly_comparison_round_trip() -> None:
             }
         ]
     }
-    async with channel(svc, allow_synthetic) as client:
+    async with channel(svc) as client:
         response = await client.GetEpisodeEvidence(
             pb.GetEpisodeEvidenceReq(uid="u", episode_id="e", source="s")
         )
