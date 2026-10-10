@@ -11,11 +11,13 @@ from loguru import logger
 
 from app.server.handboard.audio.rpc import AudioRpc as HandboardAudioRpc
 from app.server.handboard.quiz.rpc import QuizRpc as HandboardQuizRpc
+from app.server.somni.applewatch.rpc import AppleWatchRpc as SomniAppleWatchRpc
 from app.server.somni.audio.rpc import AudioRpc as SomniAudioRpc
 from app.server.somni.facts.rpc import GenerationDataRpc
 from app.server.somni.profile.rpc import ProfileRpc as SomniProfileRpc
 from app.server.somni.quiz.rpc import QuizRpc as SomniQuizRpc
 from app.server.somni.report.rpc import ReportRpc as SomniReportRpc
+from app.server.somni.weather.rpc import WeatherRpc as SomniWeatherRpc
 from app.uburnode_grpc.grpc_gen import (
     uburnode_pb2,
     uburnode_pb2_grpc,
@@ -94,6 +96,14 @@ async def _start_somni(state: AppState, settings: Settings) -> grpc.aio.Server:
             getattr(state, "generation_data_service", None),
             getattr(state, "generation_data_authorizer", None),
         ),
+        server,
+    )
+    uburnode_somni_pb2_grpc.add_AppleWatchServiceServicer_to_server(
+        SomniAppleWatchRpc(getattr(state, "somni_applewatch_service", None)),
+        server,
+    )
+    uburnode_somni_pb2_grpc.add_WeatherServiceServicer_to_server(
+        SomniWeatherRpc(getattr(state, "somni_weather_service", None)),
         server,
     )
     _enable_reflection(server, uburnode_somni_pb2)
