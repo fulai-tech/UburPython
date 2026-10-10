@@ -6,6 +6,7 @@
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -59,12 +60,28 @@ class Settings(BaseSettings):
     somni_mongo_sleep_reports_collection: str = "somni_sleep_reports"
     somni_mongo_events_collection: str = "somni_events"
     somni_mongo_user_profiles_collection: str = "somni_user_profiles"
-    somni_mongo_user_profile_long_terms_collection: str = (
-        "somni_user_profile_long_terms"
-    )
-    somni_mongo_user_profiles_short_terms_collection: str = (
-        "somni_user_profiles_short_terms"
-    )
+    somni_mongo_user_profile_long_terms_collection: str = "somni_user_profile_long_terms"
+    somni_mongo_user_profiles_short_terms_collection: str = "somni_user_profiles_short_terms"
+
+    somni_mongo_users_collection: str = "somni_users"
+    somni_mongo_schedules_collection: str = "somni_schedules"
+    somni_mongo_quiz_results_collection: str = "somni_quiz_results"
+    somni_mongo_wearable_daily_collection: str = "somni_wearable_daily_profiles"
+    somni_mongo_uploads_collection: str = "somni_wearable_uploads"
+    somni_mongo_observations_collection: str = "somni_user_observations"
+    somni_mongo_generations_collection: str = "somni_plan_generations"
+    somni_mongo_snapshots_collection: str = "somni_plans_snapshots"
+    somni_mongo_plans_collection: str = "somni_plans"
+    somni_mongo_sessions_collection: str = "somni_sessions"
+    somni_mongo_session_payloads_collection: str = "somni_session_payloads"
+    somni_mongo_operations_collection: str = "somni_device_operations"
+    somni_mongo_downlinks_collection: str = "somni_device_downlinks"
+    generation_query_limit: int = Field(default=20000, ge=1, le=100000)
+    generation_query_timeout_ms: int = Field(default=5000, ge=1, le=60000)
+    generation_deadline_sec: float = Field(default=15.0, gt=0, le=120)
+    generation_response_bytes: int = Field(default=2000000, ge=1, le=4000000)
+    generation_cursor_ttl_sec: int = Field(default=900, ge=1, le=86400)
+    generation_cursor_secret: str = ""
     somni_mongo_wearable_raw_points_collection: str = "somni_wearable_raw_points"
     somni_mongo_calendar_daily_data_collection: str = "somni_calendar_daily_data"
     somni_mongo_alarms_collection: str = "somni_alarms"

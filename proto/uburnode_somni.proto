@@ -5,6 +5,7 @@ syntax = "proto3";
 package uburnode.somni.v1;
 
 import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
 
 message GetAnswerReq {
   string uid = 1;        // 必传
@@ -329,10 +330,29 @@ message GetHotRes {
   repeated HotKeyword items = 1;
 }
 
+message PrescriptionAudioSearchTask {
+  string task_id = 1;
+  string problem_code = 2;
+  string intervention_code = 3;
+  string query_text = 4;
+  repeated string sleep_stage_tags = 5;
+  repeated string content_tag_codes = 6;
+  repeated string disliked_tags = 7;
+  int32 top_k = 8;
+  repeated string content_tags = 9;
+}
+message SearchPrescriptionAudioReq { repeated PrescriptionAudioSearchTask tasks = 1; }
+message PrescriptionAudioSearchResult {
+  string task_id = 1;
+  repeated google.protobuf.Struct candidates = 2;
+}
+message SearchPrescriptionAudioRes { repeated PrescriptionAudioSearchResult results = 1; }
+
 service AudioService {
   rpc GetAudio (GetAudioReq) returns (GetAudioRes);
   rpc GetAudioTag (GetAudioTagReq) returns (GetAudioTagRes);
   rpc GetHot (GetHotReq) returns (GetHotRes);
+  rpc SearchPrescriptionAudio (SearchPrescriptionAudioReq) returns (SearchPrescriptionAudioRes);
 }
 
 message GetUserProfileReq {
@@ -351,4 +371,668 @@ message GetUserProfileRes {
 
 service ProfileService {
   rpc GetUserProfile (GetUserProfileReq) returns (GetUserProfileRes);
+}
+
+enum InputSectionStatus {
+  section_unspecified = 0;
+  ok = 1;
+  partial = 2;
+  not_found = 3;
+  unsupported = 4;
+  unavailable = 5;
+}
+
+message InputSourceRef {
+  string ref = 1;
+  string source_type = 2;
+  string record_id = 3;
+  optional string revision = 4;
+  optional string content_hash = 5;
+  google.protobuf.Timestamp occurred_at_utc = 6;
+  google.protobuf.Timestamp received_at_utc = 7;
+}
+
+message InputSectionError {
+  string section = 1;
+  string code = 2;
+  bool retryable = 3;
+}
+
+message InputTimeWindow {
+  google.protobuf.Timestamp start_at_utc = 1;
+  google.protobuf.Timestamp end_at_utc = 2;
+}
+
+message InputTimeContext {
+  string review_end_local_date = 1;
+  string timezone_offset = 2;
+  string time_policy_version = 3;
+  InputTimeWindow window_7d = 4;
+  InputTimeWindow window_28d = 5;
+}
+
+message GenerationProfile {
+  string uid = 1;
+  string schema_version = 2;
+  optional string profile_snapshot_id = 3;
+  optional int32 snapshot_revision = 4;
+  string content_hash = 5;
+  string long_term_content_hash = 6;
+  string record_date = 7;
+  google.protobuf.Timestamp data_cutoff_at_utc = 8;
+  google.protobuf.Timestamp generated_at_utc = 9;
+  string status = 10;
+  google.protobuf.Struct long_term_profile = 11;
+  google.protobuf.Struct short_term_profile = 12;
+  google.protobuf.Struct rolling_baseline = 13;
+  google.protobuf.Struct profile_quality = 14;
+  google.protobuf.Struct based_on = 15;
+}
+
+message PlanVersionRef {
+  string plan_id = 1;
+  int32 version = 2;
+  string snapshot_id = 3;
+  optional string content_hash = 4;
+  optional string date = 5;
+}
+
+message GenerationBlueprint {
+  string generation_id = 1;
+  string uid = 2;
+  google.protobuf.Timestamp generated_at_utc = 3;
+  google.protobuf.Struct raw_plan = 4;
+  google.protobuf.Struct decision_record = 5;
+  google.protobuf.Struct profile_ref = 6;
+  repeated PlanVersionRef output_plans = 7;
+  repeated string source_refs = 8;
+}
+
+message GenerationProfileSection {
+  InputSectionStatus status = 1;
+  GenerationProfile value = 2;
+  repeated string missing_reasons = 3;
+}
+
+message GenerationBlueprintSection {
+  InputSectionStatus status = 1;
+  GenerationBlueprint value = 2;
+  repeated string missing_reasons = 3;
+}
+
+message InputAnswer {
+  string question_id = 1;
+  string question_version = 2;
+  string field_code = 3;
+  google.protobuf.Value value = 4;
+  optional string unit = 5;
+  google.protobuf.Struct scale = 6;
+  repeated string option_codes = 7;
+}
+
+message InputScore {
+  string instrument_id = 1;
+  string version = 2;
+  optional double value = 3;
+  string unit = 4;
+}
+
+message InputQuestionnaire {
+  string answer_id = 1;
+  string survey_code = 2;
+  string survey_version = 3;
+  google.protobuf.Timestamp completed_at_utc = 4;
+  google.protobuf.Timestamp received_at_utc = 5;
+  repeated InputAnswer answers = 6;
+  repeated InputScore scores = 7;
+  repeated string source_refs = 8;
+}
+
+message InputQuestionnairesSection {
+  InputSectionStatus status = 1;
+  repeated InputQuestionnaire value = 2;
+  repeated string missing_reasons = 3;
+}
+
+message InputObservation {
+  string observation_id = 1;
+  string kind = 2;
+  string field_code = 3;
+  google.protobuf.Value value = 4;
+  optional string unit = 5;
+  google.protobuf.Struct scale = 6;
+  string local_date = 7;
+  repeated string target_dates = 8;
+  google.protobuf.Struct episode_ref = 9;
+  repeated PlanVersionRef plan_refs = 10;
+  google.protobuf.Timestamp occurred_at_utc = 11;
+  google.protobuf.Timestamp received_at_utc = 12;
+  google.protobuf.Timestamp valid_from_utc = 13;
+  google.protobuf.Timestamp valid_to_utc = 14;
+  optional string supersedes_id = 15;
+  string quality = 16;
+  repeated string source_refs = 17;
+}
+
+message InputObservationsSection {
+  InputSectionStatus status = 1;
+  repeated InputObservation value = 2;
+  repeated string missing_reasons = 3;
+}
+
+message InputEpisode {
+  string episode_id = 1;
+  string source = 2;
+  optional string revision = 3;
+  string sleep_date_local = 4;
+  optional string timezone_offset = 5;
+  google.protobuf.Timestamp start_at_utc = 6;
+  google.protobuf.Timestamp end_at_utc = 7;
+  bool main_sleep = 8;
+  string selection_policy_version = 9;
+  optional double monitored_sec = 10;
+  optional double valid_sec = 11;
+  repeated string source_refs = 12;
+}
+
+message InputMetricValue {
+  string metric_id = 1;
+  string unit = 2;
+  string source = 3;
+  string method = 4;
+  string definition_version = 5;
+  string local_date = 6;
+  optional string episode_id = 7;
+  optional double value = 8;
+  string quality = 9;
+  optional string missing_reason = 10;
+  repeated string source_refs = 11;
+  optional double covered_sec = 12;
+  optional int32 sample_count = 13;
+  optional double monitored_sec = 14;
+  string device_algorithm = 15;
+  optional string hrv_method = 16;
+}
+
+message InputNumericStats {
+  optional double mean = 1;
+  optional double median = 2;
+  optional double mad = 3;
+  optional double min = 4;
+  optional double max = 5;
+}
+
+message InputClockStats {
+  optional double circular_mean_min = 1;
+  optional double circular_mean_abs_deviation_min = 2;
+  optional double concentration = 3;
+}
+
+message InputWindowStats {
+  string start_local_date = 1;
+  string end_local_date_exclusive = 2;
+  int32 window_days = 3;
+  int32 valid_count = 4;
+  int32 missing_count = 5;
+  map<string, int32> missing_reason_counts = 6;
+  oneof result {
+    InputNumericStats numeric = 7;
+    InputClockStats clock = 8;
+  }
+}
+
+message InputCoverage {
+  optional string first_valid_local_date = 1;
+  optional string last_valid_local_date = 2;
+  int32 covered_span_days = 3;
+  int32 recent_7d_valid_count = 4;
+}
+
+message InputMetricSeries {
+  string metric_id = 1;
+  string unit = 2;
+  string source = 3;
+  string device_algorithm = 4;
+  string method = 5;
+  string definition_version = 6;
+  optional string hrv_method = 7;
+  repeated InputMetricValue daily = 8;
+  InputWindowStats stats_7d = 9;
+  InputWindowStats stats_28d = 10;
+  InputCoverage coverage_28d = 11;
+}
+
+message InputFacts {
+  InputEpisode latest_episode = 1;
+  repeated InputMetricValue latest_values = 2;
+  optional int32 latest_age_days = 3;
+  repeated InputEpisode episodes = 4;
+  repeated InputMetricSeries series = 5;
+  repeated InputMetricValue current_observations = 6;
+}
+
+message InputFactsSection {
+  InputSectionStatus status = 1;
+  InputFacts value = 2;
+  repeated string missing_reasons = 3;
+}
+
+message InputEffectiveSetting {
+  google.protobuf.Struct parameters = 1;
+  google.protobuf.Timestamp occurred_at_utc = 2;
+  string event_ref = 3;
+}
+
+message InputExecutionItem {
+  string session_id = 1;
+  optional string episode_id = 2;
+  string plan_id = 3;
+  optional int32 plan_version = 4;
+  string phase = 5;
+  optional int32 node_index = 6;
+  optional string resource_id = 7;
+  optional string resource_version = 8;
+  int32 command_count = 9;
+  int32 ack_count = 10;
+  int32 failure_count = 11;
+  optional double confirmed_on_sec = 12;
+  optional double measured_on_sec = 13;
+  optional double unknown_sec = 14;
+  int32 manual_select_count = 15;
+  int32 manual_change_count = 16;
+  int32 skip_count = 17;
+  map<string, int32> stop_counts_by_reason = 18;
+  InputEffectiveSetting last_confirmed_nonterminal_setting = 19;
+  repeated string source_refs = 20;
+}
+
+message InputOpportunityCounts {
+  optional int32 select = 1;
+  optional int32 change = 2;
+  optional int32 skip = 3;
+  optional int32 stop = 4;
+}
+
+message InputExecutionTotal {
+  string start_local_date = 1;
+  string end_local_date_exclusive = 2;
+  string phase = 3;
+  optional string resource_id = 4;
+  optional string resource_version = 5;
+  int32 exposed_session_count = 6;
+  int32 valid_night_count = 7;
+  optional double confirmed_on_sec_sum = 8;
+  InputOpportunityCounts opportunity_counts = 9;
+  string opportunity_policy_version = 10;
+  repeated string source_refs = 11;
+}
+
+message InputExecution {
+  repeated InputExecutionItem sessions = 1;
+  repeated InputExecutionTotal totals_7d = 2;
+  repeated InputExecutionTotal totals_28d = 3;
+}
+
+message InputExecutionSection {
+  InputSectionStatus status = 1;
+  InputExecution value = 2;
+  repeated string missing_reasons = 3;
+}
+
+message PlanFieldDiff {
+  enum Operation { operation_unspecified = 0; add = 1; remove = 2; replace = 3; }
+  enum Origin { unknown = 0; manual = 1; automation = 2; safety = 3; }
+  Operation op = 1;
+  string path = 2;
+  bool before_present = 3;
+  bool after_present = 4;
+  google.protobuf.Value before = 5;
+  google.protobuf.Value after = 6;
+  string phase = 7;
+  optional string node_key = 8;
+  optional string modality = 9;
+  google.protobuf.Struct resource_ref = 10;
+  optional string unit = 11;
+  repeated Origin origins = 12;
+  repeated string event_refs = 13;
+  repeated string source_refs = 14;
+  repeated string missing_reasons = 15;
+}
+
+message EpisodePlanDiff {
+  string plan_id = 1;
+  string session_id = 2;
+  string episode_id = 3;
+  optional bool user_adjusted = 4;
+  optional int32 user_adjustment_count = 5;
+  PlanVersionRef original_plan_ref = 6;
+  PlanVersionRef final_plan_ref = 7;
+  string status = 8;
+  repeated PlanFieldDiff diff = 9;
+  repeated PlanFieldDiff execution_diff = 10;
+  repeated string missing_reasons = 11;
+  repeated string source_refs = 12;
+}
+
+message EpisodePlanDiffSection {
+  InputSectionStatus status = 1;
+  repeated EpisodePlanDiff value = 2;
+  repeated string missing_reasons = 3;
+}
+
+message InputPlanRevision {
+  int32 version = 1;
+  optional int32 base_plan_version = 2;
+  string edit_source = 3;
+  optional string editor_id = 4;
+  google.protobuf.Timestamp created_at_utc = 5;
+  google.protobuf.ListValue phases = 6;
+  string lifecycle = 7;
+  repeated string source_refs = 8;
+}
+
+message InputPlanComparison {
+  string generation_id = 1;
+  string plan_id = 2;
+  string date = 3;
+  PlanVersionRef initial_plan_ref = 4;
+  google.protobuf.ListValue initial_phases = 5;
+  repeated InputPlanRevision revisions = 6;
+  repeated InputExecutedSession sessions = 7;
+  string status = 8;
+  repeated string missing_reasons = 9;
+  repeated string source_refs = 10;
+  repeated EpisodePlanDiff episode_plan_diffs = 11;
+  repeated InputParameterComparison parameter_comparisons = 12;
+  InputComparisonMetadata metadata = 13;
+}
+
+message InputExecutionSegment {
+  string phase = 1;
+  optional int32 node_index = 2;
+  string modality = 3;
+  google.protobuf.Struct resource_ref = 4;
+  google.protobuf.Timestamp start_at_utc = 5;
+  google.protobuf.Timestamp end_at_utc = 6;
+  google.protobuf.Struct parameters = 7;
+  string confirmation = 8;
+  repeated string event_refs = 9;
+}
+
+message InputExecutedSession {
+  string session_id = 1;
+  google.protobuf.Struct episode_ref = 2;
+  string plan_id = 3;
+  optional int32 plan_version = 4;
+  google.protobuf.Timestamp start_at_utc = 5;
+  google.protobuf.Timestamp end_at_utc = 6;
+  string state = 7;
+  repeated InputExecutionSegment segments = 8;
+  InputEffectiveSetting final_effective_setting = 9;
+}
+
+message InputParameterChange {
+  google.protobuf.Value before = 1;
+  google.protobuf.Value after = 2;
+  PlanFieldDiff.Origin origin = 3;
+  google.protobuf.Timestamp occurred_at_utc = 4;
+  optional string op_id = 5;
+  google.protobuf.Timestamp applied_at_utc = 6;
+  PlanVersionRef revision_ref = 7;
+}
+
+message InputParameterComparison {
+  string phase = 1;
+  optional string node_key = 2;
+  optional int32 node_index = 3;
+  string modality = 4;
+  string parameter = 5;
+  string unit = 6;
+  google.protobuf.Value initial_value = 7;
+  repeated InputParameterChange changes = 8;
+  google.protobuf.Value final_executed_value = 9;
+  optional double confirmed_duration_sec = 10;
+  repeated string source_refs = 11;
+}
+
+message InputDeviceParameter {
+  string name = 1;
+  string unit = 2;
+  optional double min = 3;
+  optional double max = 4;
+}
+
+message InputDeviceMetadata {
+  string device_id = 1;
+  string capability_version = 2;
+  repeated InputDeviceParameter parameters = 3;
+}
+
+message InputResourceTag {
+  string type = 1;
+  string code = 2;
+}
+
+message InputResourceMetadata {
+  string resource_id = 1;
+  string version = 2;
+  string modality = 3;
+  repeated InputResourceTag tags = 4;
+}
+
+message InputComparisonMetadata {
+  repeated InputDeviceMetadata devices = 1;
+  repeated InputResourceMetadata resources = 2;
+  repeated string source_refs = 3;
+}
+
+message InputPlanComparisonsSection {
+  InputSectionStatus status = 1;
+  repeated InputPlanComparison value = 2;
+  repeated string missing_reasons = 3;
+}
+
+message GetProfileInputsReq {
+  enum Purpose { purpose_unspecified = 0; initial = 1; weekly = 2; correction = 3; plan_generation = 4; profile_refresh = 5; }
+  string request_id = 1;
+  string uid = 2;
+  Purpose purpose = 3;
+  string review_end_local_date = 4;
+  string timezone_offset = 5;
+  optional string previous_profile_snapshot_id = 6;
+  optional string review_generation_id = 7;
+  repeated string requested_sections = 8;
+  google.protobuf.Timestamp data_cutoff_at_utc = 9;
+  optional string answer_id = 10;
+}
+
+message ProfileInputsData {
+  InputQuestionnairesSection questionnaires = 1;
+  GenerationProfileSection prior_profile = 2;
+  InputFactsSection facts = 3;
+  InputObservationsSection observations = 4;
+  InputExecutionSection execution = 5;
+  InputPlanComparisonsSection plan_comparisons = 6;
+  SleepDebtSection sleep_debt = 7;
+}
+
+message GetProfileInputsRes {
+  string schema_version = 1;
+  string request_id = 2;
+  string uid = 3;
+  google.protobuf.Timestamp generated_at_utc = 4;
+  google.protobuf.Timestamp read_started_at_utc = 5;
+  string read_consistency = 6;
+  InputTimeContext time_context = 7;
+  repeated InputSourceRef source_manifest = 8;
+  ProfileInputsData data = 9;
+  repeated InputSectionError errors = 10;
+}
+
+message GetPlanInputsReq {
+  string request_id = 1;
+  string uid = 2;
+  oneof profile_input {
+    string profile_snapshot_id = 3;
+    GenerationProfile inline_profile = 4;
+  }
+  optional string previous_generation_id = 5;
+  // Optional target date; middleware resolves the unique active plan visible at read start and its parent weekly generation.
+  optional string target_local_date = 6;
+  // Exact answer observation ID; requires target_local_date. Source is fixed by middleware.
+  optional string feedback_record_id = 7;
+}
+
+message ResolvedTargetPlan {
+  string weekly_generation_id = 1;
+  string generation_id = 2;
+  string plan_id = 3;
+  string date = 4;
+  int32 version = 5;
+  string snapshot_id = 6;
+  string content_hash = 7;
+  optional int32 base_plan_version = 8;
+  string edit_source = 9;
+  string lifecycle = 10;
+  google.protobuf.Timestamp created_at_utc = 11;
+  google.protobuf.ListValue phases = 12;
+  repeated string source_refs = 13;
+}
+
+message ResolvedTargetPlanSection {
+  InputSectionStatus status = 1;
+  ResolvedTargetPlan value = 2;
+  repeated string missing_reasons = 3;
+}
+
+message PlanInputsData {
+  GenerationProfileSection profile = 1;
+  GenerationBlueprintSection previous_blueprint = 2;
+  ResolvedTargetPlanSection target_plan = 3;
+  InputObservationsSection feedback = 4;
+}
+
+message GetPlanInputsRes {
+  string schema_version = 1;
+  string request_id = 2;
+  string uid = 3;
+  google.protobuf.Timestamp generated_at_utc = 4;
+  google.protobuf.Timestamp read_started_at_utc = 5;
+  string read_consistency = 6;
+  repeated InputSourceRef source_manifest = 7;
+  PlanInputsData data = 8;
+  repeated InputSectionError errors = 9;
+}
+
+message GetEpisodeEvidenceReq {
+  string uid = 1;
+  string episode_id = 2;
+  string source = 3;
+  optional string session_id = 4;
+  optional string cursor = 5;
+  int32 limit = 6;
+}
+
+message GetEpisodeEvidenceRes {
+  EpisodePlanDiffSection plan_diffs = 1;
+  optional string next_cursor = 2;
+  google.protobuf.Timestamp read_started_at_utc = 3;
+  repeated InputSourceRef source_manifest = 4;
+}
+
+service GenerationDataService {
+  rpc GetProfileInputs (GetProfileInputsReq) returns (GetProfileInputsRes);
+  rpc GetPlanInputs (GetPlanInputsReq) returns (GetPlanInputsRes);
+  rpc GetEpisodeEvidence (GetEpisodeEvidenceReq) returns (GetEpisodeEvidenceRes);
+  rpc GetBedtimeReminderInputs (GetBedtimeReminderInputsReq) returns (GetBedtimeReminderInputsRes);
+}
+
+message SleepDebt {
+  string record_date = 1;
+  optional double daily_debt_min = 2;
+  optional double actual_sleep_min = 3;
+  optional double target_sleep_min = 4;
+  optional double baseline_mean_min = 5;
+  int32 baseline_valid_day_count = 6;
+  int32 baseline_required_valid_days = 7;
+  string baseline_policy_version = 8;
+  string target_source = 9;
+  optional string baseline_first_local_date = 10;
+  optional string baseline_last_local_date = 11;
+  optional string episode_id = 12;
+  string source = 13;
+  string device_algorithm = 14;
+  string definition_version = 15;
+  google.protobuf.Timestamp data_cutoff_at_utc = 16;
+  repeated string source_refs = 17;
+}
+
+message SleepDebtSection {
+  InputSectionStatus status = 1;
+  SleepDebt value = 2;
+  repeated string missing_reasons = 3;
+}
+
+message ReminderSchedule {
+  string event_id = 1;
+  string event_date = 2;
+  string event_type = 3;
+  string title = 4;
+  bool all_day = 5;
+  google.protobuf.Timestamp start_at_utc = 6;
+  google.protobuf.Timestamp end_at_utc = 7;
+  repeated string source_refs = 8;
+}
+
+message ReminderSchedulesSection {
+  InputSectionStatus status = 1;
+  repeated ReminderSchedule value = 2;
+  repeated string missing_reasons = 3;
+}
+
+message ReminderWeather {
+  string target_local_date = 1;
+  string location_ref = 2;
+  string provider = 3;
+  google.protobuf.Timestamp issued_at_utc = 4;
+  google.protobuf.Timestamp expires_at_utc = 5;
+  string condition_code = 6;
+  optional double min_temperature_c = 7;
+  optional double max_temperature_c = 8;
+  repeated string source_refs = 9;
+}
+
+message ReminderWeatherSection {
+  InputSectionStatus status = 1;
+  ReminderWeather value = 2;
+  repeated string missing_reasons = 3;
+}
+
+message GetBedtimeReminderInputsReq {
+  string request_id = 1;
+  string uid = 2;
+  string reminder_local_date = 3;
+  string timezone_offset = 4;
+}
+
+message BedtimeReminderData {
+  ReminderSchedulesSection schedules = 1;
+  ReminderWeatherSection weather = 2;
+  SleepDebtSection sleep_debt = 3;
+}
+
+message GetBedtimeReminderInputsRes {
+  string schema_version = 1;
+  string request_id = 2;
+  string uid = 3;
+  google.protobuf.Timestamp generated_at_utc = 4;
+  google.protobuf.Timestamp read_started_at_utc = 5;
+  string read_consistency = 6;
+  repeated InputSourceRef source_manifest = 7;
+  repeated InputSectionError errors = 8;
+  string reminder_local_date = 9;
+  string target_local_date = 10;
+  string timezone_offset = 11;
+  InputTimeWindow target_window = 12;
+  BedtimeReminderData data = 13;
 }

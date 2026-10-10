@@ -45,7 +45,8 @@ class ReportRpc(uburnode_somni_pb2_grpc.ReportServiceServicer):
         if not _vitals_mode_ok(uid, device_id, session_id, start_time, end_time):
             await abort_invalid(
                 context,
-                "GetVitals 仅支持：session_id | uid+start_time+end_time | device_id+start_time+end_time",
+                "GetVitals 仅支持：session_id | uid+start_time+end_time"
+                " | device_id+start_time+end_time",
             )
         service = await self._require(context)
 

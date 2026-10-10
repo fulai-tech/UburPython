@@ -19,6 +19,8 @@ if TYPE_CHECKING:
     from elasticsearch import AsyncElasticsearch
     from motor.motor_asyncio import AsyncIOMotorClient
 
+    from app.server.somni.facts.service import GenerationDataService
+
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _VENV_PYTHON = _PROJECT_ROOT / ".venv" / "bin" / "python"
 
@@ -91,6 +93,7 @@ class AppState:
     somni_quiz_service: SomniQuizService | None = None
     somni_report_service: SomniReportService | None = None
     somni_profile_service: SomniProfileService | None = None
+    generation_data_service: GenerationDataService | None = None
     somni_audio_service: SomniAudioService | None = None
     somni_applewatch_service: SomniAppleWatchService | None = None
     somni_weather_service: SomniWeatherService | None = None
@@ -108,6 +111,8 @@ def get_app_state() -> AppState:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    from app.server.somni.facts.service import GenerationDataService
+
     settings = get_settings()
     setup_logging(settings)
     _app_state.settings = settings
@@ -188,6 +193,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _app_state.somni_quiz_service = SomniQuizService(somni_mongo, settings)
     _app_state.somni_report_service = SomniReportService(somni_mongo, settings)
     _app_state.somni_profile_service = SomniProfileService(somni_mongo, settings)
+    _app_state.generation_data_service = GenerationDataService(somni_mongo, settings)
     _app_state.somni_applewatch_service = SomniAppleWatchService(somni_mongo, settings)
     _app_state.somni_weather_service = SomniWeatherService()
     somni_es_client = create_es_client(
@@ -201,6 +207,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         audio_index=settings.somni_es_audio_index,
         tag_dictionary_index=settings.somni_es_tag_vectors_index,
     )
+    somni_retrieval = RetrievalService(
+        somni_es_search, encoder, settings, sleep_stage_cache=sleep_stage_cache,
+    )
     somni_redis = await create_somni_redis(settings)
     events_store = SearchEventsStore(somni_es_client, settings)
     hot_tracker = HotTracker(somni_redis, events_store, settings)
@@ -210,6 +219,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         es_search=somni_es_search,
         encoder=encoder,
         hot=hot_tracker,
+        retrieval=somni_retrieval,
     )
 
     start_sync_scheduler(_app_state, settings)
