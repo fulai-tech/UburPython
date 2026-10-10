@@ -151,19 +151,7 @@ class GenerationDataService:
         self.settings = settings
         self.store = store if store is not None else FactsStore(client, settings)
 
-    async def _permissions(self, uid: str) -> dict:
-        row = await self.store.load_permissions(uid)
-        if not row or row.get("status") not in (1, "active"):
-            raise DataError("PERMISSION_DENIED", "account_not_authorized")
-        return row.get("privacy_switches") if isinstance(row.get("privacy_switches"), dict) else {}
-
-    @staticmethod
-    def _allowed(permissions: dict, source: str) -> bool:
-        return permissions.get(source) is True
-
-    async def _optional(self, allowed: bool, query: Callable[[], Awaitable[dict]]) -> dict:
-        if not allowed:
-            return section(status="unsupported", reasons=["consent_not_granted"])
+    async def _optional(self, query: Callable[[], Awaitable[dict]]) -> dict:
         try:
             return await query()
         except DataError as exc:
@@ -281,12 +269,8 @@ class GenerationDataService:
         target_local_date: str,
         read_at: datetime,
         manifest: dict,
-        *,
-        plans_allowed: bool,
     ) -> dict:
         """Resolve the immediately preceding effective weekly blueprint."""
-        if not plans_allowed:
-            return section(status="unsupported", reasons=["consent_not_granted"])
         target_date = parse_date(target_local_date)
         previous_date = (target_date - timedelta(days=1)).isoformat()
         latest_date = await self.store.load_latest_active_plan_date_before(
@@ -304,7 +288,6 @@ class GenerationDataService:
             previous_date,
             read_at,
             manifest,
-            plans_allowed=True,
         )
         if previous_plan_section["status"] != "ok":
             raise DataError("FAILED_PRECONDITION", "previous_week_plan_unavailable")
@@ -392,34 +375,27 @@ class GenerationDataService:
         if feedback_record_id != feedback_record_id.strip():
             raise DataError("INVALID_ARGUMENT", "invalid_feedback_record_id")
         manifest = {}
-        permissions = await self._permissions(uid)
         if not has_profile_input and target_local_date:
             profile = await self._optional(
-                self._allowed(permissions, "profiles"),
                 lambda: self._profile(uid, "", read_at, manifest, target_local_date),
             )
         elif not has_profile_input:
             profile = section(status="not_found", reasons=["profile_input_not_requested"])
-        elif self._allowed(permissions, "profiles"):
+        else:
             profile = (
                 section(validate_profile(inline_profile, uid))
                 if inline_profile is not None
                 else await self._profile(uid, profile_snapshot_id, read_at, manifest)
             )
-        else:
-            profile = section(status="unsupported", reasons=["consent_not_granted"])
         if scope == "weekly" and not previous_generation_id:
             blueprint = await self._previous_week_blueprint(
                 uid,
                 target_local_date,
                 read_at,
                 manifest,
-                plans_allowed=self._allowed(permissions, "plans"),
             )
-        elif self._allowed(permissions, "plans"):
-            blueprint, _row = await self._blueprint(uid, previous_generation_id, read_at, manifest)
         else:
-            blueprint = section(status="unsupported", reasons=["consent_not_granted"])
+            blueprint, _row = await self._blueprint(uid, previous_generation_id, read_at, manifest)
         data = {"profile": profile, "previous_blueprint": blueprint}
         if target_local_date and scope != "weekly":
             target_plan = await self._target_plan(
@@ -427,7 +403,6 @@ class GenerationDataService:
                 target_local_date,
                 read_at,
                 manifest,
-                plans_allowed=self._allowed(permissions, "plans"),
             )
             data["target_plan"] = target_plan
             if not previous_generation_id and target_plan.get("value", {}).get(
@@ -441,11 +416,7 @@ class GenerationDataService:
                 )
                 data["previous_blueprint"] = blueprint
         if scope == "realtime":
-            if not (self._allowed(permissions, "health") and self._allowed(permissions, "plans")):
-                data["execution_state"] = section(
-                    status="unsupported", reasons=["consent_not_granted"]
-                )
-            elif session_id:
+            if session_id:
                 data["execution_state"] = await self._runtime_execution_state(
                     uid,
                     session_id,
@@ -466,7 +437,6 @@ class GenerationDataService:
                 target_local_date,
                 read_at,
                 manifest,
-                observations_allowed=self._allowed(permissions, "observations"),
             )
         result = self._envelope(uid, request_id, read_at, data, manifest)
         result["read_started_at_utc"] = timestamp(read_started_at)
@@ -481,11 +451,7 @@ class GenerationDataService:
         target_local_date: str,
         read_at: datetime,
         manifest: dict,
-        *,
-        observations_allowed: bool,
     ) -> dict:
-        if not observations_allowed:
-            return section(status="unsupported", reasons=["consent_not_granted"])
         try:
             target_date = parse_date(target_local_date).isoformat()
         except (TypeError, ValueError) as exc:
@@ -520,11 +486,7 @@ class GenerationDataService:
         target_local_date: str,
         read_at: datetime,
         manifest: dict,
-        *,
-        plans_allowed: bool,
     ) -> dict:
-        if not plans_allowed:
-            return section(status="unsupported", reasons=["consent_not_granted"])
         try:
             target_date = parse_date(target_local_date).isoformat()
         except (TypeError, ValueError) as exc:
@@ -864,45 +826,25 @@ class GenerationDataService:
         }
         if requested_sections and not set(requested_sections) <= allowed_sections:
             raise DataError("INVALID_ARGUMENT", "unknown_requested_section")
-        permissions = await self._permissions(uid)
-        permissions["execution"] = self._allowed(permissions, "health") and self._allowed(
-            permissions, "plans"
-        )
         tasks = {
-            "sleep_debt": (
-                "health",
-                lambda: self.build_sleep_debt(
-                    uid, (scope.end - timedelta(days=1)).isoformat(), cutoff, manifest
-                ),
+            "sleep_debt": lambda: self.build_sleep_debt(
+                uid, (scope.end - timedelta(days=1)).isoformat(), cutoff, manifest
             ),
-            "questionnaires": (
-                "questionnaires",
-                lambda: self._questionnaires(uid, cutoff, manifest, answer_id),
+            "questionnaires": lambda: self._questionnaires(uid, cutoff, manifest, answer_id),
+            "prior_profile": lambda: self._profile(
+                uid, previous_profile_snapshot_id, cutoff, manifest, profile_end_date
             ),
-            "prior_profile": (
-                "profiles",
-                lambda: self._profile(
-                    uid, previous_profile_snapshot_id, cutoff, manifest, profile_end_date
-                ),
+            "facts": lambda: self.build_facts(uid, scope, cutoff, manifest),
+            "observations": lambda: self._observations(uid, scope, cutoff, manifest),
+            "plan_comparisons": lambda: self.build_plan_comparisons(
+                uid, review_generation_id, cutoff, manifest
             ),
-            "facts": ("health", lambda: self.build_facts(uid, scope, cutoff, manifest)),
-            "observations": (
-                "observations",
-                lambda: self._observations(uid, scope, cutoff, manifest),
-            ),
-            "plan_comparisons": (
-                "execution",
-                lambda: self.build_plan_comparisons(uid, review_generation_id, cutoff, manifest),
-            ),
-            "execution": ("execution", lambda: self._execution(uid, scope, cutoff, manifest)),
+            "execution": lambda: self._execution(uid, scope, cutoff, manifest),
         }
         if requested_sections:
             tasks = {key: value for key, value in tasks.items() if key in requested_sections}
         results = await asyncio.gather(
-            *(
-                self._optional(self._allowed(permissions, permission), query)
-                for permission, query in tasks.values()
-            )
+            *(self._optional(query) for query in tasks.values())
         )
         data = dict(zip(tasks, results, strict=True))
         response = self._envelope(uid, request_id, read_at, data, manifest)
@@ -1013,14 +955,11 @@ class GenerationDataService:
         target = (day + timedelta(days=1)).isoformat()
         scope = resolve_scope((day + timedelta(days=2)).isoformat(), timezone_offset)
         read_at, manifest = utc_now(), {}
-        permissions = await self._permissions(uid)
         schedules, debt = await asyncio.gather(
             self._optional(
-                self._allowed(permissions, "calendar"),
                 lambda: self._reminder_schedules(uid, target, timezone_offset, read_at, manifest),
             ),
             self._optional(
-                self._allowed(permissions, "health"),
                 lambda: self.build_sleep_debt(uid, reminder_local_date, read_at, manifest),
             ),
         )
@@ -1396,12 +1335,6 @@ class GenerationDataService:
     ) -> dict:
         if not episode_id or not source or not 1 <= limit <= 100:
             raise DataError("INVALID_ARGUMENT", "invalid_episode_or_limit")
-        permissions = await self._permissions(uid)
-        if not self._allowed(permissions, "health") or not self._allowed(permissions, "plans"):
-            return {
-                "plan_diffs": section(status="unsupported", reasons=["consent_not_granted"]),
-                "read_started_at_utc": timestamp(utc_now()),
-            }
         binding = {"uid": uid, "episode_id": episode_id, "source": source, "session_id": session_id}
         marker = self._cursor_decode(cursor, binding) if cursor else None
         read_at = instant(marker["read_at"]) if marker else utc_now()

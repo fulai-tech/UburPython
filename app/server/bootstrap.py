@@ -105,13 +105,6 @@ async def _start_somni(state: AppState, settings: Settings) -> grpc.aio.Server:
         SomniWeatherRpc(getattr(state, "somni_weather_service", None)),
         server,
     )
-    uburnode_somni_pb2_grpc.add_GenerationDataServiceServicer_to_server(
-        GenerationDataRpc(
-            getattr(state, "generation_data_service", None),
-            getattr(state, "generation_data_authorizer", None),
-        ),
-        server,
-    )
     _enable_reflection(server, uburnode_somni_pb2)
     bind = f"{settings.grpc_host}:{settings.somni_grpc_port}"
     _bind(server, bind, "量产")

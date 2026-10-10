@@ -200,7 +200,7 @@ async def test_plan_inline_no_health_queries() -> None:
     result = await svc.get_plan_inputs("u", "req", inline_profile=profile())
     assert result["data"]["profile"]["status"] == "ok"
     assert result["data"]["previous_blueprint"]["status"] == "not_found"
-    assert [call[0] for call in store.mock_calls] == ["load_permissions"]
+    store.load_permissions.assert_not_awaited()
     wrong = profile()
     wrong["uid"] = "other"
     with pytest.raises(DataError, match="owner_mismatch"):
@@ -450,10 +450,11 @@ async def test_unwind_realtime_does_not_invent_execution_revision() -> None:
     assert incomplete["missing_reasons"] == ["execution_apply_boundary_unverified"]
 
 
-async def test_realtime_execution_requires_health_consent() -> None:
+async def test_realtime_execution_does_not_apply_service_consent_gate() -> None:
     svc, store = service()
     store.load_permissions.return_value["privacy_switches"]["health"] = False
     svc._target_plan = AsyncMock(return_value={"status": "ok", "value": {}})
+    svc._runtime_execution_state = AsyncMock(return_value={"status": "ok", "value": {}})
 
     result = await svc.get_plan_inputs(
         "u",
@@ -466,10 +467,9 @@ async def test_realtime_execution_requires_health_consent() -> None:
         timezone_offset="+08:00",
     )
 
-    assert result["data"]["execution_state"]["status"] == "unsupported"
-    assert result["data"]["execution_state"]["missing_reasons"] == ["consent_not_granted"]
-    store.list_sessions.assert_not_awaited()
-    store.list_execution_events.assert_not_awaited()
+    assert result["data"]["execution_state"]["status"] == "ok"
+    svc._runtime_execution_state.assert_awaited_once()
+    store.load_permissions.assert_not_awaited()
 
 
 async def test_realtime_execution_cursor_requires_explicit_unexecuted_node() -> None:
@@ -689,19 +689,22 @@ async def test_feedback_observation_missing_owner_or_date_fails(row, reason) -> 
         )
 
 
-async def test_feedback_observation_requires_target_date_and_consent() -> None:
+async def test_feedback_observation_requires_target_date_but_not_service_consent() -> None:
     svc, store = service()
     with pytest.raises(DataError, match="feedback_target_date_required"):
         await svc.get_plan_inputs("u", "r", feedback_record_id="obs-1")
-    store.load_permissions.return_value = {
-        "status": "active",
-        "privacy_switches": {"plans": True, "observations": False},
+    store.load_feedback_observation.return_value = {
+        "uid": "u",
+        "observation_id": "obs-1",
+        "local_date": "2026-09-23",
+        "target_dates": ["2026-09-23"],
     }
     result = await svc.get_plan_inputs(
         "u", "r", target_local_date="2026-09-23", feedback_record_id="obs-1"
     )
-    assert result["data"]["feedback"]["status"] == "unsupported"
-    store.load_feedback_observation.assert_not_awaited()
+    assert result["data"]["feedback"]["status"] == "ok"
+    store.load_feedback_observation.assert_awaited_once()
+    store.load_permissions.assert_not_awaited()
 
 
 async def test_target_plan_rejects_ambiguous_active_rows() -> None:
@@ -713,16 +716,13 @@ async def test_target_plan_rejects_ambiguous_active_rows() -> None:
         )
 
 
-async def test_explicit_id_missing_and_consent() -> None:
+async def test_explicit_id_missing_is_not_hidden_by_service_consent() -> None:
     svc, store = service()
     store.load_profile.return_value = None, None
     with pytest.raises(DataError, match="profile_not_found"):
         await svc.get_plan_inputs("u", "req", profile_snapshot_id="missing")
-    store.reset_mock()
-    store.load_permissions.return_value = {"status": "active", "privacy_switches": {}}
-    result = await svc.get_plan_inputs("u", "req", profile_snapshot_id="missing")
-    assert result["data"]["profile"]["status"] == "unsupported"
-    store.load_profile.assert_not_called()
+    store.load_profile.assert_awaited_once()
+    store.load_permissions.assert_not_awaited()
 
 
 def test_cursor_signature_binding_and_expiration() -> None:
@@ -799,9 +799,10 @@ async def test_weekly_requires_generation_before_queries() -> None:
     store.load_permissions.assert_not_called()
 
 
-async def test_plan_consent_does_not_grant_execution_health_access() -> None:
+async def test_profile_refresh_does_not_apply_service_consent_gates() -> None:
     svc, store = service()
-    store.load_permissions.return_value = {"status": "active", "privacy_switches": {"plans": True}}
+    svc.build_plan_comparisons = AsyncMock(return_value={"status": "ok", "value": []})
+    svc._execution = AsyncMock(return_value={"status": "ok", "value": []})
     result = await svc.get_profile_inputs(
         "u",
         "r",
@@ -809,13 +810,16 @@ async def test_plan_consent_does_not_grant_execution_health_access() -> None:
         review_generation_id="g",
         review_end_local_date="2026-09-21",
         timezone_offset="+08:00",
+        requested_sections=["plan_comparisons", "execution"],
     )
-    assert result["data"]["plan_comparisons"]["status"] == "unsupported"
-    store.list_sessions.assert_not_called()
-    store.list_window_sessions.assert_not_called()
+    assert result["data"]["plan_comparisons"]["status"] == "ok"
+    assert result["data"]["execution"]["status"] == "ok"
+    svc.build_plan_comparisons.assert_awaited_once()
+    svc._execution.assert_awaited_once()
+    store.load_permissions.assert_not_awaited()
 
 
-async def test_pagination_rechecks_permissions_and_keeps_read_marker() -> None:
+async def test_pagination_keeps_read_marker_without_rechecking_permissions() -> None:
     svc, store = service()
     store.find_episode.return_value = {"episode_id": "e", "source": "s"}
     store.list_sessions.return_value = [
@@ -827,10 +831,11 @@ async def test_pagination_rechecks_permissions_and_keeps_read_marker() -> None:
     assert first["plan_diffs"]["value"][0]["session_id"] == "0"
     assert second["plan_diffs"]["value"][0]["session_id"] == "1"
     assert first["read_started_at_utc"] == second["read_started_at_utc"]
-    assert store.load_permissions.await_count == 2
+    store.load_permissions.assert_not_awaited()
     store.load_permissions.return_value = {"status": "active", "privacy_switches": {}}
-    denied = await svc.get_episode_evidence("u", "e", "s", cursor=second["next_cursor"])
-    assert denied["plan_diffs"]["status"] == "unsupported"
+    third = await svc.get_episode_evidence("u", "e", "s", cursor=second["next_cursor"])
+    assert third["plan_diffs"]["value"][0]["session_id"] == "2"
+    store.load_permissions.assert_not_awaited()
 
 
 async def test_prior_version_live_change_cannot_override_later_saved_version() -> None:
