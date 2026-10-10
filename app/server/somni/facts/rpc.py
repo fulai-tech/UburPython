@@ -73,7 +73,13 @@ class GenerationDataRpc(rpc.GenerationDataServiceServicer):
 
     async def GetProfileInputs(self, request: Any, context: Any) -> pb.GetProfileInputsRes:
         async def call(service: GenerationDataService, payload: dict) -> dict:
-            if payload.get("purpose") not in ("initial", "weekly", "correction", "plan_generation"):
+            if payload.get("purpose") not in (
+                "initial",
+                "weekly",
+                "correction",
+                "plan_generation",
+                "profile_refresh",
+            ):
                 raise DataError("INVALID_ARGUMENT", "invalid_purpose")
             if not payload.get("review_end_local_date") or not payload.get("timezone_offset"):
                 raise DataError("INVALID_ARGUMENT", "review_scope_required")

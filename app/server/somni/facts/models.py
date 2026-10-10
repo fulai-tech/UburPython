@@ -85,7 +85,21 @@ def validate_profile(profile: dict, uid: str) -> dict:
     ):
         if not isinstance(profile.get(key), dict):
             raise DataError("INVALID_ARGUMENT", "incomplete_profile_content")
-    if profile.get("long_term_content_hash") != canonical_hash(profile["long_term_profile"]):
+    if profile["schema_version"] == "0.0.1":
+        try:
+            encoded = json.dumps(
+                profile["long_term_profile"],
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode()
+        except (ValueError, TypeError) as exc:
+            raise DataError("INVALID_ARGUMENT", "invalid_canonical_content") from exc
+        expected_long_hash = "sha256:" + hashlib.sha256(encoded).hexdigest()
+    else:
+        expected_long_hash = canonical_hash(profile["long_term_profile"])
+    if profile.get("long_term_content_hash") != expected_long_hash:
         raise DataError("INVALID_ARGUMENT", "long_term_hash_mismatch")
     content = {key: profile[key] for key in PROFILE_FIELDS if key in profile}
     if profile.get("content_hash") != canonical_hash(content):

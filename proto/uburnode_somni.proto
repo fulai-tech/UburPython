@@ -833,7 +833,7 @@ message InputPlanComparisonsSection {
 }
 
 message GetProfileInputsReq {
-  enum Purpose { purpose_unspecified = 0; initial = 1; weekly = 2; correction = 3; plan_generation = 4; }
+  enum Purpose { purpose_unspecified = 0; initial = 1; weekly = 2; correction = 3; plan_generation = 4; profile_refresh = 5; }
   string request_id = 1;
   string uid = 2;
   Purpose purpose = 3;
@@ -843,6 +843,8 @@ message GetProfileInputsReq {
   optional string review_generation_id = 7;
   repeated string requested_sections = 8;
   google.protobuf.Timestamp data_cutoff_at_utc = 9;
+  // Optional exact completed questionnaire answer. When set, the response contains only this answer.
+  optional string answer_id = 10;
 }
 
 message ProfileInputsData {
@@ -880,6 +882,13 @@ message GetPlanInputsReq {
   optional string target_local_date = 6;
   // Exact answer observation ID; requires target_local_date. Source is fixed by middleware.
   optional string feedback_record_id = 7;
+  // Request scope is used for section completeness and realtime event/session validation.
+  string scope = 8;
+  string timezone_offset = 9;
+  google.protobuf.Timestamp data_cutoff_at_utc = 10;
+  string trigger_type = 11;
+  optional string event_id = 12;
+  optional string session_id = 13;
 }
 
 message ResolvedTargetPlan {
@@ -904,11 +913,31 @@ message ResolvedTargetPlanSection {
   repeated string missing_reasons = 3;
 }
 
+message InputRuntimeExecutionState {
+  string session_id = 1;
+  string plan_id = 2;
+  int32 plan_version = 3;
+  string state = 4;
+  optional string phase = 5;
+  optional int32 node_index = 6;
+  optional string next_unexecuted_node_key = 7;
+  string execution_revision = 8;
+  bool application_boundary_verified = 9;
+  repeated string source_refs = 10;
+}
+
+message InputRuntimeExecutionStateSection {
+  InputSectionStatus status = 1;
+  InputRuntimeExecutionState value = 2;
+  repeated string missing_reasons = 3;
+}
+
 message PlanInputsData {
   GenerationProfileSection profile = 1;
   GenerationBlueprintSection previous_blueprint = 2;
   ResolvedTargetPlanSection target_plan = 3;
   InputObservationsSection feedback = 4;
+  InputRuntimeExecutionStateSection execution_state = 5;
 }
 
 message GetPlanInputsRes {
