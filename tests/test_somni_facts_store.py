@@ -84,6 +84,45 @@ async def test_activity_uses_own_date_and_owner() -> None:
     assert "activity" in projection
 
 
+async def test_daily_sleep_reports_are_user_date_and_cutoff_scoped() -> None:
+    store, collection = make_store([])
+    read_at = datetime(2026, 10, 8, tzinfo=UTC)
+
+    await store.list_daily_sleep_reports("synthetic", "2026-09-10", "2026-10-08", read_at)
+
+    query, projection = collection.find.call_args.args
+    assert query["uid"] == "synthetic"
+    assert query["record_date"] == {"$gte": "2026-09-10", "$lt": "2026-10-08"}
+    assert query["$or"] == [
+        {"received_at": {"$lte": read_at}},
+        {"received_at": {"$exists": False}},
+    ]
+    assert set(projection) == {"uid", "reports_id", "record_date", "language", "overnight_vitals"}
+
+
+async def test_questionnaire_query_filters_exact_answer_id() -> None:
+    store, collection = make_store(
+        [
+            {
+                "uid": "u",
+                "answer_id": "answer-exact",
+                "survey_code": "initial",
+                "survey_version": "v1",
+                "answer_revision": 1,
+                "completed_at": datetime(2026, 9, 20, tzinfo=UTC),
+                "answers": [],
+            }
+        ]
+    )
+    result = await store.load_questionnaires(
+        "u", datetime(2026, 9, 21, tzinfo=UTC), answer_id="answer-exact"
+    )
+    query = collection.find.call_args_list[0].args[0]
+    assert query["uid"] == "u"
+    assert query["answer_id"] == "answer-exact"
+    assert result[0]["answer_id"] == "answer-exact"
+
+
 async def test_active_plan_lookup_is_uid_date_and_read_time_scoped() -> None:
     store, collection = make_store([])
     read_at = datetime(2026, 9, 23, tzinfo=UTC)

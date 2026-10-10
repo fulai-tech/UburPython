@@ -718,7 +718,7 @@ message InputPlanComparisonsSection {
 }
 
 message GetProfileInputsReq {
-  enum Purpose { purpose_unspecified = 0; initial = 1; weekly = 2; correction = 3; plan_generation = 4; }
+  enum Purpose { purpose_unspecified = 0; initial = 1; weekly = 2; correction = 3; plan_generation = 4; profile_refresh = 5; }
   string request_id = 1;
   string uid = 2;
   Purpose purpose = 3;
@@ -728,6 +728,7 @@ message GetProfileInputsReq {
   optional string review_generation_id = 7;
   repeated string requested_sections = 8;
   google.protobuf.Timestamp data_cutoff_at_utc = 9;
+  optional string answer_id = 10;
 }
 
 message ProfileInputsData {

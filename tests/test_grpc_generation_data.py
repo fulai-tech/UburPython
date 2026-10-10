@@ -149,6 +149,35 @@ async def test_plan_round_trip_hash_and_missing_id() -> None:
     store.list_sleep_episodes.assert_not_called()
 
 
+async def test_profile_refresh_answer_id_round_trip_over_wire() -> None:
+    svc, store = make_service()
+    store.load_questionnaires.return_value = [
+        {
+            "answer_id": "answer-exact",
+            "survey_code": "initial",
+            "survey_version": "v1",
+            "answers": [],
+            "results": [],
+        }
+    ]
+    request = pb.GetProfileInputsReq(
+        uid="u",
+        request_id="profile-refresh-answer",
+        purpose=pb.GetProfileInputsReq.profile_refresh,
+        review_end_local_date="2026-10-08",
+        timezone_offset="+00:00",
+        requested_sections=["questionnaires"],
+        answer_id="answer-exact",
+    )
+    async with channel(svc, allow_synthetic) as client:
+        response = await client.GetProfileInputs(request)
+
+    assert response.data.questionnaires.status == pb.ok
+    assert response.data.questionnaires.value[0].answer_id == "answer-exact"
+    assert store.load_questionnaires.await_args.args[0] == "u"
+    assert store.load_questionnaires.await_args.args[2] == "answer-exact"
+
+
 async def test_feedback_observation_round_trip_over_wire() -> None:
     svc, store = make_service()
     store.load_feedback_observation.return_value = {

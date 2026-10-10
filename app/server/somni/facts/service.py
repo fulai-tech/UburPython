@@ -16,6 +16,7 @@ from app.server.somni.facts.calc import (
     build_series,
     compare_plan_execution,
     diff_plan_versions,
+    finite_number,
     normalize_daily_metrics,
     summarize_execution,
 )
@@ -60,6 +61,82 @@ def collect_source_refs(row: dict, source: str, manifest: dict) -> list[str]:
             entry[target] = timestamp(value)
     manifest[ref] = entry
     return [ref]
+
+
+def normalize_report_vitals(
+    rows: list[dict],
+    uid: str,
+    start_date: str,
+    end_date: str,
+    manifest: dict,
+    excluded_metrics: set[str] | None = None,
+) -> tuple[list[dict], list[str]]:
+    excluded = excluded_metrics or set()
+    candidates: dict[tuple[str, str], list[tuple[float, str]]] = {}
+    reasons: list[str] = []
+    metric_fields = {
+        "sleep_hr_mean_bpm": ("hr", "bpm"),
+        "sleep_resp_mean_per_min": ("br", "per_min"),
+    }
+    for row in rows:
+        if row.get("uid") != uid:
+            reasons.append("sleep_report_uid_mismatch")
+            continue
+        local_date = row.get("record_date")
+        try:
+            parsed_date = parse_date(local_date).isoformat()
+        except (TypeError, ValueError):
+            reasons.append("sleep_report_record_date_invalid")
+            continue
+        if not start_date <= parsed_date < end_date:
+            reasons.append("sleep_report_outside_requested_window")
+            continue
+        source_refs = collect_source_refs(
+            {**row, "_id": row.get("reports_id") or row.get("_id")},
+            "sleep_reports",
+            manifest,
+        )
+        if not source_refs:
+            reasons.append(f"sleep_report_source_id_missing:{parsed_date}")
+            continue
+        vitals = row.get("overnight_vitals")
+        if not isinstance(vitals, dict):
+            continue
+        for metric_id, (report_key, _unit) in metric_fields.items():
+            if metric_id in excluded:
+                continue
+            item = vitals.get(report_key)
+            if not isinstance(item, dict) or "value" not in item:
+                continue
+            value = item.get("value")
+            if not finite_number(value) or value < 0:
+                reasons.append(f"sleep_report_metric_invalid:{metric_id}:{parsed_date}")
+                continue
+            candidates.setdefault((metric_id, parsed_date), []).append(
+                (float(value), source_refs[0])
+            )
+
+    metrics = []
+    for (metric_id, local_date), values in sorted(candidates.items()):
+        unique_values = {value for value, _source_ref in values}
+        if len(unique_values) != 1:
+            reasons.append(f"sleep_report_language_conflict:{metric_id}:{local_date}")
+            continue
+        report_key, unit = metric_fields[metric_id]
+        metrics.append(
+            {
+                "metric_id": metric_id,
+                "unit": unit,
+                "source": "somni_sleep_reports",
+                "method": f"overnight_vitals_{report_key}_session_mean",
+                "definition_version": "daily_report_projection_v1",
+                "local_date": local_date,
+                "value": next(iter(unique_values)),
+                "quality": "valid",
+                "source_refs": list(dict.fromkeys(ref for _, ref in values)),
+            }
+        )
+    return metrics, list(dict.fromkeys(reasons))
 
 
 class GenerationDataService:
@@ -348,8 +425,12 @@ class GenerationDataService:
             value["created_at_utc"] = timestamp(created_at)
         return section(value)
 
-    async def _questionnaires(self, uid: str, read_at: datetime, manifest: dict) -> dict:
-        rows = await self.store.load_questionnaires(uid, read_at)
+    async def _questionnaires(
+        self, uid: str, read_at: datetime, manifest: dict, answer_id: str = ""
+    ) -> dict:
+        rows = await self.store.load_questionnaires(uid, read_at, answer_id)
+        if answer_id and not rows:
+            return section(status="not_found", reasons=["questionnaire_answer_not_found"])
         values, reasons = [], []
         for row in rows:
             item = _pick(row, "answer_id survey_code survey_version")
@@ -410,6 +491,17 @@ class GenerationDataService:
         activity = await self.store.load_daily_metrics(
             uid, scope.start(28).isoformat(), scope.end.isoformat(), read_at
         )
+        report_reasons = []
+        try:
+            reports = await self.store.list_daily_sleep_reports(
+                uid, scope.start(28).isoformat(), scope.end.isoformat(), read_at
+            )
+        except DataError as exc:
+            reports = []
+            report_reasons.append(f"sleep_reports_{exc.reason}")
+        except (PyMongoError, TimeoutError):
+            reports = []
+            report_reasons.append("sleep_reports_unavailable")
         episodes, reasons = (
             [],
             [
@@ -418,6 +510,7 @@ class GenerationDataService:
                 "partial_metric_mapping",
             ],
         )
+        reasons.extend(report_reasons)
         for row in rows + activity:
             row["source_refs"] = collect_source_refs(
                 row, row.get("source_type", "wearable_daily"), manifest
@@ -452,6 +545,19 @@ class GenerationDataService:
                 episode["timezone_offset"] = row["timezone_offset"]
             episodes.append(episode)
         metrics = normalize_daily_metrics(rows) + normalize_daily_metrics(activity, activity=True)
+        direct_metrics = {item["metric_id"] for item in metrics if item.get("quality") == "valid"}
+        report_metrics, report_reasons = normalize_report_vitals(
+            reports,
+            uid,
+            scope.start(28).isoformat(),
+            scope.end.isoformat(),
+            manifest,
+            excluded_metrics=direct_metrics,
+        )
+        metrics.extend(report_metrics)
+        reasons.extend(report_reasons)
+        if report_metrics:
+            reasons.append("sleep_report_quality_and_visibility_unverified")
         value = {"episodes": episodes, "series": build_series(metrics, scope)}
         if episodes:
             latest = max(episodes, key=lambda row: row["end_at_utc"])
@@ -479,8 +585,9 @@ class GenerationDataService:
         review_generation_id: str = "",
         requested_sections: list[str] | None = None,
         data_cutoff_at_utc: str = "",
+        answer_id: str = "",
     ) -> dict:
-        if purpose not in ("initial", "weekly", "correction", "plan_generation"):
+        if purpose not in ("initial", "weekly", "correction", "plan_generation", "profile_refresh"):
             raise DataError("INVALID_ARGUMENT", "invalid_purpose")
         if purpose == "weekly" and not review_generation_id:
             raise DataError("INVALID_ARGUMENT", "weekly_generation_required")
@@ -516,7 +623,7 @@ class GenerationDataService:
             ),
             "questionnaires": (
                 "questionnaires",
-                lambda: self._questionnaires(uid, read_at, manifest),
+                lambda: self._questionnaires(uid, read_at, manifest, answer_id),
             ),
             "prior_profile": (
                 "profiles",
