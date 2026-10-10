@@ -13,10 +13,15 @@ from app.server.somni.facts.service import GenerationDataService
 from app.uburnode_grpc.grpc_gen import uburnode_somni_pb2 as pb
 from app.uburnode_grpc.grpc_gen import uburnode_somni_pb2_grpc as rpc
 
+Authorizer = Callable[[Any, str], Awaitable[bool]]
+
 
 class GenerationDataRpc(rpc.GenerationDataServiceServicer):
-    def __init__(self, service: GenerationDataService | None) -> None:
+    def __init__(
+        self, service: GenerationDataService | None, authorizer: Authorizer | None = None
+    ) -> None:
         self._service = service
+        self._authorizer = authorizer
 
     async def _invoke(
         self,
@@ -25,6 +30,10 @@ class GenerationDataRpc(rpc.GenerationDataServiceServicer):
         response_type: Any,
         call: Callable[[GenerationDataService, dict], Awaitable[dict]],
     ) -> Any:
+        if self._authorizer is None:
+            await context.abort(
+                grpc.StatusCode.UNAUTHENTICATED, "trusted_identity_provider_required"
+            )
         try:
             uid = request.uid
             if not uid or len(uid) > 256 or uid != uid.strip():
@@ -32,6 +41,8 @@ class GenerationDataRpc(rpc.GenerationDataServiceServicer):
             if self._service is None:
                 raise DataError("UNAVAILABLE", "generation_service_not_ready")
             async with asyncio.timeout(self._service.settings.generation_deadline_sec):
+                if await self._authorizer(context, uid) is not True:
+                    raise DataError("PERMISSION_DENIED", "uid_not_authorized")
                 payload = MessageToDict(request, preserving_proto_field_name=True)
                 if hasattr(request, "request_id") and not request.request_id.strip():
                     raise DataError("INVALID_ARGUMENT", "request_id_required")

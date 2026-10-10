@@ -31,7 +31,13 @@ from app.server.somni.facts.models import (
 )
 from app.server.somni.facts.sleep_debt import calculate_sleep_debt
 from app.server.somni.facts.store import FactsStore
-from app.server.somni.facts.time import attribute_sleep_date, instant, parse_date, resolve_scope
+from app.server.somni.facts.time import (
+    attribute_sleep_date,
+    instant,
+    parse_date,
+    parse_offset,
+    resolve_scope,
+)
 
 
 def _pick(row: dict, fields: str) -> dict:
@@ -41,6 +47,7 @@ def _pick(row: dict, fields: str) -> dict:
 def collect_source_refs(row: dict, source: str, manifest: dict) -> list[str]:
     identifier = (
         row.get("_id")
+        or row.get("reports_id")
         or row.get("snapshot_id")
         or row.get("generation_id")
         or row.get("observation_id")
@@ -102,7 +109,7 @@ def normalize_report_vitals(
         vitals = row.get("overnight_vitals")
         if not isinstance(vitals, dict):
             continue
-        for metric_id, (report_key, _unit) in metric_fields.items():
+        for metric_id, (report_key, unit) in metric_fields.items():
             if metric_id in excluded:
                 continue
             item = vitals.get(report_key)
@@ -122,11 +129,11 @@ def normalize_report_vitals(
         if len(unique_values) != 1:
             reasons.append(f"sleep_report_language_conflict:{metric_id}:{local_date}")
             continue
-        report_key, unit = metric_fields[metric_id]
+        report_key = metric_fields[metric_id][0]
         metrics.append(
             {
                 "metric_id": metric_id,
-                "unit": unit,
+                "unit": metric_fields[metric_id][1],
                 "source": "somni_sleep_reports",
                 "method": f"overnight_vitals_{report_key}_session_mean",
                 "definition_version": "daily_report_projection_v1",
@@ -198,9 +205,21 @@ class GenerationDataService:
         if long is None:
             return section(status="partial", reasons=["hash_linked_long_profile_missing"])
         collect_source_refs(long, "profile_long", manifest)
+        current_id = short.get("profile_snapshot_id")
+        legacy_id = short.get("snapshot_id")
+        if current_id and legacy_id and current_id != legacy_id:
+            raise DataError("FAILED_PRECONDITION", "profile_snapshot_id_conflict")
+        resolved_id = current_id or legacy_id or ""
+        if snapshot_id and resolved_id != snapshot_id:
+            raise DataError("FAILED_PRECONDITION", "profile_snapshot_id_mismatch")
+        if short.get("schema_version") == "0.0.1":
+            if not resolved_id or short.get("status") != "active" or long.get("status") != "valid":
+                return section(status="partial", reasons=["profile_saved_state_unverified"])
+            if long.get("schema_version") != short["schema_version"]:
+                return section(status="partial", reasons=["profile_schema_link_mismatch"])
         profile = _pick(short, " ".join(PROFILE_FIELDS))
         profile.update(
-            profile_snapshot_id=short.get("snapshot_id", ""),
+            profile_snapshot_id=resolved_id,
             long_term_profile=long.get("long_term_profile"),
         )
         for source_key, target in (
@@ -256,6 +275,61 @@ class GenerationDataService:
         value["source_refs"] = collect_source_refs(row, "generations", manifest)
         return section(value, "partial" if reasons else "ok", reasons), row
 
+    async def _previous_week_blueprint(
+        self,
+        uid: str,
+        target_local_date: str,
+        read_at: datetime,
+        manifest: dict,
+        *,
+        plans_allowed: bool,
+    ) -> dict:
+        """Resolve the immediately preceding effective weekly blueprint."""
+        if not plans_allowed:
+            return section(status="unsupported", reasons=["consent_not_granted"])
+        target_date = parse_date(target_local_date)
+        previous_date = (target_date - timedelta(days=1)).isoformat()
+        latest_date = await self.store.load_latest_active_plan_date_before(
+            uid, target_local_date, read_at
+        )
+        if latest_date is None:
+            if await self.store.has_plan_history_before(uid, target_local_date, read_at):
+                raise DataError("FAILED_PRECONDITION", "previous_week_blueprint_missing")
+            return section(status="not_found", reasons=["first_generation"])
+        if latest_date != previous_date:
+            raise DataError("FAILED_PRECONDITION", "previous_week_plan_gap")
+
+        previous_plan_section = await self._target_plan(
+            uid,
+            previous_date,
+            read_at,
+            manifest,
+            plans_allowed=True,
+        )
+        if previous_plan_section["status"] != "ok":
+            raise DataError("FAILED_PRECONDITION", "previous_week_plan_unavailable")
+        generation_id = str(previous_plan_section["value"].get("weekly_generation_id") or "")
+        if not generation_id:
+            raise DataError("FAILED_PRECONDITION", "previous_week_generation_missing")
+        blueprint_section, generation = await self._blueprint(uid, generation_id, read_at, manifest)
+        if generation is None or blueprint_section["status"] not in ("ok", "partial"):
+            raise DataError("FAILED_PRECONDITION", "previous_week_blueprint_unavailable")
+        output_plans = generation.get("output_plans")
+        if not isinstance(output_plans, list):
+            raise DataError("FAILED_PRECONDITION", "previous_week_outputs_missing")
+        try:
+            output_dates = sorted(
+                parse_date(item["date"])
+                for item in output_plans
+                if isinstance(item, dict) and isinstance(item.get("date"), str)
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise DataError("FAILED_PRECONDITION", "previous_week_output_dates_invalid") from exc
+        expected_dates = [target_date - timedelta(days=offset) for offset in range(7, 0, -1)]
+        if len(output_dates) != 7 or output_dates != expected_dates:
+            raise DataError("FAILED_PRECONDITION", "previous_week_outputs_incomplete")
+        return blueprint_section
+
     async def get_plan_inputs(
         self,
         uid: str,
@@ -266,19 +340,65 @@ class GenerationDataService:
         previous_generation_id: str = "",
         target_local_date: str = "",
         feedback_record_id: str = "",
+        scope: str = "",
+        timezone_offset: str = "",
+        data_cutoff_at_utc: str = "",
+        trigger_type: str = "",
+        event_id: str = "",
+        session_id: str = "",
     ) -> dict:
+        if scope and scope not in ("weekly", "daily", "realtime"):
+            raise DataError("INVALID_ARGUMENT", "invalid_plan_scope")
+        if scope and not target_local_date:
+            raise DataError("INVALID_ARGUMENT", "target_date_required")
+        if scope:
+            try:
+                parse_date(target_local_date)
+                if not timezone_offset:
+                    raise ValueError("timezone_required")
+                parse_offset(timezone_offset)
+            except ValueError as exc:
+                raise DataError("INVALID_ARGUMENT", "invalid_plan_temporal_scope") from exc
+            if profile_snapshot_id or inline_profile is not None or previous_generation_id:
+                raise DataError("INVALID_ARGUMENT", "caller_selected_plan_input_not_allowed")
+            if feedback_record_id:
+                raise DataError("INVALID_ARGUMENT", "inline_feedback_required_for_scoped_plan")
+        if scope == "realtime" and trigger_type not in (
+            "pre_unwind_health",
+            "unwind_fusion",
+        ):
+            raise DataError("INVALID_ARGUMENT", "invalid_realtime_trigger")
+        if scope == "realtime" and not event_id:
+            raise DataError("INVALID_ARGUMENT", "realtime_context_required")
+        if scope == "realtime" and trigger_type == "unwind_fusion" and not session_id:
+            raise DataError("INVALID_ARGUMENT", "realtime_session_required")
+        if scope != "realtime" and (trigger_type or event_id or session_id):
+            raise DataError("INVALID_ARGUMENT", "realtime_context_not_allowed")
+        read_started_at = utc_now()
+        if data_cutoff_at_utc:
+            cutoff = instant(data_cutoff_at_utc)
+            if cutoff is None or cutoff > read_started_at:
+                raise DataError("INVALID_ARGUMENT", "invalid_data_cutoff")
+            read_at = cutoff
+        else:
+            read_at = read_started_at
         has_profile_input = bool(profile_snapshot_id) or inline_profile is not None
         if bool(profile_snapshot_id) == (inline_profile is not None) and has_profile_input:
             raise DataError("INVALID_ARGUMENT", "exactly_one_profile_input_required")
         if feedback_record_id and not target_local_date:
             raise DataError("INVALID_ARGUMENT", "feedback_target_date_required")
         if not has_profile_input and not target_local_date:
-            raise DataError("INVALID_ARGUMENT", "profile_input_or_target_date_required")
+            raise DataError("INVALID_ARGUMENT", "target_date_required")
         if feedback_record_id != feedback_record_id.strip():
             raise DataError("INVALID_ARGUMENT", "invalid_feedback_record_id")
-        read_at, manifest = utc_now(), {}
+        manifest = {}
         permissions = await self._permissions(uid)
-        if not has_profile_input:
+        if not has_profile_input and target_local_date:
+            profile = await self._optional(
+                self._allowed(permissions, "profiles"),
+                lambda: self._profile(uid, "", read_at, manifest, target_local_date),
+            )
+        elif not has_profile_input:
             profile = section(status="not_found", reasons=["profile_input_not_requested"])
         elif self._allowed(permissions, "profiles"):
             profile = (
@@ -288,19 +408,57 @@ class GenerationDataService:
             )
         else:
             profile = section(status="unsupported", reasons=["consent_not_granted"])
-        if self._allowed(permissions, "plans"):
-            blueprint, _row = await self._blueprint(uid, previous_generation_id, read_at, manifest)
-        else:
-            blueprint = section(status="unsupported", reasons=["consent_not_granted"])
-        data = {"profile": profile, "previous_blueprint": blueprint}
-        if target_local_date:
-            data["target_plan"] = await self._target_plan(
+        if scope == "weekly" and not previous_generation_id:
+            blueprint = await self._previous_week_blueprint(
                 uid,
                 target_local_date,
                 read_at,
                 manifest,
                 plans_allowed=self._allowed(permissions, "plans"),
             )
+        elif self._allowed(permissions, "plans"):
+            blueprint, _row = await self._blueprint(uid, previous_generation_id, read_at, manifest)
+        else:
+            blueprint = section(status="unsupported", reasons=["consent_not_granted"])
+        data = {"profile": profile, "previous_blueprint": blueprint}
+        if target_local_date and scope != "weekly":
+            target_plan = await self._target_plan(
+                uid,
+                target_local_date,
+                read_at,
+                manifest,
+                plans_allowed=self._allowed(permissions, "plans"),
+            )
+            data["target_plan"] = target_plan
+            if not previous_generation_id and target_plan.get("value", {}).get(
+                "weekly_generation_id"
+            ):
+                blueprint, _row = await self._blueprint(
+                    uid,
+                    target_plan["value"]["weekly_generation_id"],
+                    read_at,
+                    manifest,
+                )
+                data["previous_blueprint"] = blueprint
+        if scope == "realtime":
+            if not (self._allowed(permissions, "health") and self._allowed(permissions, "plans")):
+                data["execution_state"] = section(
+                    status="unsupported", reasons=["consent_not_granted"]
+                )
+            elif session_id:
+                data["execution_state"] = await self._runtime_execution_state(
+                    uid,
+                    session_id,
+                    data.get("target_plan", section()),
+                    read_at,
+                    manifest,
+                    trigger_type=trigger_type,
+                    event_id=event_id,
+                )
+            else:
+                data["execution_state"] = section(
+                    status="partial", reasons=["session_start_state_unverified"]
+                )
         if feedback_record_id:
             data["feedback"] = await self._feedback_observation(
                 uid,
@@ -310,7 +468,11 @@ class GenerationDataService:
                 manifest,
                 observations_allowed=self._allowed(permissions, "observations"),
             )
-        return self._envelope(uid, request_id, read_at, data, manifest)
+        result = self._envelope(uid, request_id, read_at, data, manifest)
+        result["read_started_at_utc"] = timestamp(read_started_at)
+        if read_at != read_started_at:
+            result["read_consistency"] = "cutoff_visible"
+        return result
 
     async def _feedback_observation(
         self,
@@ -376,16 +538,28 @@ class GenerationDataService:
         pointer = rows[0]
         if pointer.get("uid") != uid:
             raise DataError("PERMISSION_DENIED", "active_plan_owner_mismatch")
+        if pointer.get("date") != target_date:
+            raise DataError("PERMISSION_DENIED", "active_plan_date_mismatch")
         plan_id = str(pointer.get("plan_id") or "")
         weekly_generation_id = str(pointer.get("weekly_generation_id") or "")
         version = pointer.get("version")
-        if not plan_id or not weekly_generation_id or not isinstance(version, int) or version < 1:
+        if (
+            not plan_id
+            or not weekly_generation_id
+            or isinstance(version, bool)
+            or not isinstance(version, int)
+            or version < 1
+        ):
             raise DataError("FAILED_PRECONDITION", "active_plan_link_incomplete")
         blueprint_section, generation = await self._blueprint(
             uid, weekly_generation_id, read_at, manifest
         )
         if generation is None or blueprint_section["status"] not in ("ok", "partial"):
             raise DataError("FAILED_PRECONDITION", "active_plan_generation_unavailable")
+        if generation.get("status") != "committed":
+            raise DataError("FAILED_PRECONDITION", "active_plan_generation_not_committed")
+        if generation.get("generation_id") != weekly_generation_id:
+            raise DataError("PERMISSION_DENIED", "active_plan_generation_mismatch")
         outputs = generation.get("output_plans")
         if not isinstance(outputs, list) or not any(
             item.get("plan_id") == plan_id and item.get("date") == target_date
@@ -398,14 +572,16 @@ class GenerationDataService:
             raise DataError("NOT_FOUND", "active_plan_snapshot_not_found")
         if revision.get("uid") != uid or revision.get("plan_id") != plan_id:
             raise DataError("PERMISSION_DENIED", "active_plan_snapshot_owner_mismatch")
+        if type(revision.get("version")) is not int or revision["version"] != version:
+            raise DataError("FAILED_PRECONDITION", "active_plan_snapshot_version_mismatch")
         lifecycle = revision.get("lifecycle")
         if isinstance(lifecycle, dict):
             lifecycle = lifecycle.get("status")
         if lifecycle is None:
             lifecycle = revision.get("status")
-        if lifecycle not in (None, "", "active"):
+        if lifecycle != "active":
             raise DataError("FAILED_PRECONDITION", "active_plan_snapshot_not_active")
-        if revision.get("plan_start_local_date") not in (None, "", target_date):
+        if revision.get("plan_start_local_date") != target_date:
             raise DataError("PERMISSION_DENIED", "active_plan_date_mismatch")
         refs = collect_source_refs(pointer, "plans", manifest)
         refs.extend(collect_source_refs(revision, "snapshots", manifest))
@@ -413,7 +589,7 @@ class GenerationDataService:
             revision,
             "plan_id version snapshot_id content_hash base_plan_version edit_source phases",
         )
-        value["lifecycle"] = str(lifecycle or "active")
+        value["lifecycle"] = lifecycle
         value.update(
             weekly_generation_id=weekly_generation_id,
             generation_id=str(pointer.get("generation_id") or weekly_generation_id),
@@ -424,6 +600,77 @@ class GenerationDataService:
         if created_at:
             value["created_at_utc"] = timestamp(created_at)
         return section(value)
+
+    async def _runtime_execution_state(
+        self,
+        uid: str,
+        session_id: str,
+        target_plan_section: dict,
+        read_at: datetime,
+        manifest: dict,
+        *,
+        trigger_type: str,
+        event_id: str,
+    ) -> dict:
+        """Validate session evidence without claiming an authoritative application cursor."""
+        if target_plan_section.get("status") != "ok":
+            return section(
+                status="unavailable", reasons=["target_plan_unavailable_for_execution_state"]
+            )
+        target_plan = target_plan_section.get("value") or {}
+        sessions = await self.store.list_sessions(uid, read_at, session_id=session_id)
+        if not sessions:
+            return section(status="not_found", reasons=["sleep_session_not_found"])
+        if len(sessions) != 1:
+            raise DataError("FAILED_PRECONDITION", "sleep_session_ambiguous")
+        session = sessions[0]
+        if session.get("uid") != uid or session.get("session_id") != session_id:
+            raise DataError("PERMISSION_DENIED", "sleep_session_owner_mismatch")
+        if session.get("plan_id") != target_plan.get("plan_id"):
+            return section(status="unavailable", reasons=["session_target_plan_mismatch"])
+        if session.get("plan_version") != target_plan.get("version"):
+            return section(status="unavailable", reasons=["session_target_version_mismatch"])
+        if str(session.get("state") or "").lower() != "running" or session.get("ended_at"):
+            return section(status="not_found", reasons=["sleep_session_not_running"])
+
+        phase = session.get("phase")
+        node_index = session.get("node_index")
+        next_node_key = session.get("next_unexecuted_node_key")
+        if (
+            phase != "Unwind"
+            or isinstance(node_index, bool)
+            or not isinstance(node_index, int)
+            or node_index < 0
+            or not isinstance(next_node_key, str)
+            or not next_node_key.strip()
+        ):
+            return section(status="partial", reasons=["execution_apply_boundary_unverified"])
+
+        phases = target_plan.get("phases")
+        current_phase = (
+            next(
+                (item for item in phases if isinstance(item, dict) and item.get("phase") == phase),
+                None,
+            )
+            if isinstance(phases, list)
+            else None
+        )
+        nodes = current_phase.get("nodes") if isinstance(current_phase, dict) else None
+        if not isinstance(nodes, list) or not any(
+            isinstance(node, dict) and node.get("node_key") == next_node_key for node in nodes
+        ):
+            return section(status="partial", reasons=["next_unexecuted_node_unverified"])
+
+        events = await self.store.list_execution_events(uid, [session], read_at)
+        event_rows = events.get("events", []) if isinstance(events, dict) else []
+        if trigger_type == "unwind_fusion" and not any(
+            isinstance(row, dict) and str(row.get("event_id") or "") == event_id
+            for row in event_rows
+        ):
+            return section(status="not_found", reasons=["realtime_event_not_in_session"])
+
+        collect_source_refs(session, "sessions", manifest)
+        return section(status="partial", reasons=["authoritative_execution_boundary_unavailable"])
 
     async def _questionnaires(
         self, uid: str, read_at: datetime, manifest: dict, answer_id: str = ""
@@ -591,7 +838,14 @@ class GenerationDataService:
             raise DataError("INVALID_ARGUMENT", "invalid_purpose")
         if purpose == "weekly" and not review_generation_id:
             raise DataError("INVALID_ARGUMENT", "weekly_generation_required")
+        if purpose == "profile_refresh" and (previous_profile_snapshot_id or review_generation_id):
+            raise DataError("INVALID_ARGUMENT", "profile_refresh_selectors_not_allowed")
         scope = resolve_scope(review_end_local_date, timezone_offset)
+        profile_end_date = (
+            (scope.end - timedelta(days=1)).isoformat()
+            if purpose == "profile_refresh"
+            else review_end_local_date
+        )
         read_at, manifest = utc_now(), {}
         if data_cutoff_at_utc:
             cutoff = instant(data_cutoff_at_utc)
@@ -623,29 +877,27 @@ class GenerationDataService:
             ),
             "questionnaires": (
                 "questionnaires",
-                lambda: self._questionnaires(uid, read_at, manifest, answer_id),
+                lambda: self._questionnaires(uid, cutoff, manifest, answer_id),
             ),
             "prior_profile": (
                 "profiles",
                 lambda: self._profile(
-                    uid, previous_profile_snapshot_id, read_at, manifest, review_end_local_date
+                    uid, previous_profile_snapshot_id, cutoff, manifest, profile_end_date
                 ),
             ),
-            "facts": ("health", lambda: self.build_facts(uid, scope, read_at, manifest)),
+            "facts": ("health", lambda: self.build_facts(uid, scope, cutoff, manifest)),
             "observations": (
                 "observations",
-                lambda: self._observations(uid, scope, read_at, manifest),
+                lambda: self._observations(uid, scope, cutoff, manifest),
             ),
             "plan_comparisons": (
                 "execution",
-                lambda: self.build_plan_comparisons(uid, review_generation_id, read_at, manifest),
+                lambda: self.build_plan_comparisons(uid, review_generation_id, cutoff, manifest),
             ),
-            "execution": ("execution", lambda: self._execution(uid, scope, read_at, manifest)),
+            "execution": ("execution", lambda: self._execution(uid, scope, cutoff, manifest)),
         }
         if requested_sections:
             tasks = {key: value for key, value in tasks.items() if key in requested_sections}
-        if data_cutoff_at_utc and set(tasks) != {"sleep_debt"}:
-            raise DataError("INVALID_ARGUMENT", "historical_cutoff_requires_sleep_debt_only")
         results = await asyncio.gather(
             *(
                 self._optional(self._allowed(permissions, permission), query)

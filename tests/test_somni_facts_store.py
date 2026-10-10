@@ -75,6 +75,29 @@ async def test_feedback_observation_is_exact_and_user_scoped() -> None:
     assert "value" in projection
 
 
+async def test_questionnaire_query_filters_the_exact_answer_id() -> None:
+    store, collection = make_store(
+        [
+            {
+                "uid": "u",
+                "answer_id": "answer-exact",
+                "survey_code": "initial",
+                "survey_version": "v1",
+                "answer_revision": 1,
+                "completed_at": datetime(2026, 9, 20, tzinfo=UTC),
+                "answers": [],
+            }
+        ]
+    )
+    rows = await store.load_questionnaires(
+        "u", datetime(2026, 9, 21, tzinfo=UTC), answer_id="answer-exact"
+    )
+    query = collection.find.call_args_list[0].args[0]
+    assert query["uid"] == "u"
+    assert query["answer_id"] == "answer-exact"
+    assert rows[0]["answer_id"] == "answer-exact"
+
+
 async def test_activity_uses_own_date_and_owner() -> None:
     store, collection = make_store([])
     await store.load_daily_metrics("synthetic", "2026-09-01", "2026-09-21", datetime.now(UTC))
@@ -97,30 +120,13 @@ async def test_daily_sleep_reports_are_user_date_and_cutoff_scoped() -> None:
         {"received_at": {"$lte": read_at}},
         {"received_at": {"$exists": False}},
     ]
-    assert set(projection) == {"uid", "reports_id", "record_date", "language", "overnight_vitals"}
-
-
-async def test_questionnaire_query_filters_exact_answer_id() -> None:
-    store, collection = make_store(
-        [
-            {
-                "uid": "u",
-                "answer_id": "answer-exact",
-                "survey_code": "initial",
-                "survey_version": "v1",
-                "answer_revision": 1,
-                "completed_at": datetime(2026, 9, 20, tzinfo=UTC),
-                "answers": [],
-            }
-        ]
-    )
-    result = await store.load_questionnaires(
-        "u", datetime(2026, 9, 21, tzinfo=UTC), answer_id="answer-exact"
-    )
-    query = collection.find.call_args_list[0].args[0]
-    assert query["uid"] == "u"
-    assert query["answer_id"] == "answer-exact"
-    assert result[0]["answer_id"] == "answer-exact"
+    assert set(projection) == {
+        "uid",
+        "reports_id",
+        "record_date",
+        "language",
+        "overnight_vitals",
+    }
 
 
 async def test_active_plan_lookup_is_uid_date_and_read_time_scoped() -> None:
@@ -140,6 +146,37 @@ async def test_active_plan_lookup_is_uid_date_and_read_time_scoped() -> None:
     assert set(projection) >= {"plan_id", "version", "weekly_generation_id", "generation_id"}
 
 
+async def test_previous_active_plan_queries_strictly_before_target_date() -> None:
+    store, collection = make_store([{"uid": "u", "date": "2026-10-05"}])
+    read_at = datetime(2026, 10, 8, tzinfo=UTC)
+    assert await store.load_latest_active_plan_date_before("u", "2026-10-12", read_at) == (
+        "2026-10-05"
+    )
+    query, projection = collection.find.call_args.args
+    assert query["uid"] == "u"
+    assert query["date"] == {"$lt": "2026-10-12"}
+    assert query["status"] == "active"
+    assert set(projection) == {"uid", "date"}
+    assert collection.find.return_value.sort_spec == [("date", -1), ("_id", -1)]
+
+
+async def test_plan_history_detects_disabled_record_without_active_pointer() -> None:
+    store, collection = make_store([{"uid": "u", "date": "2026-10-05", "status": "disabled"}])
+    assert await store.has_plan_history_before("u", "2026-10-12", datetime(2026, 10, 8, tzinfo=UTC))
+    query, _projection = collection.find.call_args.args
+    assert query["status"] == {"$in": ["active", "disabled"]}
+    assert query["date"] == {"$lt": "2026-10-12"}
+
+
+async def test_previous_active_plan_and_history_can_both_be_absent() -> None:
+    store, collection = make_store([])
+    read_at = datetime(2026, 10, 8, tzinfo=UTC)
+    latest = await store.load_latest_active_plan_date_before("u", "2026-10-12", read_at)
+    assert latest is None
+    assert not await store.has_plan_history_before("u", "2026-10-12", read_at)
+    assert collection.find.call_count == 2
+
+
 async def test_exact_profile_hash_join_and_no_latest_long() -> None:
     store, collection = make_store([])
     collection.find.side_effect = [
@@ -148,9 +185,18 @@ async def test_exact_profile_hash_join_and_no_latest_long() -> None:
     ]
     short, long = await store.load_profile("synthetic", "s1", datetime.now(UTC))
     assert short and long is None
-    assert collection.find.call_args_list[0].args[0]["snapshot_id"] == "s1"
+    assert collection.find.call_args_list[0].args[0]["$and"] == [
+        {"$or": [{"profile_snapshot_id": "s1"}, {"snapshot_id": "s1"}]}
+    ]
     assert collection.find.call_args_list[1].args[0]["content_hash"] == "hash"
     assert collection.find.call_args_list[1].args[0]["uid"] == "synthetic"
+
+
+async def test_profile_lookup_rejects_ambiguous_ids() -> None:
+    store, collection = make_store([{"snapshot_id": "s1"}, {"profile_snapshot_id": "s1"}])
+    with pytest.raises(DataError, match="profile_snapshot_ambiguous"):
+        await store.load_profile("u", "s1", datetime.now(UTC))
+    assert collection.find.call_count == 1
 
 
 async def test_no_events_without_owned_sessions() -> None:

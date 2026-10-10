@@ -1,5 +1,7 @@
+import hashlib
+import json
 from copy import deepcopy
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from unittest.mock import AsyncMock
 
 import pytest
@@ -34,6 +36,13 @@ def service() -> tuple:
     store.list_sleep_episodes.return_value = []
     store.load_daily_metrics.return_value = []
     store.list_daily_sleep_reports.return_value = []
+    store.list_sessions.return_value = []
+    store.list_execution_events.return_value = {
+        "operations": [],
+        "downlinks": [],
+        "events": [],
+        "session_payloads": [],
+    }
     store.load_permissions.return_value = {
         "status": "active",
         "privacy_switches": {
@@ -48,7 +57,7 @@ def service() -> tuple:
     return GenerationDataService(None, settings, store), store
 
 
-async def test_build_facts_projects_daily_report_vitals_with_provenance() -> None:
+async def test_build_facts_projects_daily_report_vitals_with_report_provenance() -> None:
     svc, store = service()
     store.list_sleep_episodes.return_value = []
     store.load_daily_metrics.return_value = []
@@ -58,7 +67,10 @@ async def test_build_facts_projects_daily_report_vitals_with_provenance() -> Non
             "reports_id": "report-20261007",
             "record_date": "2026-10-07",
             "language": "en",
-            "overnight_vitals": {"hr": {"value": 61.5}, "br": {"value": 14.25}},
+            "overnight_vitals": {
+                "hr": {"value": 61.5},
+                "br": {"value": 14.25},
+            },
         }
     ]
     from app.server.somni.facts.time import resolve_scope
@@ -68,9 +80,13 @@ async def test_build_facts_projects_daily_report_vitals_with_provenance() -> Non
         "u", resolve_scope("2026-10-08", "+00:00"), datetime(2026, 10, 8, tzinfo=UTC), manifest
     )
 
+    assert facts["status"] == "partial"
     series = {item["metric_id"]: item for item in facts["value"]["series"]}
     assert series["sleep_hr_mean_bpm"]["daily"][0]["value"] == 61.5
     assert series["sleep_resp_mean_per_min"]["daily"][0]["value"] == 14.25
+    assert series["sleep_hr_mean_bpm"]["daily"][0]["source_refs"] == [
+        "sleep_reports:report-20261007"
+    ]
     assert manifest["sleep_reports:report-20261007"]["record_id"] == "report-20261007"
 
 
@@ -212,7 +228,27 @@ async def test_previous_blueprint_is_loaded_by_exact_generation_id() -> None:
     store.load_blueprint.assert_awaited_once()
 
 
-async def test_target_plan_ids_are_resolved_from_active_pointer() -> None:
+@pytest.mark.parametrize(
+    "source,field,value,reason",
+    [
+        ("", "", None, ""),
+        ("pointer", "date", None, "active_plan_date_mismatch"),
+        ("pointer", "version", True, "active_plan_link_incomplete"),
+        ("generation", "status", None, "active_plan_generation_not_committed"),
+        ("generation", "status", "pending", "active_plan_generation_not_committed"),
+        ("generation", "generation_id", "other", "active_plan_generation_mismatch"),
+        ("snapshot", "version", None, "active_plan_snapshot_version_mismatch"),
+        ("snapshot", "version", True, "active_plan_snapshot_version_mismatch"),
+        ("snapshot", "version", 3, "active_plan_snapshot_version_mismatch"),
+        ("snapshot", "status", None, "active_plan_snapshot_not_active"),
+        ("snapshot", "status", "disabled", "active_plan_snapshot_not_active"),
+        ("snapshot", "plan_start_local_date", None, "active_plan_date_mismatch"),
+        ("snapshot", "plan_start_local_date", "2026-09-24", "active_plan_date_mismatch"),
+    ],
+)
+async def test_target_plan_ids_are_resolved_from_active_pointer(
+    source, field, value, reason
+) -> None:
     svc, store = service()
     store.load_active_plan.return_value = [
         {
@@ -242,6 +278,18 @@ async def test_target_plan_ids_are_resolved_from_active_pointer() -> None:
         "plan_start_local_date": "2026-09-23",
         "phases": [],
     }
+    if source:
+        records = {
+            "pointer": store.load_active_plan.return_value[0],
+            "generation": store.load_blueprint.return_value,
+            "snapshot": store.load_plan_revision.return_value,
+        }
+        records[source][field] = value
+        with pytest.raises(DataError, match=reason):
+            await svc.get_plan_inputs(
+                "u", "request", inline_profile=profile(), target_local_date="2026-09-23"
+            )
+        return
     result = await svc.get_plan_inputs(
         "u", "request", inline_profile=profile(), target_local_date="2026-09-23"
     )
@@ -254,6 +302,321 @@ async def test_target_plan_ids_are_resolved_from_active_pointer() -> None:
     )
     assert target_only["data"]["target_plan"]["value"]["plan_id"] == "plan-from-middleware"
     assert target_only["data"]["profile"]["status"] == "not_found"
+    assert store.load_profile.await_args.args[3] == "2026-09-23"
+
+
+async def test_weekly_scope_resolves_previous_blueprint_from_effective_plan() -> None:
+    svc, store = service()
+    store.load_latest_active_plan_date_before.return_value = "2026-10-04"
+    store.load_active_plan.return_value = [
+        {
+            "uid": "u",
+            "date": "2026-10-04",
+            "plan_id": "plan-20261004",
+            "version": 1,
+            "weekly_generation_id": "week-prior",
+            "generation_id": "daily-generation",
+        }
+    ]
+    store.load_blueprint.return_value = {
+        "uid": "u",
+        "generation_id": "week-prior",
+        "status": "committed",
+        "generated_at": "2026-10-04T02:00:00Z",
+        "raw_plan": {"uid": "u"},
+        "decision_record": {},
+        "output_plans": [
+            {
+                "plan_id": f"plan-{(date(2026, 10, 4) - timedelta(days=offset)):%Y%m%d}",
+                "date": (date(2026, 10, 4) - timedelta(days=offset)).isoformat(),
+            }
+            for offset in range(6, -1, -1)
+        ],
+    }
+    store.load_plan_revision.return_value = {
+        "uid": "u",
+        "plan_id": "plan-20261004",
+        "version": 1,
+        "snapshot_id": "snapshot-20261004",
+        "content_hash": "hash-20261004",
+        "status": "active",
+        "plan_start_local_date": "2026-10-04",
+        "phases": [],
+    }
+
+    result = await svc.get_plan_inputs(
+        "u",
+        "weekly-request",
+        scope="weekly",
+        target_local_date="2026-10-05",
+        timezone_offset="+08:00",
+    )
+
+    assert result["data"]["previous_blueprint"]["value"]["generation_id"] == "week-prior"
+    store.load_latest_active_plan_date_before.assert_awaited_once_with(
+        "u", "2026-10-05", store.load_latest_active_plan_date_before.await_args.args[2]
+    )
+
+
+async def test_weekly_scope_allows_cold_start_only_without_plan_history() -> None:
+    svc, store = service()
+    store.load_latest_active_plan_date_before.return_value = None
+    store.has_plan_history_before.return_value = False
+
+    result = await svc.get_plan_inputs(
+        "u",
+        "weekly-first",
+        scope="weekly",
+        target_local_date="2026-10-05",
+        timezone_offset="+08:00",
+    )
+
+    assert result["data"]["previous_blueprint"]["status"] == "not_found"
+    store.load_blueprint.assert_not_awaited()
+
+
+async def test_weekly_scope_rejects_missing_blueprint_when_plan_history_exists() -> None:
+    svc, store = service()
+    store.load_latest_active_plan_date_before.return_value = None
+    store.has_plan_history_before.return_value = True
+
+    with pytest.raises(DataError, match="previous_week_blueprint_missing"):
+        await svc.get_plan_inputs(
+            "u",
+            "weekly-gap",
+            scope="weekly",
+            target_local_date="2026-10-05",
+            timezone_offset="+08:00",
+        )
+
+    store.load_blueprint.assert_not_awaited()
+
+
+async def test_pre_unwind_realtime_allows_missing_session() -> None:
+    svc, store = service()
+    result = await svc.get_plan_inputs(
+        "u",
+        "prebed-request",
+        scope="realtime",
+        timezone_offset="+08:00",
+        target_local_date="2026-10-08",
+        trigger_type="pre_unwind_health",
+        event_id="health-delta-1",
+    )
+    assert result["data"]["execution_state"]["status"] == "partial"
+    assert result["data"]["execution_state"]["missing_reasons"] == [
+        "session_start_state_unverified"
+    ]
+    store.list_sessions.assert_not_awaited()
+
+
+async def test_unwind_realtime_does_not_invent_execution_revision() -> None:
+    svc, store = service()
+    session = {
+        "uid": "u",
+        "session_id": "sleep-1",
+        "plan_id": "plan-1",
+        "plan_version": 2,
+        "state": "running",
+        "phase": "Unwind",
+        "node_index": 0,
+        "next_unexecuted_node_key": "unwind-next",
+        "received_at": "2026-10-08T09:00:00Z",
+    }
+    store.list_sessions.return_value = [session]
+    store.list_execution_events.return_value["events"] = [
+        {"event_id": "anomaly-1", "type": "radar_anomaly"}
+    ]
+    target = {
+        "status": "ok",
+        "value": {
+            "plan_id": "plan-1",
+            "version": 2,
+            "phases": [{"phase": "Unwind", "nodes": [{"node_key": "unwind-next"}]}],
+        },
+    }
+    first = await svc._runtime_execution_state(
+        "u", "sleep-1", target, utc_now(), {}, trigger_type="unwind_fusion", event_id="anomaly-1"
+    )
+    assert first["status"] == "partial"
+    assert first["missing_reasons"] == ["authoritative_execution_boundary_unavailable"]
+    assert "value" not in first
+
+    session.pop("next_unexecuted_node_key")
+    incomplete = await svc._runtime_execution_state(
+        "u", "sleep-1", target, utc_now(), {}, trigger_type="unwind_fusion", event_id="anomaly-1"
+    )
+    assert incomplete["status"] == "partial"
+    assert incomplete["missing_reasons"] == ["execution_apply_boundary_unverified"]
+
+
+async def test_realtime_execution_requires_health_consent() -> None:
+    svc, store = service()
+    store.load_permissions.return_value["privacy_switches"]["health"] = False
+    svc._target_plan = AsyncMock(return_value={"status": "ok", "value": {}})
+
+    result = await svc.get_plan_inputs(
+        "u",
+        "consent-denied",
+        scope="realtime",
+        trigger_type="unwind_fusion",
+        event_id="health-delta",
+        session_id="sleep-1",
+        target_local_date="2026-10-08",
+        timezone_offset="+08:00",
+    )
+
+    assert result["data"]["execution_state"]["status"] == "unsupported"
+    assert result["data"]["execution_state"]["missing_reasons"] == ["consent_not_granted"]
+    store.list_sessions.assert_not_awaited()
+    store.list_execution_events.assert_not_awaited()
+
+
+async def test_realtime_execution_cursor_requires_explicit_unexecuted_node() -> None:
+    svc, store = service()
+    session = {
+        "uid": "u",
+        "session_id": "sleep-1",
+        "plan_id": "plan-1",
+        "plan_version": 2,
+        "state": "running",
+        "phase": "Unwind",
+        "node_index": 0,
+        "next_unexecuted_node_key": "unwind-next",
+        "received_at": "2026-10-08T09:00:00Z",
+    }
+    store.list_sessions.return_value = [session]
+    store.list_execution_events.return_value["events"] = [
+        {"event_id": "anomaly-1", "type": "radar_anomaly"}
+    ]
+    target_plan = {
+        "status": "ok",
+        "value": {
+            "plan_id": "plan-1",
+            "version": 2,
+            "phases": [{"phase": "Unwind", "nodes": [{"node_key": "unwind-next"}]}],
+        },
+    }
+
+    result = await svc._runtime_execution_state(
+        "u",
+        "sleep-1",
+        target_plan,
+        utc_now(),
+        {},
+        trigger_type="unwind_fusion",
+        event_id="anomaly-1",
+    )
+    assert result["status"] == "partial"
+    assert result["missing_reasons"] == ["authoritative_execution_boundary_unavailable"]
+    assert "value" not in result
+
+    del session["next_unexecuted_node_key"]
+    partial = await svc._runtime_execution_state(
+        "u",
+        "sleep-1",
+        target_plan,
+        utc_now(),
+        {},
+        trigger_type="unwind_fusion",
+        event_id="anomaly-1",
+    )
+    assert partial["status"] == "partial"
+    assert partial["missing_reasons"] == ["execution_apply_boundary_unverified"]
+
+
+async def test_profile_inputs_reads_exact_answer_at_supplied_cutoff() -> None:
+    svc, store = service()
+    cutoff = utc_now()
+    store.load_questionnaires.return_value = [
+        {
+            "uid": "u",
+            "answer_id": "answer-exact",
+            "survey_code": "initial",
+            "survey_version": "v1",
+            "answers": [],
+        }
+    ]
+    await svc.get_profile_inputs(
+        "u",
+        "profile-request",
+        purpose="initial",
+        review_end_local_date="2026-09-24",
+        timezone_offset="+08:00",
+        requested_sections=["questionnaires"],
+        answer_id="answer-exact",
+        data_cutoff_at_utc=timestamp(cutoff),
+    )
+    store.load_questionnaires.assert_awaited_once_with("u", cutoff, "answer-exact")
+
+
+@pytest.mark.parametrize("current_format", [False, True])
+async def test_profile_refresh_reads_saved_pair_and_exact_sources(current_format) -> None:
+    svc, store = service()
+    short = profile()
+    short["snapshot_id"] = "snapshot-current"
+    long = {
+        "uid": "u",
+        "schema_version": short["schema_version"],
+        "content_hash": short["long_term_content_hash"],
+        "long_term_profile": short["long_term_profile"],
+    }
+    if current_format:
+        body = {"basic_info": {"age": 30}, "fraction": 0.25}
+        content_hash = (
+            "sha256:"
+            + hashlib.sha256(
+                json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()
+        )
+        short.update(
+            schema_version="0.0.1",
+            profile_snapshot_id=short.pop("snapshot_id"),
+            long_term_content_hash=content_hash,
+        )
+        long.update(
+            schema_version="0.0.1",
+            content_hash=content_hash,
+            long_term_profile=body,
+            status="valid",
+        )
+    store.load_profile.return_value = (short, long)
+
+    result = await svc.get_profile_inputs(
+        "u",
+        "refresh-request",
+        purpose="profile_refresh",
+        review_end_local_date="2026-10-09",
+        timezone_offset="+08:00",
+        requested_sections=["prior_profile", "questionnaires", "facts"],
+    )
+
+    assert result["data"]["prior_profile"]["status"] == "ok"
+    assert result["data"]["prior_profile"]["value"]["profile_snapshot_id"] == "snapshot-current"
+    assert (
+        result["data"]["prior_profile"]["value"]["long_term_content_hash"]
+        == short["long_term_content_hash"]
+    )
+    assert result["data"]["questionnaires"]["status"] == "not_found"
+    assert result["data"]["facts"]["status"] == "partial"
+    store.load_profile.assert_awaited_once_with(
+        "u", "", store.load_profile.await_args.args[2], "2026-10-08"
+    )
+
+
+@pytest.mark.parametrize("selector", ["previous_profile_snapshot_id", "review_generation_id"])
+async def test_profile_refresh_rejects_caller_selected_history(selector) -> None:
+    svc, store = service()
+    with pytest.raises(DataError, match="profile_refresh_selectors_not_allowed"):
+        await svc.get_profile_inputs(
+            "u",
+            "refresh",
+            purpose="profile_refresh",
+            review_end_local_date="2026-10-09",
+            timezone_offset="+08:00",
+            **{selector: "caller-selected"},
+        )
+    store.load_permissions.assert_not_awaited()
 
 
 async def test_feedback_observation_is_exact_and_date_scoped() -> None:
@@ -358,9 +721,6 @@ async def test_explicit_id_missing_and_consent() -> None:
     store.reset_mock()
     store.load_permissions.return_value = {"status": "active", "privacy_switches": {}}
     result = await svc.get_plan_inputs("u", "req", profile_snapshot_id="missing")
-    store.list_sleep_episodes.return_value = []
-    store.load_daily_metrics.return_value = []
-    store.list_daily_sleep_reports.return_value = []
     assert result["data"]["profile"]["status"] == "unsupported"
     store.load_profile.assert_not_called()
 
@@ -424,21 +784,6 @@ async def test_exact_original_final_diff_and_revert() -> None:
         "u", session, datetime(2026, 9, 21, tzinfo=UTC), {}, generation
     )
     assert result["user_adjusted"] is True and result["diff"] == []
-
-
-async def test_profile_refresh_purpose_is_accepted() -> None:
-    svc, store = service()
-    result = await svc.get_profile_inputs(
-        "u",
-        "refresh-request",
-        purpose="profile_refresh",
-        review_end_local_date="2026-10-08",
-        timezone_offset="+00:00",
-        requested_sections=["prior_profile"],
-    )
-
-    assert result["data"]["prior_profile"]["status"] == "not_found"
-    store.load_profile.assert_awaited_once()
 
 
 async def test_weekly_requires_generation_before_queries() -> None:

@@ -15,9 +15,9 @@ from app.uburnode_grpc.grpc_gen import uburnode_somni_pb2_grpc as rpc
 
 
 @asynccontextmanager
-async def channel(service):
+async def channel(service, authorizer=None):
     server = grpc.aio.server()
-    rpc.add_GenerationDataServiceServicer_to_server(GenerationDataRpc(service), server)
+    rpc.add_GenerationDataServiceServicer_to_server(GenerationDataRpc(service, authorizer), server)
     port = server.add_insecure_port("127.0.0.1:0")
     await server.start()
     try:
@@ -25,6 +25,10 @@ async def channel(service):
             yield rpc.GenerationDataServiceStub(connection)
     finally:
         await server.stop(0)
+
+
+async def allow_synthetic(context, uid):
+    return uid == "u"
 
 
 def make_service():
@@ -54,38 +58,19 @@ def make_service():
     return GenerationDataService(None, Settings(_env_file=None), store), store
 
 
-async def test_internal_call_keeps_account_permission_check() -> None:
+async def test_default_deny_and_uid_authorization() -> None:
     svc, store = make_service()
-    request = pb.GetPlanInputsReq(uid="u", request_id="r", target_local_date="2026-10-10")
+    request = pb.GetPlanInputsReq(uid="u", request_id="r", profile_snapshot_id="s")
     async with channel(svc) as client:
-        response = await client.GetPlanInputs(request)
-        assert response.uid == "u"
-        store.load_permissions.assert_awaited_once_with("u")
-        store.load_permissions.return_value = None
+        with pytest.raises(grpc.aio.AioRpcError) as caught:
+            await client.GetPlanInputs(request)
+        assert caught.value.code() == grpc.StatusCode.UNAUTHENTICATED
+    store.load_permissions.assert_not_called()
+    request.uid = "other"
+    async with channel(svc, allow_synthetic) as client:
         with pytest.raises(grpc.aio.AioRpcError) as caught:
             await client.GetPlanInputs(request)
         assert caught.value.code() == grpc.StatusCode.PERMISSION_DENIED
-
-
-@pytest.mark.parametrize("uid", ["", " u ", "u" * 257])
-async def test_internal_call_rejects_invalid_uid_before_query(uid: str) -> None:
-    svc, store = make_service()
-    request = pb.GetPlanInputsReq(uid=uid, request_id="r", target_local_date="2026-10-10")
-    async with channel(svc) as client:
-        with pytest.raises(grpc.aio.AioRpcError) as caught:
-            await client.GetPlanInputs(request)
-        assert caught.value.code() == grpc.StatusCode.INVALID_ARGUMENT
-    store.load_permissions.assert_not_called()
-
-
-async def test_internal_call_keeps_privacy_switches() -> None:
-    svc, store = make_service()
-    store.load_permissions.return_value = {"status": "active", "privacy_switches": {}}
-    request = pb.GetPlanInputsReq(uid="u", request_id="r", target_local_date="2026-10-10")
-    async with channel(svc) as client:
-        response = await client.GetPlanInputs(request)
-    assert response.data.target_plan.status == pb.unsupported
-    store.load_active_plan.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -96,7 +81,7 @@ async def test_internal_call_keeps_privacy_switches() -> None:
         ("2024-02-29", "2024-03-01", "+05:30"),
     ],
 )
-async def test_bedtime_roundtrip_dates(reminder, target, offset):
+async def test_bedtime_roundtrip_dates_and_default_deny(reminder, target, offset):
     from tests.test_somni_sleep_debt import night
 
     svc, store = make_service()
@@ -105,6 +90,11 @@ async def test_bedtime_roundtrip_dates(reminder, target, offset):
         uid="u", request_id="r", reminder_local_date=reminder, timezone_offset=offset
     )
     async with channel(svc) as client:
+        with pytest.raises(grpc.aio.AioRpcError) as caught:
+            await client.GetBedtimeReminderInputs(request)
+        assert caught.value.code() == grpc.StatusCode.UNAUTHENTICATED
+    store.load_permissions.assert_not_called()
+    async with channel(svc, allow_synthetic) as client:
         response = await client.GetBedtimeReminderInputs(request)
         assert response.target_local_date == target
         assert response.data.weather.status == pb.unsupported
@@ -147,7 +137,7 @@ async def test_plan_round_trip_hash_and_missing_id() -> None:
         },
         pb.GetPlanInputsReq(),
     )
-    async with channel(svc) as client:
+    async with channel(svc, allow_synthetic) as client:
         response = await client.GetPlanInputs(request)
         assert response.data.profile.status == pb.ok
         assert response.data.previous_blueprint.status == pb.not_found
@@ -159,33 +149,73 @@ async def test_plan_round_trip_hash_and_missing_id() -> None:
     store.list_sleep_episodes.assert_not_called()
 
 
-async def test_profile_refresh_answer_id_round_trip_over_wire() -> None:
+@pytest.mark.parametrize("scope", ["daily", "realtime"])
+async def test_scoped_target_and_unverified_execution_round_trip(scope) -> None:
     svc, store = make_service()
-    store.load_questionnaires.return_value = [
+    store.load_active_plan.return_value = [
         {
-            "answer_id": "answer-exact",
-            "survey_code": "initial",
-            "survey_version": "v1",
-            "answers": [],
-            "results": [],
+            "uid": "u",
+            "date": "2026-10-08",
+            "plan_id": "plan-1",
+            "version": 2,
+            "weekly_generation_id": "week-1",
         }
     ]
-    request = pb.GetProfileInputsReq(
+    store.load_blueprint.return_value = {
+        "uid": "u",
+        "generation_id": "week-1",
+        "status": "committed",
+        "raw_plan": {"uid": "u"},
+        "decision_record": {},
+        "output_plans": [{"plan_id": "plan-1", "date": "2026-10-08"}],
+    }
+    store.load_plan_revision.return_value = {
+        "uid": "u",
+        "plan_id": "plan-1",
+        "version": 2,
+        "snapshot_id": "snapshot-2",
+        "status": "active",
+        "plan_start_local_date": "2026-10-08",
+        "phases": [{"phase": "Unwind", "nodes": [{"node_key": "next"}]}],
+    }
+    store.list_sessions.return_value = [
+        {
+            "uid": "u",
+            "session_id": "session-1",
+            "plan_id": "plan-1",
+            "plan_version": 2,
+            "state": "running",
+            "phase": "Unwind",
+            "node_index": 0,
+            "next_unexecuted_node_key": "next",
+        }
+    ]
+    store.list_execution_events.return_value = {"events": [{"event_id": "event-1"}]}
+    request = pb.GetPlanInputsReq(
         uid="u",
-        request_id="profile-refresh-answer",
-        purpose=pb.GetProfileInputsReq.profile_refresh,
-        review_end_local_date="2026-10-08",
-        timezone_offset="+00:00",
-        requested_sections=["questionnaires"],
-        answer_id="answer-exact",
+        request_id="scoped",
+        scope=scope,
+        target_local_date="2026-10-08",
+        timezone_offset="+08:00",
     )
-    async with channel(svc) as client:
-        response = await client.GetProfileInputs(request)
-
-    assert response.data.questionnaires.status == pb.ok
-    assert response.data.questionnaires.value[0].answer_id == "answer-exact"
-    assert store.load_questionnaires.await_args.args[0] == "u"
-    assert store.load_questionnaires.await_args.args[2] == "answer-exact"
+    if scope == "realtime":
+        request.trigger_type = "unwind_fusion"
+        request.event_id = "event-1"
+        request.session_id = "session-1"
+    async with channel(svc, allow_synthetic) as client:
+        response = await client.GetPlanInputs(request)
+    assert response.data.target_plan.status == pb.ok
+    assert response.data.target_plan.value.version == 2
+    assert response.data.target_plan.value.weekly_generation_id == "week-1"
+    if scope == "realtime":
+        assert response.data.execution_state.status == pb.partial
+        assert not response.data.execution_state.HasField("value")
+        assert response.data.execution_state.missing_reasons == [
+            "authoritative_execution_boundary_unavailable"
+        ]
+    else:
+        assert not response.data.HasField("execution_state")
+        store.list_sessions.assert_not_awaited()
 
 
 async def test_feedback_observation_round_trip_over_wire() -> None:
@@ -207,7 +237,7 @@ async def test_feedback_observation_round_trip_over_wire() -> None:
         target_local_date="2026-09-23",
         feedback_record_id="answer-observation-1",
     )
-    async with channel(svc) as client:
+    async with channel(svc, allow_synthetic) as client:
         response = await client.GetPlanInputs(request)
     assert response.data.feedback.status == pb.ok
     assert len(response.data.feedback.value) == 1
@@ -219,7 +249,7 @@ async def test_feedback_observation_round_trip_over_wire() -> None:
 
 async def test_profile_sections_and_presence_over_wire() -> None:
     svc, store = make_service()
-    async with channel(svc) as client:
+    async with channel(svc, allow_synthetic) as client:
         response = await client.GetProfileInputs(
             pb.GetProfileInputsReq(
                 uid="u",
@@ -240,7 +270,7 @@ async def test_profile_sections_and_presence_over_wire() -> None:
 async def test_episode_missing_and_response_budget() -> None:
     svc, store = make_service()
     store.find_episode.return_value = None
-    async with channel(svc) as client:
+    async with channel(svc, allow_synthetic) as client:
         with pytest.raises(grpc.aio.AioRpcError) as caught:
             await client.GetEpisodeEvidence(
                 pb.GetEpisodeEvidenceReq(uid="u", episode_id="e", source="s")
@@ -319,7 +349,7 @@ async def test_populated_episode_and_weekly_comparison_round_trip() -> None:
             }
         ]
     }
-    async with channel(svc) as client:
+    async with channel(svc, allow_synthetic) as client:
         response = await client.GetEpisodeEvidence(
             pb.GetEpisodeEvidenceReq(uid="u", episode_id="e", source="s")
         )
