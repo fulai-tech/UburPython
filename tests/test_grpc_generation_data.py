@@ -149,6 +149,75 @@ async def test_plan_round_trip_hash_and_missing_id() -> None:
     store.list_sleep_episodes.assert_not_called()
 
 
+@pytest.mark.parametrize("scope", ["daily", "realtime"])
+async def test_scoped_target_and_unverified_execution_round_trip(scope) -> None:
+    svc, store = make_service()
+    store.load_active_plan.return_value = [
+        {
+            "uid": "u",
+            "date": "2026-10-08",
+            "plan_id": "plan-1",
+            "version": 2,
+            "weekly_generation_id": "week-1",
+        }
+    ]
+    store.load_blueprint.return_value = {
+        "uid": "u",
+        "generation_id": "week-1",
+        "status": "committed",
+        "raw_plan": {"uid": "u"},
+        "decision_record": {},
+        "output_plans": [{"plan_id": "plan-1", "date": "2026-10-08"}],
+    }
+    store.load_plan_revision.return_value = {
+        "uid": "u",
+        "plan_id": "plan-1",
+        "version": 2,
+        "snapshot_id": "snapshot-2",
+        "status": "active",
+        "plan_start_local_date": "2026-10-08",
+        "phases": [{"phase": "Unwind", "nodes": [{"node_key": "next"}]}],
+    }
+    store.list_sessions.return_value = [
+        {
+            "uid": "u",
+            "session_id": "session-1",
+            "plan_id": "plan-1",
+            "plan_version": 2,
+            "state": "running",
+            "phase": "Unwind",
+            "node_index": 0,
+            "next_unexecuted_node_key": "next",
+        }
+    ]
+    store.list_execution_events.return_value = {"events": [{"event_id": "event-1"}]}
+    request = pb.GetPlanInputsReq(
+        uid="u",
+        request_id="scoped",
+        scope=scope,
+        target_local_date="2026-10-08",
+        timezone_offset="+08:00",
+    )
+    if scope == "realtime":
+        request.trigger_type = "unwind_fusion"
+        request.event_id = "event-1"
+        request.session_id = "session-1"
+    async with channel(svc, allow_synthetic) as client:
+        response = await client.GetPlanInputs(request)
+    assert response.data.target_plan.status == pb.ok
+    assert response.data.target_plan.value.version == 2
+    assert response.data.target_plan.value.weekly_generation_id == "week-1"
+    if scope == "realtime":
+        assert response.data.execution_state.status == pb.partial
+        assert not response.data.execution_state.HasField("value")
+        assert response.data.execution_state.missing_reasons == [
+            "authoritative_execution_boundary_unavailable"
+        ]
+    else:
+        assert not response.data.HasField("execution_state")
+        store.list_sessions.assert_not_awaited()
+
+
 async def test_feedback_observation_round_trip_over_wire() -> None:
     svc, store = make_service()
     store.load_feedback_observation.return_value = {

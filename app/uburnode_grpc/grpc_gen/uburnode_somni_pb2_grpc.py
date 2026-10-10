@@ -5,7 +5,7 @@ import warnings
 
 from . import uburnode_somni_pb2 as uburnode__somni__pb2
 
-GRPC_GENERATED_VERSION = '1.80.0'
+GRPC_GENERATED_VERSION = '1.81.0'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -25,7 +25,7 @@ if _version_not_supported:
     )
 
 
-class QuizServiceStub(object):
+class QuizServiceStub:
     """Missing associated documentation comment in .proto file."""
 
     def __init__(self, channel):
@@ -41,7 +41,7 @@ class QuizServiceStub(object):
                 _registered_method=True)
 
 
-class QuizServiceServicer(object):
+class QuizServiceServicer:
     """Missing associated documentation comment in .proto file."""
 
     def GetAnswer(self, request, context):
@@ -66,7 +66,7 @@ def add_QuizServiceServicer_to_server(servicer, server):
 
 
  # This class is part of an EXPERIMENTAL API.
-class QuizService(object):
+class QuizService:
     """Missing associated documentation comment in .proto file."""
 
     @staticmethod
@@ -97,7 +97,7 @@ class QuizService(object):
             _registered_method=True)
 
 
-class ReportServiceStub(object):
+class ReportServiceStub:
     """Missing associated documentation comment in .proto file."""
 
     def __init__(self, channel):
@@ -143,7 +143,7 @@ class ReportServiceStub(object):
                 _registered_method=True)
 
 
-class ReportServiceServicer(object):
+class ReportServiceServicer:
     """Missing associated documentation comment in .proto file."""
 
     def GetSummary(self, request, context):
@@ -234,7 +234,7 @@ def add_ReportServiceServicer_to_server(servicer, server):
 
 
  # This class is part of an EXPERIMENTAL API.
-class ReportService(object):
+class ReportService:
     """Missing associated documentation comment in .proto file."""
 
     @staticmethod
@@ -571,7 +571,7 @@ class WeatherService:
             _registered_method=True)
 
 
-class AudioServiceStub(object):
+class AudioServiceStub:
     """Missing associated documentation comment in .proto file."""
 
     def __init__(self, channel):
@@ -602,7 +602,7 @@ class AudioServiceStub(object):
                 _registered_method=True)
 
 
-class AudioServiceServicer(object):
+class AudioServiceServicer:
     """Missing associated documentation comment in .proto file."""
 
     def GetAudio(self, request, context):
@@ -660,7 +660,7 @@ def add_AudioServiceServicer_to_server(servicer, server):
 
 
  # This class is part of an EXPERIMENTAL API.
-class AudioService(object):
+class AudioService:
     """Missing associated documentation comment in .proto file."""
 
     @staticmethod
@@ -772,7 +772,7 @@ class AudioService(object):
             _registered_method=True)
 
 
-class ProfileServiceStub(object):
+class ProfileServiceStub:
     """Missing associated documentation comment in .proto file."""
 
     def __init__(self, channel):
@@ -788,7 +788,7 @@ class ProfileServiceStub(object):
                 _registered_method=True)
 
 
-class ProfileServiceServicer(object):
+class ProfileServiceServicer:
     """Missing associated documentation comment in .proto file."""
 
     def GetUserProfile(self, request, context):
@@ -813,7 +813,7 @@ def add_ProfileServiceServicer_to_server(servicer, server):
 
 
  # This class is part of an EXPERIMENTAL API.
-class ProfileService(object):
+class ProfileService:
     """Missing associated documentation comment in .proto file."""
 
     @staticmethod
@@ -844,7 +844,7 @@ class ProfileService(object):
             _registered_method=True)
 
 
-class GenerationDataServiceStub(object):
+class GenerationDataServiceStub:
     """Missing associated documentation comment in .proto file."""
 
     def __init__(self, channel):
@@ -875,7 +875,7 @@ class GenerationDataServiceStub(object):
                 _registered_method=True)
 
 
-class GenerationDataServiceServicer(object):
+class GenerationDataServiceServicer:
     """Missing associated documentation comment in .proto file."""
 
     def GetProfileInputs(self, request, context):
@@ -933,7 +933,7 @@ def add_GenerationDataServiceServicer_to_server(servicer, server):
 
 
  # This class is part of an EXPERIMENTAL API.
-class GenerationDataService(object):
+class GenerationDataService:
     """Missing associated documentation comment in .proto file."""
 
     @staticmethod

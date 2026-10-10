@@ -155,12 +155,17 @@ class FactsStore:
             "sleep_date_local state received_at evidence_complete",
         )
 
-    async def load_questionnaires(self, uid: str, read_at: datetime) -> list[dict]:
+    async def load_questionnaires(
+        self, uid: str, read_at: datetime, answer_id: str = ""
+    ) -> list[dict]:
+        if answer_id and (answer_id != answer_id.strip() or len(answer_id) > 256):
+            raise DataError("INVALID_ARGUMENT", "invalid_answer_id")
+        query = {"uid": uid, "is_completed": True, "completed_at": {"$lte": read_at}}
+        if answer_id:
+            query["answer_id"] = answer_id
         answers = await self._read(
             "answers",
-            self._visible(
-                {"uid": uid, "is_completed": True, "completed_at": {"$lte": read_at}}, read_at
-            ),
+            self._visible(query, read_at),
             "answer_id survey_code survey_version answer_revision completed_at received_at answers",
             [("completed_at", -1), ("answer_revision", -1), ("_id", -1)],
         )
@@ -190,7 +195,9 @@ class FactsStore:
     ) -> tuple[dict | None, dict | None]:
         query = {"uid": uid}
         if snapshot_id:
-            query["snapshot_id"] = snapshot_id
+            query["$and"] = [
+                {"$or": [{"profile_snapshot_id": snapshot_id}, {"snapshot_id": snapshot_id}]}
+            ]
         else:
             query.update(
                 {
@@ -202,14 +209,22 @@ class FactsStore:
         rows = await self._read(
             "user_profiles_short_terms",
             self._visible(query, read_at),
-            "uid snapshot_id snapshot_revision schema_version content_hash long_term_content_hash "
+            "uid profile_snapshot_id snapshot_id snapshot_revision schema_version "
+            "content_hash long_term_content_hash "
             "record_date data_cutoff_at generated_at status short_term_profile rolling_baseline "
             "profile_quality based_on received_at",
             [("record_date", -1), ("snapshot_revision", -1), ("_id", -1)],
-            limit=1,
+            limit=2,
         )
         if not rows:
             return None, None
+        if len(rows) > 1 and (
+            snapshot_id
+            or all(
+                rows[0].get(key) == rows[1].get(key) for key in ("record_date", "snapshot_revision")
+            )
+        ):
+            raise DataError("FAILED_PRECONDITION", "profile_snapshot_ambiguous")
         short = rows[0]
         if not short.get("long_term_content_hash") or not short.get("schema_version"):
             return short, None
@@ -223,9 +238,11 @@ class FactsStore:
                 },
                 read_at,
             ),
-            "uid schema_version content_hash long_term_profile received_at",
-            limit=1,
+            "uid schema_version content_hash status long_term_profile received_at",
+            limit=2,
         )
+        if len(long_rows) > 1:
+            raise DataError("FAILED_PRECONDITION", "long_term_profile_ambiguous")
         return short, long_rows[0] if long_rows else None
 
     async def load_blueprint(self, uid: str, generation_id: str, read_at: datetime) -> dict | None:
@@ -249,6 +266,38 @@ class FactsStore:
             [("version", -1), ("_id", -1)],
             limit=2,
         )
+
+    async def load_latest_active_plan_date_before(
+        self, uid: str, target_date: str, read_at: datetime
+    ) -> str | None:
+        """Find the newest active target date strictly before a weekly cycle."""
+        rows = await self._read(
+            "plans",
+            self._visible({"uid": uid, "date": {"$lt": target_date}, "status": "active"}, read_at),
+            "uid date",
+            [("date", -1), ("_id", -1)],
+            limit=1,
+        )
+        value = rows[0].get("date") if rows else None
+        return value if isinstance(value, str) and value < target_date else None
+
+    async def has_plan_history_before(self, uid: str, target_date: str, read_at: datetime) -> bool:
+        """Detect prior effective or disabled plans before allowing first-generation fallback."""
+        rows = await self._read(
+            "plans",
+            self._visible(
+                {
+                    "uid": uid,
+                    "date": {"$lt": target_date},
+                    "status": {"$in": ["active", "disabled"]},
+                },
+                read_at,
+            ),
+            "uid date status",
+            [("date", -1), ("_id", -1)],
+            limit=1,
+        )
+        return bool(rows)
 
     async def list_sleep_episodes(
         self, uid: str, start: str, end: str, read_at: datetime
@@ -286,6 +335,19 @@ class FactsStore:
                 {"user_id": uid, "status": 1, "activity_date": {"$gte": start, "$lt": end}}, read_at
             ),
             self._daily_fields(),
+        )
+
+    async def list_daily_sleep_reports(
+        self, uid: str, start: str, end: str, read_at: datetime
+    ) -> list[dict]:
+        return await self._read(
+            "sleep_reports",
+            self._visible(
+                {"uid": uid, "record_date": {"$gte": start, "$lt": end}},
+                read_at,
+            ),
+            "uid reports_id record_date language overnight_vitals",
+            [("record_date", 1), ("language", 1), ("reports_id", 1), ("_id", 1)],
         )
 
     async def load_upload_status(self, uid: str, ids: list[str], read_at: datetime) -> list[dict]:
@@ -403,7 +465,8 @@ class FactsStore:
             "sessions",
             self._visible(query, read_at),
             "uid session_id episode_id source generation_id plan_id plan_version started_at "
-            "ended_at state received_at evidence_complete adopted_versions device_id",
+            "ended_at state received_at evidence_complete adopted_versions device_id phase "
+            "node_index next_unexecuted_node_key",
             [("plan_id", 1), ("session_id", 1)],
         )
 
