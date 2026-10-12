@@ -238,9 +238,45 @@ cd /opt/uburpython && docker compose up -d --build
 
 GenerationData RPCs are internal interfaces for DeepHealth. They do not authenticate
 callers; network access to the Somni gRPC port must be restricted to trusted services.
-Do not expose this port publicly. The caller supplies the UID and is responsible
-for account and consent policy. The service preserves UID validation, record
-ownership, and data-integrity checks.
+Do not expose this port publicly. The caller supplies the UID. UID validation,
+record ownership, profile/hash links, plan versions, cursor signatures and query
+budgets remain enforced. Account eligibility and user consent are enforced by the
+caller; GenerationData does not require a `somni_users` record or `privacy_switches`.
+
+Original saved-profile body validation precedes computing the wire-envelope hash.
+For schema 0.0.1, hash the original long_term_profile with compact sorted-key UTF-8
+JSON, preserving arrays, nulls and numeric types, disallowing NaN, and prefix SHA256
+with `sha256:`. Other legacy formats retain their existing algorithm. DeepHealth
+produces this hash; writers must preserve the final body/hash pair. Matching stored
+hash references and status=valid do not prove body integrity. A body mismatch returns
+partial/long_term_hash_mismatch without value, not not_found or a repaired checksum.
+DeepHealth maps this stored conflict to nonretryable application409 for profile and
+plan requests; no historical-data repair or checksum rewrite is performed.
+The separately normalized GenerationProfile envelope checksum is not authentication
+and must never replace validation of the stored original body.
+
+`GetProfileInputs.data_cutoff_at_utc` applies to every requested section, including
+questionnaires, prior profiles, facts, observations, execution, plan comparisons
+and sleep debt. Omission uses the request start; future/invalid cutoffs are rejected.
+The envelope's `read_started_at_utc` is the actual read start, not the data cutoff.
+Availability timestamps must be trustworthy: missing receipt time yields a partial
+section with `source_time_unverified`; an overwritten or unresolved lifecycle
+version yields `historical_version_unavailable`, not a confirmed first generation.
+Queries remain `best_effort`, not a transactional/archival snapshot. Current
+records cannot reconstruct overwritten history. Database writers must preserve
+receipt times and immutable versions; this change does not create an archive.
+
+Mongo compatibility: when no `received_at` exists, the persisted `update_time`
+(otherwise `create_time`) is the current-version visibility boundary, not proof
+of network receipt. Later updates still cannot satisfy an earlier cutoff. Completed
+answer ObjectIds map to `answer_id`; completion time uses the persisted version
+time when absent. Missing optional survey versions are omitted without inventing
+values or rejecting the completed answer. `InputAnswer` adds stored `title` (field 8),
+`input_type` (field 9) and `extra_input` (field 10); fields 1-7 are unchanged, so older
+clients can ignore the additional fields. No database migration is required.
+Current `profile_snapshot_id` and legacy `snapshot_id` are supported,
+but conflicts/ambiguous exact matches are rejected. Schema0.0.1 keeps its original
+`sha256:` long-body digest; a digest mismatch remains an integrity failure.
 
 ## 测试
 

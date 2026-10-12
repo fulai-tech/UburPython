@@ -54,10 +54,11 @@ def make_service():
     return GenerationDataService(None, Settings(_env_file=None), store), store
 
 
-async def test_internal_call_does_not_apply_account_permission_check() -> None:
+@pytest.mark.parametrize("account", [None, {"status": "inactive"}])
+async def test_internal_call_does_not_require_account_record(account) -> None:
     svc, store = make_service()
+    store.load_permissions.return_value = account
     request = pb.GetPlanInputsReq(uid="u", request_id="r", target_local_date="2026-10-10")
-    store.load_permissions.return_value = None
     async with channel(svc) as client:
         response = await client.GetPlanInputs(request)
         assert response.uid == "u"
@@ -235,8 +236,15 @@ async def test_profile_refresh_answer_id_round_trip_over_wire() -> None:
         {
             "answer_id": "answer-exact",
             "survey_code": "initial",
-            "survey_version": "v1",
-            "answers": [],
+            "answers": [
+                {
+                    "question_id": "a0f15f100000000000000001",
+                    "title": "年龄段",
+                    "input_type": "radio",
+                    "value": "synthetic-age",
+                    "extra_input": "",
+                }
+            ],
             "results": [],
         }
     ]
@@ -254,6 +262,13 @@ async def test_profile_refresh_answer_id_round_trip_over_wire() -> None:
 
     assert response.data.questionnaires.status == pb.ok
     assert response.data.questionnaires.value[0].answer_id == "answer-exact"
+    assert response.data.questionnaires.value[0].survey_version == ""
+    answer = response.data.questionnaires.value[0].answers[0]
+    assert answer.question_id == "a0f15f100000000000000001"
+    assert answer.title == "年龄段"
+    assert answer.input_type == "radio"
+    assert answer.value.string_value == "synthetic-age"
+    assert answer.extra_input == ""
     assert store.load_questionnaires.await_args.args[0] == "u"
     assert store.load_questionnaires.await_args.args[2] == "answer-exact"
 

@@ -27,6 +27,7 @@ from app.server.somni.facts.models import (
     section,
     timestamp,
     utc_now,
+    validate_long_term_profile,
     validate_profile,
 )
 from app.server.somni.facts.sleep_debt import calculate_sleep_debt
@@ -155,6 +156,8 @@ class GenerationDataService:
         try:
             return await query()
         except DataError as exc:
+            if exc.reason in ("source_time_unverified", "historical_version_unavailable"):
+                return section(status="partial", reasons=[exc.reason])
             if exc.code in ("NOT_FOUND", "PERMISSION_DENIED", "RESOURCE_EXHAUSTED"):
                 raise
             return section(status="unavailable", reasons=[exc.reason])
@@ -192,6 +195,8 @@ class GenerationDataService:
         collect_source_refs(short, "profile_short", manifest)
         if long is None:
             return section(status="partial", reasons=["hash_linked_long_profile_missing"])
+        if short.get("schema_version") == "0.0.1" and long.get("status") != "valid":
+            return section(status="partial", reasons=["long_profile_not_valid"])
         collect_source_refs(long, "profile_long", manifest)
         current_id = short.get("profile_snapshot_id")
         legacy_id = short.get("snapshot_id")
@@ -221,8 +226,9 @@ class GenerationDataService:
             "long_term_content_hash"
         ):
             raise DataError("PERMISSION_DENIED", "profile_link_mismatch")
-        profile["content_hash"] = canonical_hash(profile)
         try:
+            validate_long_term_profile(profile)
+            profile["content_hash"] = canonical_hash(profile)
             profile = validate_profile(profile, uid)
         except DataError as exc:
             if exc.code == "PERMISSION_DENIED":
@@ -643,8 +649,8 @@ class GenerationDataService:
         values, reasons = [], []
         for row in rows:
             item = _pick(row, "answer_id survey_code survey_version")
-            if not all(item.get(key) for key in ("answer_id", "survey_code", "survey_version")):
-                reasons.append("questionnaire_version_missing")
+            if not all(item.get(key) for key in ("answer_id", "survey_code")):
+                reasons.append("questionnaire_identity_missing")
                 continue
             for source, target in (
                 ("completed_at", "completed_at_utc"),
@@ -655,7 +661,9 @@ class GenerationDataService:
                     item[target] = timestamp(when)
             item["answers"] = [
                 _pick(
-                    answer, "question_id question_version field_code value unit scale option_codes"
+                    answer,
+                    "question_id question_version field_code title input_type value extra_input "
+                    "unit scale option_codes",
                 )
                 for answer in row.get("answers", [])
                 if isinstance(answer, dict)

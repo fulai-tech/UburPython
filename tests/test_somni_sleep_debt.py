@@ -129,6 +129,7 @@ async def test_source_failure_is_not_fallback_and_reminder_schedules_are_queried
     store = AsyncMock()
     store.load_permissions.return_value = {"status": "active", "privacy_switches": {"health": True}}
     store.load_sleep_debt_rows.side_effect = DataError("UNAVAILABLE", "source_unavailable")
+    store.load_reminder_schedules.return_value = []
     svc = GenerationDataService(None, Settings(_env_file=None), store)
     result = await svc.get_bedtime_reminder_inputs(
         "u", "r", reminder_local_date="2026-09-21", timezone_offset="+05:30"
@@ -137,6 +138,7 @@ async def test_source_failure_is_not_fallback_and_reminder_schedules_are_queried
     assert "value" not in result["data"]["sleep_debt"]
     store.load_reminder_schedules.assert_awaited_once()
     store.load_permissions.assert_not_awaited()
+    store.load_permissions.assert_not_called()
 
 
 @pytest.mark.parametrize(

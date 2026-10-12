@@ -10,7 +10,15 @@ from app.server.somni.facts.store import FactsStore
 
 class Cursor:
     def __init__(self, rows: list) -> None:
-        self.rows = rows
+        self.rows = [
+            {
+                "received_at": datetime(2000, 1, 1, tzinfo=UTC),
+                "generated_at": datetime(2000, 1, 1, tzinfo=UTC),
+                "created_at": datetime(2000, 1, 1, tzinfo=UTC),
+                **row,
+            }
+            for row in rows
+        ]
 
     def max_time_ms(self, value):
         return self
@@ -50,12 +58,12 @@ def make_store(rows: list) -> tuple:
     return FactsStore(client, Settings(_env_file=None, generation_query_limit=2)), collection
 
 
-async def test_permissions_projection_and_budget() -> None:
+async def test_projection_and_budget() -> None:
     store, collection = make_store([])
-    assert await store.load_permissions("synthetic") is None
+    assert await store._read("users", {"uid": "synthetic"}, "status", limit=1) == []
     query, projection = collection.find.call_args.args
     assert query == {"uid": "synthetic"}
-    assert set(projection) == {"status", "privacy_switches"}
+    assert set(projection) == {"status"}
     collection.find.return_value = Cursor([{}, {}, {}])
     with pytest.raises(DataError, match="source_query_budget"):
         await store.load_daily_metrics("synthetic", "2026-09-01", "2026-09-21", datetime.now(UTC))
@@ -65,7 +73,7 @@ async def test_feedback_observation_is_exact_and_user_scoped() -> None:
     store, collection = make_store([{"uid": "u", "observation_id": "obs-1"}])
     read_at = datetime(2026, 9, 23, tzinfo=UTC)
     row = await store.load_feedback_observation("u", "obs-1", read_at)
-    assert row == {"uid": "u", "observation_id": "obs-1"}
+    assert row["uid"] == "u" and row["observation_id"] == "obs-1"
     query, projection = collection.find.call_args.args
     assert query["uid"] == "u"
     assert query["observation_id"] == "obs-1"
@@ -94,7 +102,7 @@ async def test_questionnaire_query_filters_the_exact_answer_id() -> None:
     )
     query = collection.find.call_args_list[0].args[0]
     assert query["uid"] == "u"
-    assert query["answer_id"] == "answer-exact"
+    assert query["$or"] == [{"answer_id": "answer-exact"}]
     assert rows[0]["answer_id"] == "answer-exact"
 
 
@@ -116,9 +124,9 @@ async def test_daily_sleep_reports_are_user_date_and_cutoff_scoped() -> None:
     query, projection = collection.find.call_args.args
     assert query["uid"] == "synthetic"
     assert query["record_date"] == {"$gte": "2026-09-10", "$lt": "2026-10-08"}
-    assert query["$or"] == [
+    assert query["$and"][0]["$or"] == [
         {"received_at": {"$lte": read_at}},
-        {"received_at": {"$exists": False}},
+        {"received_at": {"$not": {"$type": "date"}}},
     ]
     assert set(projection) == {
         "uid",
@@ -126,20 +134,49 @@ async def test_daily_sleep_reports_are_user_date_and_cutoff_scoped() -> None:
         "record_date",
         "language",
         "overnight_vitals",
+        "received_at",
+        "create_time",
+        "update_time",
+        "created_at",
+        "generated_at",
+        "completed_at",
     }
+
+
+async def test_questionnaire_query_filters_exact_answer_id() -> None:
+    store, collection = make_store(
+        [
+            {
+                "uid": "u",
+                "answer_id": "answer-exact",
+                "survey_code": "initial",
+                "survey_version": "v1",
+                "answer_revision": 1,
+                "completed_at": datetime(2026, 9, 20, tzinfo=UTC),
+                "answers": [],
+            }
+        ]
+    )
+    result = await store.load_questionnaires(
+        "u", datetime(2026, 9, 21, tzinfo=UTC), answer_id="answer-exact"
+    )
+    query = collection.find.call_args_list[0].args[0]
+    assert query["uid"] == "u"
+    assert query["$or"] == [{"answer_id": "answer-exact"}]
+    assert result[0]["answer_id"] == "answer-exact"
 
 
 async def test_active_plan_lookup_is_uid_date_and_read_time_scoped() -> None:
     store, collection = make_store([])
     read_at = datetime(2026, 9, 23, tzinfo=UTC)
     await store.load_active_plan("synthetic", "2026-09-23", read_at)
-    query, projection = collection.find.call_args.args
+    query, projection = collection.find.call_args_list[0].args
     assert query["uid"] == "synthetic"
     assert query["date"] == "2026-09-23"
     assert query["status"] == "active"
-    assert query["$or"] == [
+    assert query["$and"][0]["$or"] == [
         {"received_at": {"$lte": read_at}},
-        {"received_at": {"$exists": False}},
+        {"received_at": {"$not": {"$type": "date"}}},
     ]
     assert collection.find.call_args.kwargs == {}
     assert collection.find.return_value.sort_spec == [("version", -1), ("_id", -1)]
@@ -156,7 +193,16 @@ async def test_previous_active_plan_queries_strictly_before_target_date() -> Non
     assert query["uid"] == "u"
     assert query["date"] == {"$lt": "2026-10-12"}
     assert query["status"] == "active"
-    assert set(projection) == {"uid", "date"}
+    assert set(projection) == {
+        "uid",
+        "date",
+        "received_at",
+        "create_time",
+        "update_time",
+        "created_at",
+        "generated_at",
+        "completed_at",
+    }
     assert collection.find.return_value.sort_spec == [("date", -1), ("_id", -1)]
 
 
@@ -174,7 +220,12 @@ async def test_previous_active_plan_and_history_can_both_be_absent() -> None:
     latest = await store.load_latest_active_plan_date_before("u", "2026-10-12", read_at)
     assert latest is None
     assert not await store.has_plan_history_before("u", "2026-10-12", read_at)
-    assert collection.find.call_count == 2
+    assert collection.find.call_count == 3
+    queries = [call.args[0] for call in collection.find.call_args_list]
+    assert all(query["uid"] == "u" and query["date"] == {"$lt": "2026-10-12"} for query in queries)
+    assert queries[0]["status"] == "active"
+    assert "status" not in queries[1]
+    assert queries[2]["status"] == {"$in": ["active", "disabled"]}
 
 
 async def test_exact_profile_hash_join_and_no_latest_long() -> None:
@@ -183,11 +234,17 @@ async def test_exact_profile_hash_join_and_no_latest_long() -> None:
         Cursor([{"snapshot_id": "s1", "schema_version": "2", "long_term_content_hash": "hash"}]),
         Cursor([]),
     ]
-    short, long = await store.load_profile("synthetic", "s1", datetime.now(UTC))
+    read_at = datetime.now(UTC)
+    short, long = await store.load_profile("synthetic", "s1", read_at)
     assert short and long is None
-    assert collection.find.call_args_list[0].args[0]["$and"] == [
-        {"$or": [{"profile_snapshot_id": "s1"}, {"snapshot_id": "s1"}]}
-    ]
+    conditions = collection.find.call_args_list[0].args[0]["$and"]
+    assert conditions[0] == {"$or": [{"profile_snapshot_id": "s1"}, {"snapshot_id": "s1"}]}
+    assert conditions[1] == {
+        "$or": [
+            {"received_at": {"$lte": read_at}},
+            {"received_at": {"$not": {"$type": "date"}}},
+        ]
+    }
     assert collection.find.call_args_list[1].args[0]["content_hash"] == "hash"
     assert collection.find.call_args_list[1].args[0]["uid"] == "synthetic"
 
@@ -246,3 +303,133 @@ async def test_sleep_history_budget_does_not_return_fallback():
     with pytest.raises(DataError, match="sleep_history_budget_exceeded"):
         await store.load_sleep_debt_rows("u", "2026-09-21", CUTOFF)
     assert history.closed
+
+
+@pytest.mark.parametrize("offset", [-1, 0, 1])
+async def test_received_time_boundaries(offset: int) -> None:
+    cutoff = datetime(2026, 10, 10, tzinfo=UTC)
+    store, _collection = make_store([{"received_at": cutoff + timedelta(seconds=offset)}])
+    if offset > 0:
+        with pytest.raises(DataError, match="historical_version_unavailable"):
+            await store.list_daily_sleep_reports("u", "2026-10-01", "2026-10-11", cutoff)
+    else:
+        rows = await store.list_daily_sleep_reports("u", "2026-10-01", "2026-10-11", cutoff)
+        assert len(rows) == 1
+
+
+@pytest.mark.parametrize("received", [None, "not-a-time"])
+async def test_missing_time_is_not_reported_as_no_history(received) -> None:
+    store, _collection = make_store([{"received_at": received}])
+    with pytest.raises(DataError, match="source_time_unverified"):
+        await store.load_profile("u", "exact-snapshot", datetime(2026, 10, 10, tzinfo=UTC))
+
+
+async def test_overwritten_version_is_not_returned_as_historical_data() -> None:
+    cutoff = datetime(2026, 10, 10, tzinfo=UTC)
+    store, _collection = make_store(
+        [
+            {
+                "received_at": cutoff - timedelta(days=1),
+                "update_time": cutoff + timedelta(seconds=1),
+            }
+        ]
+    )
+    with pytest.raises(DataError, match="historical_version_unavailable"):
+        await store.load_profile("u", "exact-snapshot", cutoff)
+
+
+def test_visibility_preserves_original_disjunction_and_version_bounds() -> None:
+    cutoff = datetime(2026, 10, 10, tzinfo=UTC)
+    original = {
+        "uid": "u",
+        "$or": [{"revision": 1}, {"revision": 2}],
+        "$and": [{"status": "active"}],
+    }
+    query = FactsStore._visible(original, cutoff)
+    assert query["uid"] == "u"
+    assert query["$or"] == original["$or"]
+    assert query["$and"][0] == {"status": "active"}
+    assert {
+        "$or": [{"generated_at": {"$lte": cutoff}}, {"generated_at": {"$not": {"$type": "date"}}}]
+    } in query["$and"]
+    assert original["$and"] == [{"status": "active"}]
+
+
+async def test_superseded_profile_is_not_false_cold_start() -> None:
+    cutoff = datetime(2026, 10, 10, tzinfo=UTC)
+    store, collection = make_store([])
+    collection.find.side_effect = [
+        Cursor([]),
+        Cursor(
+            [
+                {
+                    "uid": "u",
+                    "status": "superseded",
+                    "received_at": cutoff - timedelta(days=1),
+                }
+            ]
+        ),
+    ]
+    with pytest.raises(DataError, match="historical_version_unavailable"):
+        await store.load_profile("u", "", cutoff, "2026-10-10")
+    assert collection.find.call_args_list[0].args[0]["status"] == "active"
+    assert "status" not in collection.find.call_args_list[1].args[0]
+
+
+async def test_saved_profile_without_generation_time_is_unverified() -> None:
+    store, _collection = make_store([{"uid": "u", "generated_at": None}])
+    with pytest.raises(DataError, match="source_time_unverified"):
+        await store.load_profile("u", "", datetime(2026, 10, 10, tzinfo=UTC), "2026-10-10")
+
+
+@pytest.mark.parametrize("later_update", [False, True])
+async def test_database_version_times_replace_missing_receipt(later_update: bool) -> None:
+    cutoff = datetime(2026, 10, 10, tzinfo=UTC)
+    updated = cutoff + timedelta(seconds=1) if later_update else cutoff
+    store, _collection = make_store(
+        [
+            {
+                "uid": "u",
+                "received_at": None,
+                "create_time": cutoff - timedelta(days=1),
+                "update_time": updated,
+            }
+        ]
+    )
+    if later_update:
+        with pytest.raises(DataError, match="historical_version_unavailable"):
+            await store.load_profile("u", "snapshot", cutoff)
+    else:
+        short, _long = await store.load_profile("u", "snapshot", cutoff)
+        assert short["received_at"] == updated
+
+
+async def test_database_answer_object_id_and_completion_aliases() -> None:
+    from bson import ObjectId
+
+    identifier = ObjectId()
+    cutoff = datetime(2026, 10, 10, tzinfo=UTC)
+    store, collection = make_store(
+        [
+            {
+                "_id": identifier,
+                "survey_code": "initial",
+                "received_at": None,
+                "create_time": cutoff,
+                "update_time": cutoff,
+                "answers": [],
+            }
+        ]
+    )
+    rows = await store.load_questionnaires("u", cutoff, str(identifier))
+    assert rows[0]["answer_id"] == str(identifier)
+    assert rows[0]["completed_at"] == cutoff
+    query = collection.find.call_args.args[0]
+    assert query["uid"] == "u"
+    assert {"_id": identifier} in query["$or"]
+
+
+async def test_current_profile_identifier_alias() -> None:
+    store, _collection = make_store([{"profile_snapshot_id": "current", "uid": "u"}])
+    short, _long = await store.load_profile("u", "current", datetime(2026, 10, 10, tzinfo=UTC))
+    assert short["snapshot_id"] == "current"

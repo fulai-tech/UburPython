@@ -70,6 +70,31 @@ PROFILE_FIELDS = (
 )
 
 
+def compute_long_term_content_hash(body: dict, schema_version: str) -> str:
+    if schema_version == "0.0.1":
+        try:
+            encoded = json.dumps(
+                body,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode()
+        except (ValueError, TypeError) as exc:
+            raise DataError("INVALID_ARGUMENT", "invalid_canonical_content") from exc
+        return "sha256:" + hashlib.sha256(encoded).hexdigest()
+    return canonical_hash(body)
+
+
+def validate_long_term_profile(profile: dict) -> None:
+    body = profile.get("long_term_profile")
+    if not isinstance(body, dict):
+        raise DataError("INVALID_ARGUMENT", "incomplete_profile_content")
+    expected = compute_long_term_content_hash(body, profile.get("schema_version", ""))
+    if profile.get("long_term_content_hash") != expected:
+        raise DataError("INVALID_ARGUMENT", "long_term_hash_mismatch")
+
+
 def validate_profile(profile: dict, uid: str) -> dict:
     if profile.get("uid") != uid:
         raise DataError("PERMISSION_DENIED", "profile_owner_mismatch")
@@ -85,22 +110,7 @@ def validate_profile(profile: dict, uid: str) -> dict:
     ):
         if not isinstance(profile.get(key), dict):
             raise DataError("INVALID_ARGUMENT", "incomplete_profile_content")
-    if profile["schema_version"] == "0.0.1":
-        try:
-            encoded = json.dumps(
-                profile["long_term_profile"],
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-                allow_nan=False,
-            ).encode()
-        except (ValueError, TypeError) as exc:
-            raise DataError("INVALID_ARGUMENT", "invalid_canonical_content") from exc
-        expected_long_hash = "sha256:" + hashlib.sha256(encoded).hexdigest()
-    else:
-        expected_long_hash = canonical_hash(profile["long_term_profile"])
-    if profile.get("long_term_content_hash") != expected_long_hash:
-        raise DataError("INVALID_ARGUMENT", "long_term_hash_mismatch")
+    validate_long_term_profile(profile)
     content = {key: profile[key] for key in PROFILE_FIELDS if key in profile}
     if profile.get("content_hash") != canonical_hash(content):
         raise DataError("INVALID_ARGUMENT", "profile_hash_mismatch")

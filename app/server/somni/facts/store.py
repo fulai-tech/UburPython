@@ -3,11 +3,13 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+from bson import ObjectId
 from bson.codec_options import CodecOptions
 
 from app.core.config import Settings
 from app.server.somni.facts.models import DataError
 from app.server.somni.facts.sleep_debt import cohort, select_daily
+from app.server.somni.facts.time import instant
 
 
 class FactsStore:
@@ -29,7 +31,18 @@ class FactsStore:
             getattr(self._settings, f"somni_mongo_{name}_collection")
         ].with_options(codec_options=CodecOptions(tz_aware=True, tzinfo=UTC))
         maximum = limit or self._settings.generation_query_limit
-        cursor = collection.find(query, {field: 1 for field in fields.split()}).max_time_ms(
+        cutoff = self._visibility_cutoff(query)
+        projection = {field: 1 for field in fields.split()}
+        if cutoff is not None:
+            projection.update(
+                received_at=1,
+                create_time=1,
+                update_time=1,
+                created_at=1,
+                generated_at=1,
+                completed_at=1,
+            )
+        cursor = collection.find(query, projection).max_time_ms(
             self._settings.generation_query_timeout_ms
         )
         if sort:
@@ -37,18 +50,85 @@ class FactsStore:
         rows = await cursor.limit(maximum + 1).to_list(length=maximum + 1)
         if len(rows) > maximum and limit is None:
             raise DataError("RESOURCE_EXHAUSTED", "source_query_budget_exceeded")
+        if cutoff is not None:
+            rows = [self._normalize_times(row) for row in rows]
+            for row in rows:
+                self._validate_time(row, cutoff)
+                required_time = {
+                    "user_profiles_short_terms": "generated_at",
+                    "generations": "generated_at",
+                    "snapshots": "created_at",
+                }.get(name)
+                if required_time and instant(row.get(required_time)) is None:
+                    raise DataError("FAILED_PRECONDITION", "source_time_unverified")
+            if not rows and query.get("status") in ("active", "committed"):
+                historical_query = {key: value for key, value in query.items() if key != "status"}
+                candidates = await (
+                    collection.find(historical_query, projection)
+                    .max_time_ms(self._settings.generation_query_timeout_ms)
+                    .limit(1)
+                    .to_list(length=1)
+                )
+                if candidates:
+                    self._validate_time(self._normalize_times(candidates[0]), cutoff)
+                    raise DataError("FAILED_PRECONDITION", "historical_version_unavailable")
         return rows[:maximum]
+
+    @staticmethod
+    def _normalize_times(row: dict) -> dict:
+        row = dict(row)
+        if row.get("created_at") is None and row.get("create_time") is not None:
+            row["created_at"] = row["create_time"]
+        if row.get("received_at") is None:
+            row["received_at"] = row.get("update_time") or row.get("create_time")
+        return row
+
+    @staticmethod
+    def _visibility_cutoff(query: dict) -> datetime | None:
+        received = query.get("received_at")
+        if isinstance(received, dict) and isinstance(received.get("$lte"), datetime):
+            return received["$lte"]
+        for operator in ("$and", "$or"):
+            for child in query.get(operator, []):
+                cutoff = FactsStore._visibility_cutoff(child)
+                if cutoff is not None:
+                    return cutoff
+        return None
+
+    @staticmethod
+    def _validate_time(row: dict, cutoff: datetime) -> None:
+        received = instant(row.get("received_at"))
+        if received is None:
+            raise DataError("FAILED_PRECONDITION", "source_time_unverified")
+        if received > cutoff:
+            raise DataError("FAILED_PRECONDITION", "historical_version_unavailable")
+        for field in ("update_time", "created_at", "generated_at", "completed_at"):
+            if row.get(field) is None:
+                continue
+            observed = instant(row[field])
+            if observed is None:
+                raise DataError("FAILED_PRECONDITION", "source_time_unverified")
+            if observed > cutoff:
+                raise DataError("FAILED_PRECONDITION", "historical_version_unavailable")
 
     @staticmethod
     def _visible(query: dict, read_at: datetime) -> dict:
         return {
             **query,
-            "$or": [{"received_at": {"$lte": read_at}}, {"received_at": {"$exists": False}}],
+            "$and": [
+                *query.get("$and", []),
+                {
+                    "$or": [
+                        {"received_at": {"$lte": read_at}},
+                        {"received_at": {"$not": {"$type": "date"}}},
+                    ]
+                },
+                *[
+                    {"$or": [{field: {"$lte": read_at}}, {field: {"$not": {"$type": "date"}}}]}
+                    for field in ("created_at", "generated_at", "completed_at")
+                ],
+            ],
         }
-
-    async def load_permissions(self, uid: str) -> dict | None:
-        rows = await self._read("users", {"uid": uid}, "status privacy_switches", limit=1)
-        return rows[0] if rows else None
 
     async def load_sleep_debt_rows(
         self, uid: str, record_date: str, cutoff: datetime
@@ -76,6 +156,7 @@ class FactsStore:
         rows, group, day, valid_count, scanned = list(current), [], None, 0, len(current)
         try:
             async for row in cursor:
+                self._validate_time(row, cutoff)
                 scanned += 1
                 if scanned > self._settings.generation_query_limit:
                     raise DataError("RESOURCE_EXHAUSTED", "sleep_history_budget_exceeded")
@@ -160,9 +241,12 @@ class FactsStore:
     ) -> list[dict]:
         if answer_id and (answer_id != answer_id.strip() or len(answer_id) > 256):
             raise DataError("INVALID_ARGUMENT", "invalid_answer_id")
-        query = {"uid": uid, "is_completed": True, "completed_at": {"$lte": read_at}}
+        query = {"uid": uid, "is_completed": True}
         if answer_id:
-            query["answer_id"] = answer_id
+            identifiers = [{"answer_id": answer_id}]
+            if ObjectId.is_valid(answer_id):
+                identifiers.append({"_id": ObjectId(answer_id)})
+            query["$or"] = identifiers
         answers = await self._read(
             "answers",
             self._visible(query, read_at),
@@ -170,7 +254,21 @@ class FactsStore:
             [("completed_at", -1), ("answer_revision", -1), ("_id", -1)],
         )
         selected = {}
+        answers.sort(
+            key=lambda row: (
+                instant(row.get("completed_at"))
+                or instant(row.get("update_time"))
+                or instant(row.get("create_time"))
+                or datetime.min.replace(tzinfo=UTC),
+                str(row.get("_id", "")),
+            ),
+            reverse=True,
+        )
         for answer in answers:
+            if not answer.get("answer_id") and answer.get("_id") is not None:
+                answer["answer_id"] = str(answer["_id"])
+            if not answer.get("completed_at"):
+                answer["completed_at"] = answer.get("update_time") or answer.get("create_time")
             code = answer.get("survey_code")
             if code and code not in selected:
                 selected[code] = answer
@@ -203,7 +301,6 @@ class FactsStore:
                 {
                     "record_date": {"$lte": end_date},
                     "status": "active",
-                    "generated_at": {"$lte": read_at},
                 }
             )
         rows = await self._read(
@@ -226,6 +323,13 @@ class FactsStore:
         ):
             raise DataError("FAILED_PRECONDITION", "profile_snapshot_ambiguous")
         short = rows[0]
+        if short.get("profile_snapshot_id") and short.get("snapshot_id") not in (
+            None,
+            "",
+            short["profile_snapshot_id"],
+        ):
+            raise DataError("FAILED_PRECONDITION", "profile_snapshot_alias_mismatch")
+        short["snapshot_id"] = short.get("profile_snapshot_id") or short.get("snapshot_id", "")
         if not short.get("long_term_content_hash") or not short.get("schema_version"):
             return short, None
         long_rows = await self._read(

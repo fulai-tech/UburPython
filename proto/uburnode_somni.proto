@@ -468,6 +468,9 @@ message InputAnswer {
   optional string unit = 5;
   google.protobuf.Struct scale = 6;
   repeated string option_codes = 7;
+  string title = 8;       // Stored question title; compatibility fallback when stable codes are absent.
+  string input_type = 9;  // Stored input widget type, if present.
+  string extra_input = 10; // Stored explicit free-text input, if present.
 }
 
 message InputScore {

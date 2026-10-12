@@ -11,6 +11,56 @@ from app.server.somni.facts.models import DataError, canonical_hash, timestamp, 
 from app.server.somni.facts.service import GenerationDataService
 
 
+@pytest.mark.parametrize("schema_version", ["0.0.1", "2"])
+@pytest.mark.parametrize(
+    "body,reason",
+    [
+        ({}, "long_term_hash_mismatch"),
+        (None, "incomplete_profile_content"),
+        ({"value": float("nan")}, "invalid_canonical_content"),
+    ],
+)
+async def test_invalid_original_profile_never_gets_envelope_hash(
+    monkeypatch, schema_version, body, reason
+) -> None:
+    from app.server.somni.facts.models import compute_long_term_content_hash
+
+    svc, store = service()
+    short = profile()
+    short.update(
+        schema_version=schema_version,
+        snapshot_id="snapshot-1",
+        long_term_content_hash="sha256:" + "a" * 64,
+    )
+    long = {
+        "uid": "u",
+        "schema_version": schema_version,
+        "status": "valid",
+        "content_hash": short["long_term_content_hash"],
+        "long_term_profile": body,
+    }
+    store.load_profile.return_value = (short, long)
+    calls = []
+
+    def envelope_hash(value):
+        calls.append(value)
+        return canonical_hash(value)
+
+    monkeypatch.setattr("app.server.somni.facts.service.canonical_hash", envelope_hash)
+    rejected = await svc._profile("u", "", utc_now(), {})
+    assert rejected["status"] == "partial"
+    assert rejected["missing_reasons"] == [reason]
+    assert "value" not in rejected
+    assert calls == []
+
+    long["long_term_profile"] = {}
+    short["long_term_content_hash"] = compute_long_term_content_hash({}, schema_version)
+    long["content_hash"] = short["long_term_content_hash"]
+    accepted = await svc._profile("u", "", utc_now(), {})
+    assert accepted["status"] == "ok"
+    assert len(calls) == 1
+
+
 def profile() -> dict:
     value = {
         "uid": "u",
@@ -201,6 +251,7 @@ async def test_plan_inline_no_health_queries() -> None:
     assert result["data"]["profile"]["status"] == "ok"
     assert result["data"]["previous_blueprint"]["status"] == "not_found"
     store.load_permissions.assert_not_awaited()
+    assert store.mock_calls == []
     wrong = profile()
     wrong["uid"] = "other"
     with pytest.raises(DataError, match="owner_mismatch"):
@@ -699,12 +750,13 @@ async def test_feedback_observation_requires_target_date_but_not_service_consent
         "local_date": "2026-09-23",
         "target_dates": ["2026-09-23"],
     }
+    store.load_feedback_observation.return_value = None
     result = await svc.get_plan_inputs(
         "u", "r", target_local_date="2026-09-23", feedback_record_id="obs-1"
     )
-    assert result["data"]["feedback"]["status"] == "ok"
+    assert result["data"]["feedback"]["status"] == "not_found"
     store.load_feedback_observation.assert_awaited_once()
-    store.load_permissions.assert_not_awaited()
+    store.load_permissions.assert_not_called()
 
 
 async def test_target_plan_rejects_ambiguous_active_rows() -> None:
@@ -723,6 +775,12 @@ async def test_explicit_id_missing_is_not_hidden_by_service_consent() -> None:
         await svc.get_plan_inputs("u", "req", profile_snapshot_id="missing")
     store.load_profile.assert_awaited_once()
     store.load_permissions.assert_not_awaited()
+    store.reset_mock()
+    store.load_permissions.return_value = {"status": "active", "privacy_switches": {}}
+    with pytest.raises(DataError, match="profile_not_found"):
+        await svc.get_plan_inputs("u", "req", profile_snapshot_id="missing")
+    store.load_profile.assert_awaited_once()
+    store.load_permissions.assert_not_called()
 
 
 def test_cursor_signature_binding_and_expiration() -> None:
@@ -819,7 +877,26 @@ async def test_profile_refresh_does_not_apply_service_consent_gates() -> None:
     store.load_permissions.assert_not_awaited()
 
 
-async def test_pagination_keeps_read_marker_without_rechecking_permissions() -> None:
+async def test_execution_does_not_require_health_or_plan_consent() -> None:
+    svc, store = service()
+    store.load_permissions.return_value = {"status": "active", "privacy_switches": {"plans": True}}
+    store.list_window_sessions.return_value = []
+    store.list_execution_events.return_value = {}
+    result = await svc.get_profile_inputs(
+        "u",
+        "r",
+        purpose="weekly",
+        review_generation_id="g",
+        review_end_local_date="2026-09-21",
+        timezone_offset="+08:00",
+        requested_sections=["execution"],
+    )
+    assert result["data"]["execution"]["status"] != "unsupported"
+    store.list_window_sessions.assert_awaited_once()
+    store.load_permissions.assert_not_called()
+
+
+async def test_pagination_keeps_read_marker_without_permissions() -> None:
     svc, store = service()
     store.find_episode.return_value = {"episode_id": "e", "source": "s"}
     store.list_sessions.return_value = [
@@ -832,10 +909,106 @@ async def test_pagination_keeps_read_marker_without_rechecking_permissions() -> 
     assert second["plan_diffs"]["value"][0]["session_id"] == "1"
     assert first["read_started_at_utc"] == second["read_started_at_utc"]
     store.load_permissions.assert_not_awaited()
+    store.load_permissions.assert_not_called()
     store.load_permissions.return_value = {"status": "active", "privacy_switches": {}}
     third = await svc.get_episode_evidence("u", "e", "s", cursor=second["next_cursor"])
     assert third["plan_diffs"]["value"][0]["session_id"] == "2"
+    assert third["read_started_at_utc"] == first["read_started_at_utc"]
     store.load_permissions.assert_not_awaited()
+
+
+async def test_all_profile_sections_share_cutoff_not_actual_read_start() -> None:
+    svc, store = service()
+    cutoff = datetime(2026, 9, 20, tzinfo=UTC)
+    methods = {
+        "_questionnaires": 1,
+        "_profile": 2,
+        "build_facts": 2,
+        "_observations": 2,
+        "build_plan_comparisons": 2,
+        "_execution": 2,
+        "build_sleep_debt": 2,
+    }
+    for name in methods:
+        setattr(svc, name, AsyncMock(return_value={"status": "not_found", "missing_reasons": []}))
+    result = await svc.get_profile_inputs(
+        "u",
+        "r",
+        purpose="profile_refresh",
+        review_end_local_date="2026-09-21",
+        timezone_offset="+08:00",
+        data_cutoff_at_utc=timestamp(cutoff),
+    )
+    for name, position in methods.items():
+        assert getattr(svc, name).call_args.args[position] == cutoff
+    assert result["read_started_at_utc"] != timestamp(cutoff)
+    store.load_permissions.assert_not_called()
+
+
+async def test_temporal_uncertainty_is_not_confirmed_cold_start() -> None:
+    svc, _store = service()
+    svc._profile = AsyncMock(side_effect=DataError("FAILED_PRECONDITION", "source_time_unverified"))
+    result = await svc.get_profile_inputs(
+        "u",
+        "r",
+        purpose="initial",
+        review_end_local_date="2026-09-21",
+        timezone_offset="+08:00",
+        requested_sections=["prior_profile"],
+    )
+    assert result["data"]["prior_profile"]["status"] == "partial"
+    assert result["data"]["prior_profile"]["missing_reasons"] == ["source_time_unverified"]
+
+
+async def test_questionnaire_without_survey_version_preserves_actual_answer_fields() -> None:
+    svc, store = service()
+    store.load_questionnaires.return_value = [
+        {
+            "_id": "a",
+            "answer_id": "a",
+            "survey_code": "initial",
+            "answers": [
+                {
+                    "question_id": "a0f15f100000000000000001",
+                    "title": "年龄段",
+                    "input_type": "radio",
+                    "value": "synthetic-age",
+                    "extra_input": "",
+                }
+            ],
+            "received_at": datetime(2026, 10, 10, tzinfo=UTC),
+        }
+    ]
+    result = await svc._questionnaires("u", datetime(2026, 10, 10, tzinfo=UTC), {})
+    assert result["status"] == "ok"
+    assert result["value"][0]["answers"][0] == {
+        "question_id": "a0f15f100000000000000001",
+        "title": "年龄段",
+        "input_type": "radio",
+        "value": "synthetic-age",
+        "extra_input": "",
+    }
+    assert "survey_version" not in result["value"][0]
+    assert result["missing_reasons"] == []
+
+
+def test_current_profile_prefixed_hash_is_verified_not_rewritten() -> None:
+    import hashlib
+    import json
+
+    from app.server.somni.facts.models import validate_profile
+
+    value = profile()
+    value["schema_version"] = "0.0.1"
+    value["long_term_profile"] = {"number": 30.0}
+    encoded = json.dumps(value["long_term_profile"], sort_keys=True, separators=(",", ":"))
+    value["long_term_content_hash"] = "sha256:" + hashlib.sha256(encoded.encode()).hexdigest()
+    value.pop("content_hash")
+    value["content_hash"] = canonical_hash(value)
+    assert validate_profile(value, "u")["long_term_content_hash"] == value["long_term_content_hash"]
+    value["long_term_profile"]["number"] = 31.0
+    with pytest.raises(DataError, match="long_term_hash_mismatch"):
+        validate_profile(value, "u")
 
 
 async def test_prior_version_live_change_cannot_override_later_saved_version() -> None:
