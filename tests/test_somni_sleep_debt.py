@@ -125,7 +125,7 @@ async def test_profile_debt_only_and_reminder_dates(monkeypatch):
     assert response["data"]["sleep_debt"]["value"]["record_date"] == "2026-09-21"
 
 
-async def test_source_failure_is_not_fallback_and_denied_not_queried():
+async def test_source_failure_is_not_fallback_and_reminder_schedules_are_queried():
     store = AsyncMock()
     store.load_permissions.return_value = {"status": "active", "privacy_switches": {"health": True}}
     store.load_sleep_debt_rows.side_effect = DataError("UNAVAILABLE", "source_unavailable")
@@ -135,7 +135,8 @@ async def test_source_failure_is_not_fallback_and_denied_not_queried():
     )
     assert result["data"]["sleep_debt"]["status"] == "unavailable"
     assert "value" not in result["data"]["sleep_debt"]
-    store.load_reminder_schedules.assert_not_called()
+    store.load_reminder_schedules.assert_awaited_once()
+    store.load_permissions.assert_not_awaited()
 
 
 @pytest.mark.parametrize(

@@ -238,9 +238,9 @@ cd /opt/uburpython && docker compose up -d --build
 
 GenerationData RPCs are internal interfaces for DeepHealth. They do not authenticate
 callers; network access to the Somni gRPC port must be restricted to trusted services.
-Do not expose this port publicly. The caller supplies the UID. UID validation,
-account status, privacy switches, and record ownership checks remain enforced;
-these checks do not authenticate the caller.
+Do not expose this port publicly. The caller supplies the UID and is responsible
+for account and consent policy. The service preserves UID validation, record
+ownership, and data-integrity checks.
 
 ## 测试
 

@@ -19,7 +19,6 @@ if TYPE_CHECKING:
     from elasticsearch import AsyncElasticsearch
     from motor.motor_asyncio import AsyncIOMotorClient
 
-    from app.server.somni.facts.rpc import Authorizer
     from app.server.somni.facts.service import GenerationDataService
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -95,7 +94,6 @@ class AppState:
     somni_report_service: SomniReportService | None = None
     somni_profile_service: SomniProfileService | None = None
     generation_data_service: GenerationDataService | None = None
-    generation_data_authorizer: Authorizer | None = None
     somni_audio_service: SomniAudioService | None = None
     somni_applewatch_service: SomniAppleWatchService | None = None
     somni_weather_service: SomniWeatherService | None = None
