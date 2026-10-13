@@ -73,7 +73,6 @@ from app.server.somni.audio.hot import HotTracker
 from app.server.somni.profile.service import ProfileService as SomniProfileService
 from app.server.somni.quiz.service import QuizService as SomniQuizService
 from app.server.somni.report.service import ReportService as SomniReportService
-from app.server.somni.weather.service import WeatherService as SomniWeatherService
 from app.services.retrieval import RetrievalService
 from scripts.sync_es_from_comm import shutdown_sync_scheduler, start_sync_scheduler
 
@@ -96,7 +95,6 @@ class AppState:
     generation_data_service: GenerationDataService | None = None
     somni_audio_service: SomniAudioService | None = None
     somni_applewatch_service: SomniAppleWatchService | None = None
-    somni_weather_service: SomniWeatherService | None = None
     search_cache: AudioSearchCache | None = None
     sleep_stage_cache: SleepStageCandidateCache | None = None
     grpc_servers: GrpcServers | None = None
@@ -195,7 +193,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _app_state.somni_profile_service = SomniProfileService(somni_mongo, settings)
     _app_state.generation_data_service = GenerationDataService(somni_mongo, settings)
     _app_state.somni_applewatch_service = SomniAppleWatchService(somni_mongo, settings)
-    _app_state.somni_weather_service = SomniWeatherService()
     somni_es_client = create_es_client(
         settings,
         node=settings.effective_somni_es_node,

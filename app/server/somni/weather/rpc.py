@@ -1,46 +1,10 @@
-"""量产天气 gRPC 适配。"""
+"""天气 protobuf 映射（供 AppleWatch GetDailyAggregate 复用）。"""
 
 from __future__ import annotations
 
-from datetime import date
-from typing import TYPE_CHECKING, Any
-from zoneinfo import ZoneInfo
+from typing import Any
 
-from app.core.exceptions import ServiceNotReadyError
-from app.server.errors import abort_from_app_error, abort_invalid, run_rpc_call
-from app.uburnode_grpc.grpc_gen import uburnode_somni_pb2, uburnode_somni_pb2_grpc
-
-if TYPE_CHECKING:
-    from app.server.somni.weather.service import WeatherService
-
-
-class WeatherRpc(uburnode_somni_pb2_grpc.WeatherServiceServicer):
-    def __init__(self, service: WeatherService | None) -> None:
-        self._service = service
-
-    async def GetWeather(self, request, context):
-        record_date = request.record_date.strip()
-        uid = request.uid.strip()
-        timezone = request.timezone.strip()
-        if not record_date or not uid or not timezone:
-            await abort_invalid(context, "record_date / uid / timezone 均不能为空")
-        try:
-            date.fromisoformat(record_date)
-            ZoneInfo(timezone)
-        except Exception:
-            await abort_invalid(context, "record_date 或 timezone 非法")
-        service = await self._require(context)
-
-        async def _do():
-            payload = await service.get_weather(record_date, uid, timezone)
-            return to_weather_res(payload)
-
-        return await run_rpc_call(context, _do)
-
-    async def _require(self, context) -> WeatherService:
-        if self._service is None:
-            await abort_from_app_error(context, ServiceNotReadyError())
-        return self._service  # type: ignore[return-value]
+from app.uburnode_grpc.grpc_gen import uburnode_somni_pb2
 
 
 def to_weather_message(item: dict[str, Any]) -> uburnode_somni_pb2.Weather:
@@ -58,10 +22,4 @@ def to_weather_message(item: dict[str, Any]) -> uburnode_somni_pb2.Weather:
         uv_index=uburnode_somni_pb2.UvIndex(level=str(uv.get("level") or "")),
         humidity_percent=int(item.get("humidity_percent") or 0),
         aqi=str(item.get("aqi") or ""),
-    )
-
-
-def to_weather_res(payload: dict[str, Any]) -> uburnode_somni_pb2.GetWeatherRes:
-    return uburnode_somni_pb2.GetWeatherRes(
-        weather=to_weather_message(payload.get("weather") or {})
     )

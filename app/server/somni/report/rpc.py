@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import TYPE_CHECKING, Any
+
+from google.protobuf.json_format import ParseDict
+from google.protobuf.struct_pb2 import Struct
 
 from app.core.exceptions import ServiceNotReadyError
 from app.server.errors import abort_from_app_error, abort_invalid, run_rpc_call
@@ -26,7 +30,27 @@ class ReportRpc(uburnode_somni_pb2_grpc.ReportServiceServicer):
         return await self._call(request, context, "get_environment", _to_environment_res)
 
     async def GetStructure(self, request, context):
-        return await self._call(request, context, "get_structure", _to_structure_res)
+        uid = request.uid.strip()
+        if not uid:
+            await abort_invalid(context, "uid 不能为空")
+        record_date = request.record_date.strip()
+        start_date = request.start_date.strip()
+        end_date = request.end_date.strip()
+        err = _structure_range_error(record_date, start_date, end_date)
+        if err:
+            await abort_invalid(context, err)
+        service = await self._require(context)
+
+        async def _do():
+            payload = await service.get_structure(
+                uid,
+                record_date=record_date,
+                start_date=start_date,
+                end_date=end_date,
+            )
+            return _to_structure_res(payload)
+
+        return await run_rpc_call(context, _do)
 
     async def GetSleepQuality(self, request, context):
         return await self._call(
@@ -124,15 +148,65 @@ def _env_metric(item: Any) -> uburnode_somni_pb2.EnvMetric:
     )
 
 
+def _structure_range_error(
+    record_date: str, start_date: str, end_date: str
+) -> str | None:
+    if bool(start_date) != bool(end_date):
+        return "start_date 与 end_date 须成对传入"
+    for label, value in (
+        ("record_date", record_date),
+        ("start_date", start_date),
+        ("end_date", end_date),
+    ):
+        if not value:
+            continue
+        try:
+            date.fromisoformat(value)
+        except ValueError:
+            return f"{label} 须为 YYYY-MM-DD"
+    if start_date and end_date and start_date > end_date:
+        return "start_date 不能晚于 end_date"
+    return None
+
+
 def _to_structure_res(payload: dict[str, Any]) -> uburnode_somni_pb2.GetStructureRes:
     structure = payload.get("sleep_structure") or {}
+    weekly = payload.get("weekly_report") or {}
+    report = uburnode_somni_pb2.WeeklyReport(
+        timezone=str(weekly.get("timezone") or ""),
+        start_date=str(weekly.get("start_date") or ""),
+        end_date=str(weekly.get("end_date") or ""),
+    )
+    for item in weekly.get("week_days") or []:
+        report.week_days.append(_weekly_day_metric(item))
+    for item in weekly.get("baseline_days") or []:
+        report.baseline_days.append(_weekly_day_metric(item))
+    activity = weekly.get("daytime_activity")
+    if isinstance(activity, dict):
+        ParseDict(activity, report.daytime_activity)
+    else:
+        report.daytime_activity.CopyFrom(Struct())
     return uburnode_somni_pb2.GetStructureRes(
         sleep_structure=uburnode_somni_pb2.SleepStructure(
             awake=_stage_part(structure.get("awake")),
             rem_sleep=_stage_part(structure.get("rem_sleep")),
             light_sleep=_stage_part(structure.get("light_sleep")),
             deep_sleep=_stage_part(structure.get("deep_sleep")),
-        )
+        ),
+        weekly_report=report,
+    )
+
+
+def _weekly_day_metric(item: Any) -> uburnode_somni_pb2.WeeklyDayMetric:
+    data = item if isinstance(item, dict) else {}
+    return uburnode_somni_pb2.WeeklyDayMetric(
+        record_date=str(data.get("record_date") or ""),
+        bed_time=str(data.get("bed_time") or ""),
+        wake_up_time=str(data.get("wake_up_time") or ""),
+        total_sleep_minutes=int(data.get("total_sleep_minutes") or 0),
+        sleep_efficiency=int(data.get("sleep_efficiency") or 0),
+        rem_percent=int(data.get("rem_percent") or 0),
+        deep_sleep_percent=int(data.get("deep_sleep_percent") or 0),
     )
 
 

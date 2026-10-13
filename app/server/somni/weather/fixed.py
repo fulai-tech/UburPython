@@ -1,4 +1,4 @@
-"""天气固定样例（GetWeather / GetDailyAggregate 共用）。"""
+"""天气固定样例（GetDailyAggregate 使用）。"""
 
 from __future__ import annotations
 

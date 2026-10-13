@@ -81,16 +81,60 @@ class ReportService:
             "env_data": _env_data(env_docs),
         }
 
-    async def get_structure(self, uid: str, record_date: str) -> dict[str, Any]:
-        record = await self._store.find_record(uid, record_date)
-        parts = calc.sleep_stage_parts(_raw_data(record))
-        return {
-            "sleep_structure": {
+    async def get_structure(
+        self,
+        uid: str,
+        record_date: str = "",
+        start_date: str = "",
+        end_date: str = "",
+    ) -> dict[str, Any]:
+        sleep_structure = {
+            "awake": {"minutes": 0, "percent": 0},
+            "rem_sleep": {"minutes": 0, "percent": 0},
+            "light_sleep": {"minutes": 0, "percent": 0},
+            "deep_sleep": {"minutes": 0, "percent": 0},
+        }
+        day = record_date.strip()
+        if day:
+            record = await self._store.find_record(uid, day)
+            parts = calc.sleep_stage_parts(_raw_data(record))
+            sleep_structure = {
                 "awake": parts["awake"],
                 "rem_sleep": parts["rem_sleep"],
                 "light_sleep": parts["light_sleep"],
                 "deep_sleep": parts["deep_sleep"],
             }
+
+        tz_name = calc.resolve_report_timezone_name(
+            await self._store.find_user_timezone(uid)
+        )
+        week_start = start_date.strip()
+        week_end = end_date.strip()
+        if not week_start and not week_end:
+            week_start, week_end = calc.default_week_bounds(timezone_name=tz_name)
+
+        # 查询与响应用同一套起床日日期，不做偏移
+        baseline_from = calc.baseline_start(week_end)
+        docs = await self._store.list_records(uid, baseline_from, week_end)
+        by_date: dict[str, dict[str, Any]] = {}
+        for doc in docs:
+            metric = calc.weekly_day_metric(doc)
+            date_key = metric["record_date"]
+            if date_key:
+                by_date[date_key] = metric
+
+        return {
+            "sleep_structure": sleep_structure,
+            "weekly_report": {
+                "timezone": tz_name,
+                "start_date": week_start,
+                "end_date": week_end,
+                "week_days": calc.align_weekly_days(by_date, week_start, week_end),
+                "baseline_days": calc.align_weekly_days(
+                    by_date, baseline_from, week_end
+                ),
+                "daytime_activity": {},
+            },
         }
 
     async def get_profile(self, uid: str, record_date: str) -> dict[str, Any]:
