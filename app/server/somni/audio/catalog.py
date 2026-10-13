@@ -121,7 +121,7 @@ class AudioCatalogService:
         if codes:
             cursor = self._tags().find(
                 {"code": {"$in": codes}, "type": {"$in": list(CONTENT_TAG_TYPES)}, "status": _TAG_ENABLED},
-                {"code": 1, "name": 1},
+                {"code": 1, "type": 1, "name": 1},
             )
             matches: dict[str, set[tuple[str, str]]] = {code: set() for code in codes}
             async for row in cursor:
