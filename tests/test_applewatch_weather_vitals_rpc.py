@@ -1,4 +1,4 @@
-"""AppleWatch / Weather / GetVitals RPC 适配。"""
+"""AppleWatch / GetVitals RPC 适配。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ from google.protobuf.json_format import MessageToDict
 
 from app.server.somni.applewatch.rpc import AppleWatchRpc
 from app.server.somni.report.rpc import ReportRpc
-from app.server.somni.weather.rpc import WeatherRpc
 from app.uburnode_grpc.grpc_gen import uburnode_somni_pb2
 
 
@@ -18,36 +17,6 @@ def _context() -> MagicMock:
     ctx = MagicMock()
     ctx.abort = AsyncMock(side_effect=grpc.aio.AbortError)
     return ctx
-
-
-@pytest.mark.asyncio
-async def test_weather_rpc_fixed() -> None:
-    service = MagicMock()
-    service.get_weather = AsyncMock(
-        return_value={
-            "weather": {
-                "date": "2026-09-24",
-                "temperature": {"min": 15, "max": 29},
-                "condition_code": "partly_cloudy_rain",
-                "sunrise_at": "2026-09-24T07:00:00+08:00",
-                "sunset_at": "2026-09-24T20:00:00+08:00",
-                "uv_index": {"level": "low"},
-                "humidity_percent": 58,
-                "aqi": "hazardous",
-            }
-        }
-    )
-    rpc = WeatherRpc(service)
-    res = await rpc.GetWeather(
-        uburnode_somni_pb2.GetWeatherReq(
-            record_date="2026-09-24",
-            uid="u1",
-            timezone="Asia/Shanghai",
-        ),
-        _context(),
-    )
-    data = MessageToDict(res, preserving_proto_field_name=True)
-    assert data["weather"]["aqi"] == "hazardous"
 
 
 @pytest.mark.asyncio

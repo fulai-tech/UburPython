@@ -61,7 +61,25 @@ def _make_rpc() -> tuple[ReportRpc, MagicMock]:
                 "rem_sleep": {"minutes": 100, "percent": 20},
                 "light_sleep": {"minutes": 250, "percent": 50},
                 "deep_sleep": {"minutes": 90, "percent": 18},
-            }
+            },
+            "weekly_report": {
+                "timezone": "Asia/Shanghai",
+                "start_date": "2026-09-22",
+                "end_date": "2026-09-28",
+                "week_days": [
+                    {
+                        "record_date": "2026-09-28",
+                        "bed_time": "2026-09-27T23:15:00+08:00",
+                        "wake_up_time": "2026-09-28T07:18:00+08:00",
+                        "total_sleep_minutes": 450,
+                        "sleep_efficiency": 90,
+                        "rem_percent": 20,
+                        "deep_sleep_percent": 18,
+                    }
+                ],
+                "baseline_days": [],
+                "daytime_activity": {},
+            },
         }
     )
     service.get_sleep_quality = AsyncMock(
@@ -99,7 +117,6 @@ async def test_report_requires_uid_and_record_date() -> None:
         ("GetSummary", "get_summary"),
         ("GetEvents", "get_events"),
         ("GetEnvironment", "get_environment"),
-        ("GetStructure", "get_structure"),
         ("GetSleepQuality", "get_sleep_quality"),
         ("GetProfile", "get_profile"),
     ],
@@ -110,6 +127,55 @@ async def test_report_rpcs_call_service(method_name: str, service_name: str) -> 
     res = await getattr(rpc, method_name)(req, _context())
     getattr(service, service_name).assert_awaited_once_with("u1", "2026-08-24")
     assert res is not None
+
+
+@pytest.mark.asyncio
+async def test_get_structure_requires_uid_only() -> None:
+    rpc, service = _make_rpc()
+    with pytest.raises(grpc.aio.AbortError):
+        await rpc.GetStructure(
+            uburnode_somni_pb2.ReportDateReq(uid="", record_date="2026-08-24"),
+            _context(),
+        )
+    service.get_structure.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_structure_rejects_partial_range() -> None:
+    rpc, service = _make_rpc()
+    with pytest.raises(grpc.aio.AbortError):
+        await rpc.GetStructure(
+            uburnode_somni_pb2.ReportDateReq(
+                uid="u1", start_date="2026-09-22", end_date=""
+            ),
+            _context(),
+        )
+    service.get_structure.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_structure_maps_weekly_report() -> None:
+    rpc, service = _make_rpc()
+    res = await rpc.GetStructure(
+        uburnode_somni_pb2.ReportDateReq(
+            uid="u1",
+            record_date="2026-09-28",
+            start_date="2026-09-22",
+            end_date="2026-09-28",
+        ),
+        _context(),
+    )
+    service.get_structure.assert_awaited_once_with(
+        "u1",
+        record_date="2026-09-28",
+        start_date="2026-09-22",
+        end_date="2026-09-28",
+    )
+    payload = MessageToDict(res, preserving_proto_field_name=True)
+    assert payload["sleep_structure"]["deep_sleep"]["minutes"] == 90
+    assert payload["weekly_report"]["timezone"] == "Asia/Shanghai"
+    assert payload["weekly_report"]["week_days"][0]["total_sleep_minutes"] == 450
+    assert payload["weekly_report"]["daytime_activity"] == {}
 
 
 @pytest.mark.asyncio

@@ -52,6 +52,31 @@ class ReportStore:
             {"uid": uid, "record_date": record_date}
         )
 
+    async def list_records(
+        self, uid: str, start_date: str, end_date: str
+    ) -> list[dict[str, Any]]:
+        cursor = (
+            self._db()[self._settings.somni_mongo_records_collection]
+            .find(
+                {
+                    "uid": uid,
+                    "record_date": {"$gte": start_date, "$lte": end_date},
+                }
+            )
+            .sort("record_date", 1)
+        )
+        return await cursor.to_list(length=100)
+
+    async def find_user_timezone(self, uid: str) -> str:
+        doc = await self._db()[self._settings.somni_mongo_users_collection].find_one(
+            {"uid": uid},
+            {"timezone": 1},
+        )
+        if not doc:
+            return ""
+        value = doc.get("timezone")
+        return str(value).strip() if value else ""
+
     async def find_sleep_report(
         self, uid: str, record_date: str
     ) -> dict[str, Any] | None:

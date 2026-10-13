@@ -23,7 +23,9 @@ service QuizService {
 
 message ReportDateReq {
   string uid = 1;          // 必传
-  string record_date = 2;  // 必传：记录日期
+  string record_date = 2;  // GetStructure 可选（有则填单日 sleep_structure）；其它报告 RPC 必填
+  string start_date = 3;   // 可选：报告周起始日 YYYY-MM-DD；仅 GetStructure
+  string end_date = 4;     // 可选：报告周结束日 YYYY-MM-DD；仅 GetStructure；可与 record_date 同传
 }
 
 message SleepSummary {
@@ -129,8 +131,29 @@ message SleepStructure {
   SleepStagePart deep_sleep = 4;
 }
 
+// 周报逐日原始点（调用方自行聚合；中间件不算均值/规律分等）
+message WeeklyDayMetric {
+  string record_date = 1;
+  string bed_time = 2;              // Asia/Shanghai ISO8601；缺省空串
+  string wake_up_time = 3;          // Asia/Shanghai ISO8601；缺省空串
+  int32 total_sleep_minutes = 4;
+  int32 sleep_efficiency = 5;
+  int32 rem_percent = 6;
+  int32 deep_sleep_percent = 7;
+}
+
+message WeeklyReport {
+  string timezone = 1;
+  string start_date = 2;                          // 报告周起始日
+  string end_date = 3;                            // 报告周结束日
+  repeated WeeklyDayMetric week_days = 4;         // 本周原始点
+  repeated WeeklyDayMetric baseline_days = 5;     // 近 14 日历日原始点
+  google.protobuf.Struct daytime_activity = 6;    // 本期固定空对象
+}
+
 message GetStructureRes {
   SleepStructure sleep_structure = 1;
+  WeeklyReport weekly_report = 2;                 // 新增：周报原始数据
 }
 
 message SleepQuality {
@@ -258,20 +281,6 @@ message GetDailyAggregateRes {
 
 service AppleWatchService {
   rpc GetDailyAggregate (GetDailyAggregateReq) returns (GetDailyAggregateRes);
-}
-
-message GetWeatherReq {
-  string record_date = 1;
-  string uid = 2;
-  string timezone = 3;
-}
-
-message GetWeatherRes {
-  Weather weather = 1;
-}
-
-service WeatherService {
-  rpc GetWeather (GetWeatherReq) returns (GetWeatherRes);
 }
 
 message GetAudioReq {
