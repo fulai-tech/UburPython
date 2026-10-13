@@ -867,8 +867,16 @@ async def test_prescription_search_resolves_codes_and_uses_ranked_search_without
     service._retrieval = retrieval
 
     class Cursor:
+        def __init__(self, projection):
+            document = {
+                "code": "breathing_guidance", "type": "content_form", "name": "呼吸引导"
+            }
+            self.document = {
+                key: value for key, value in document.items() if projection.get(key)
+            }
+
         def __aiter__(self):
-            self.items = iter([{"code": "breathing_guidance", "type": "content_form", "name": "呼吸引导"}])
+            self.items = iter([self.document])
             return self
         async def __anext__(self):
             try:
@@ -877,7 +885,7 @@ async def test_prescription_search_resolves_codes_and_uses_ranked_search_without
                 raise StopAsyncIteration
 
     tags = MagicMock()
-    tags.find.return_value = Cursor()
+    tags.find.side_effect = lambda query, projection: Cursor(projection)
     monkeypatch.setattr(service, "_tags", lambda: tags)
     result = await service.search_prescription_audio({
         "query_text": "gentle breathing", "sleep_stage_tags": ["unwind"],
