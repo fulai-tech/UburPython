@@ -18,6 +18,9 @@ from app.server.somni.facts.calc import (
     diff_plan_versions,
     finite_number,
     normalize_daily_metrics,
+    normalize_metric_windows,
+    normalize_somni_record_metrics,
+    select_somni_record_rows,
     summarize_execution,
 )
 from app.server.somni.facts.models import (
@@ -77,9 +80,9 @@ def normalize_report_vitals(
     start_date: str,
     end_date: str,
     manifest: dict,
-    excluded_metrics: set[str] | None = None,
+    excluded_metric_dates: set[tuple[str, str]] | None = None,
 ) -> tuple[list[dict], list[str]]:
-    excluded = excluded_metrics or set()
+    excluded = excluded_metric_dates or set()
     candidates: dict[tuple[str, str], list[tuple[float, str]]] = {}
     reasons: list[str] = []
     metric_fields = {
@@ -111,7 +114,7 @@ def normalize_report_vitals(
         if not isinstance(vitals, dict):
             continue
         for metric_id, (report_key, unit) in metric_fields.items():
-            if metric_id in excluded:
+            if (metric_id, parsed_date) in excluded:
                 continue
             item = vitals.get(report_key)
             if not isinstance(item, dict) or "value" not in item:
@@ -702,16 +705,28 @@ class GenerationDataService:
         return section(values, "partial", ["legacy_subjective_rating_adapter_pending"])
 
     async def build_facts(self, uid: str, scope: Any, read_at: datetime, manifest: dict) -> dict:
+        report_reasons = []
         rows = await self.store.list_sleep_episodes(
-            uid, scope.start(28).isoformat(), scope.end.isoformat(), read_at
+            uid,
+            scope.start(28).isoformat(),
+            scope.end.isoformat(),
+            read_at,
+            missing_reasons=report_reasons,
         )
         activity = await self.store.load_daily_metrics(
-            uid, scope.start(28).isoformat(), scope.end.isoformat(), read_at
+            uid,
+            scope.start(28).isoformat(),
+            scope.end.isoformat(),
+            read_at,
+            missing_reasons=report_reasons,
         )
-        report_reasons = []
         try:
             reports = await self.store.list_daily_sleep_reports(
-                uid, scope.start(28).isoformat(), scope.end.isoformat(), read_at
+                uid,
+                scope.start(28).isoformat(),
+                scope.end.isoformat(),
+                read_at,
+                missing_reasons=report_reasons,
             )
         except DataError as exc:
             reports = []
@@ -761,21 +776,76 @@ class GenerationDataService:
             if row.get("timezone_offset"):
                 episode["timezone_offset"] = row["timezone_offset"]
             episodes.append(episode)
-        metrics = normalize_daily_metrics(rows) + normalize_daily_metrics(activity, activity=True)
-        direct_metrics = {item["metric_id"] for item in metrics if item.get("quality") == "valid"}
+        record_candidates = [row for row in rows if row.get("source_type") == "records"]
+        record_rows, record_selection_reasons = select_somni_record_rows(record_candidates)
+        reasons.extend(record_selection_reasons)
+        wearable_rows = [row for row in rows if row.get("source_type") != "records"]
+        wearable_metrics = normalize_daily_metrics(wearable_rows) + normalize_daily_metrics(
+            activity, activity=True
+        )
+        record_metrics = normalize_daily_metrics(record_rows)
+        legacy_record_metrics, record_metric_reasons = normalize_somni_record_metrics(
+            record_rows, timezone_offset=scope.offset, read_at=read_at
+        )
+        reasons.extend(record_metric_reasons)
+        legacy_record_metric_dates = {
+            (item["metric_id"], item["local_date"]) for item in legacy_record_metrics
+        }
+        record_metrics = [
+            item
+            for item in record_metrics
+            if item.get("quality") != "missing"
+            or (item["metric_id"], item["local_date"]) not in legacy_record_metric_dates
+        ]
+        record_metric_dates = {
+            (item["metric_id"], item["local_date"])
+            for item in record_metrics
+            if item.get("quality") == "valid"
+        }
+        record_metrics.extend(
+            item
+            for item in legacy_record_metrics
+            if (item["metric_id"], item["local_date"]) not in record_metric_dates
+        )
+        preferred_metric_dates = {
+            (item["metric_id"], item["local_date"])
+            for item in wearable_metrics
+            if item.get("quality") == "valid"
+        }
         report_metrics, report_reasons = normalize_report_vitals(
             reports,
             uid,
             scope.start(28).isoformat(),
             scope.end.isoformat(),
             manifest,
-            excluded_metrics=direct_metrics,
+            excluded_metric_dates=preferred_metric_dates,
         )
-        metrics.extend(report_metrics)
+        report_metric_dates = {(item["metric_id"], item["local_date"]) for item in report_metrics}
+        wearable_metrics = [
+            item
+            for item in wearable_metrics
+            if item.get("quality") != "missing"
+            or (item["metric_id"], item["local_date"]) not in report_metric_dates
+        ]
+        record_metrics = [
+            item
+            for item in record_metrics
+            if (item["metric_id"], item["local_date"])
+            not in preferred_metric_dates | report_metric_dates
+        ]
+        metrics = [*wearable_metrics, *report_metrics, *record_metrics]
         reasons.extend(report_reasons)
         if report_metrics:
             reasons.append("sleep_report_quality_and_visibility_unverified")
-        value = {"episodes": episodes, "series": build_series(metrics, scope)}
+        windows, window_reasons = normalize_metric_windows(rows + activity, read_at)
+        reasons.extend(window_reasons)
+        if not windows:
+            reasons.append("presleep_metric_windows_unavailable")
+        value = {
+            "episodes": episodes,
+            "series": build_series(metrics, scope),
+            "metric_windows": windows,
+        }
         if episodes:
             latest = max(episodes, key=lambda row: row["end_at_utc"])
             value.update(
@@ -851,9 +921,7 @@ class GenerationDataService:
         }
         if requested_sections:
             tasks = {key: value for key, value in tasks.items() if key in requested_sections}
-        results = await asyncio.gather(
-            *(self._optional(query) for query in tasks.values())
-        )
+        results = await asyncio.gather(*(self._optional(query) for query in tasks.values()))
         data = dict(zip(tasks, results, strict=True))
         response = self._envelope(uid, request_id, read_at, data, manifest)
         response["time_context"] = {

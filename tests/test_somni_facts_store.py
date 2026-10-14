@@ -69,6 +69,33 @@ async def test_projection_and_budget() -> None:
         await store.load_daily_metrics("synthetic", "2026-09-01", "2026-09-21", datetime.now(UTC))
 
 
+@pytest.mark.parametrize("invalid_received", [None, datetime(2026, 10, 14, tzinfo=UTC)])
+async def test_partial_facts_read_keeps_verified_rows_and_reports_excluded_times(
+    invalid_received,
+) -> None:
+    cutoff = datetime(2026, 10, 13, tzinfo=UTC)
+    store, _ = make_store(
+        [
+            {"record_date": "2026-10-11", "received_at": cutoff - timedelta(days=1)},
+            {"record_date": "2026-10-12", "received_at": invalid_received},
+        ]
+    )
+    reasons = []
+    rows = await store._read(
+        "records",
+        store._visible({"uid": "synthetic"}, cutoff),
+        "record_date",
+        missing_reasons=reasons,
+    )
+    assert [row["record_date"] for row in rows] == ["2026-10-11"]
+    reason = (
+        "source_time_unverified" if invalid_received is None else "historical_version_unavailable"
+    )
+    assert reasons == [f"records_{reason}"]
+    with pytest.raises(DataError, match=reason):
+        await store._read("records", store._visible({"uid": "synthetic"}, cutoff), "record_date")
+
+
 async def test_feedback_observation_is_exact_and_user_scoped() -> None:
     store, collection = make_store([{"uid": "u", "observation_id": "obs-1"}])
     read_at = datetime(2026, 9, 23, tzinfo=UTC)
