@@ -6,7 +6,8 @@ from datetime import timedelta
 from statistics import mean, median
 from typing import Any
 
-from app.server.somni.facts.time import TimeScope, instant, parse_date
+from app.server.somni.facts.time import TimeScope, attribute_sleep_date, instant, parse_date
+from app.server.somni.report.calc import minutes_between, sleep_stage_parts
 
 
 def finite_number(value: object) -> bool:
@@ -25,6 +26,97 @@ def aggregate_numeric(values: list[float | None]) -> dict[str, float | None]:
         "min": min(valid),
         "max": max(valid),
     }
+
+
+def normalize_metric_windows(rows: list[dict], read_at: Any) -> tuple[list[dict], list[str]]:
+    """Expose only explicitly sourced, fully covered physiological windows."""
+    units = {
+        "presleep_hr_median_bpm": "bpm",
+        "presleep_resp_median_per_min": "breaths/min",
+        "presleep_hrv_rmssd_ms": "ms",
+    }
+    selected, conflicts, reasons = {}, set(), set()
+    fields = (
+        "metric_id unit source method definition_version local_date episode_id "
+        "start_at_utc end_at_utc value quality covered_sec sample_count "
+        "measurement_condition hrv_method source_refs"
+    ).split()
+    for row in rows:
+        raw = row.get("raw_data")
+        windows = row.get(
+            "metric_windows", raw.get("metric_windows", []) if isinstance(raw, dict) else []
+        )
+        if not isinstance(windows, list):
+            reasons.add("metric_windows_invalid")
+            continue
+        for window in windows:
+            if not isinstance(window, dict):
+                reasons.add("metric_window_invalid")
+                continue
+            item = {key: window[key] for key in fields if key in window}
+            start, end = instant(item.get("start_at_utc")), instant(item.get("end_at_utc"))
+            count = item.get("sample_count")
+            duration = (end - start).total_seconds() if start and end else 0
+            if (
+                item.get("metric_id") not in units
+                or item.get("unit") != units.get(item.get("metric_id"))
+                or item.get("quality") != "valid"
+                or item.get("measurement_condition") != "presleep_awake_rest"
+                or not all(
+                    item.get(key)
+                    for key in ("source", "method", "definition_version", "episode_id")
+                )
+                or item.get("local_date") != row.get("record_date")
+                or not start
+                or not end
+                or duration <= 0
+                or end > read_at
+                or not finite_number(item.get("value"))
+                or item["value"] <= 0
+                or not finite_number(item.get("covered_sec"))
+                or item["covered_sec"] != duration
+                or not isinstance(count, int)
+                or isinstance(count, bool)
+                or count <= 0
+                or (
+                    item["metric_id"] == "presleep_hrv_rmssd_ms"
+                    and item.get("hrv_method") != "RMSSD"
+                )
+            ):
+                reasons.add("metric_window_quality_or_provenance_unverified")
+                continue
+            refs = row.get("source_refs") or item.get("source_refs")
+            if (
+                not isinstance(refs, list)
+                or not refs
+                or not all(isinstance(ref, str) and ref for ref in refs)
+            ):
+                reasons.add("metric_window_source_refs_missing")
+                continue
+            item.update(
+                start_at_utc=start.isoformat(), end_at_utc=end.isoformat(), source_refs=refs
+            )
+            key = tuple(
+                item.get(field)
+                for field in (
+                    "metric_id",
+                    "local_date",
+                    "episode_id",
+                    "source",
+                    "method",
+                    "definition_version",
+                    "start_at_utc",
+                    "end_at_utc",
+                    "measurement_condition",
+                    "hrv_method",
+                )
+            )
+            if key in selected and selected[key] != item:
+                conflicts.add(key)
+                reasons.add("metric_window_conflict")
+            else:
+                selected[key] = item
+    return [item for key, item in selected.items() if key not in conflicts], sorted(reasons)
 
 
 def aggregate_clock(values: list[float | None]) -> dict[str, float | None]:
@@ -257,21 +349,195 @@ def normalize_daily_metrics(rows: list[dict], *, activity: bool = False) -> list
     return result
 
 
+def select_somni_record_rows(rows: list[dict]) -> tuple[list[dict], list[str]]:
+    """Select one daily record or a uniquely revised version of one episode."""
+    by_date: dict[str, list[dict]] = {}
+    for row in rows:
+        local_date = row.get("record_date")
+        try:
+            local_date = parse_date(local_date).isoformat()
+        except (TypeError, ValueError):
+            continue
+        by_date.setdefault(local_date, []).append(row)
+
+    selected: list[dict] = []
+    reasons: set[str] = set()
+    for candidates in by_date.values():
+        if len(candidates) == 1:
+            candidate = candidates[0]
+        else:
+            identities = {(row.get("source"), row.get("episode_id")) for row in candidates}
+            revisions = [row.get("revision") for row in candidates]
+            if (
+                len(identities) != 1
+                or not all(isinstance(value, str) and value for value in next(iter(identities)))
+                or not all(
+                    isinstance(value, int) and not isinstance(value, bool) and value >= 1
+                    for value in revisions
+                )
+                or len(set(revisions)) != len(revisions)
+            ):
+                reasons.add("somni_record_revision_ambiguous")
+                continue
+            candidate = max(candidates, key=lambda row: row["revision"])
+        if candidate.get("main_sleep") is False:
+            reasons.add("somni_record_not_main_sleep")
+            continue
+        if candidate.get("main_sleep") is not True:
+            reasons.add("somni_record_main_sleep_unverified")
+            continue
+        selected.append(candidate)
+    return selected, sorted(reasons)
+
+
+def normalize_somni_record_metrics(
+    rows: list[dict], *, timezone_offset: str, read_at: Any
+) -> tuple[list[dict], list[str]]:
+    """Project validated legacy record fields into daily sleep facts."""
+    result = []
+    reasons: set[str] = set()
+    cutoff = instant(read_at)
+    if cutoff is None:
+        return [], ["somni_record_cutoff_unverified"]
+
+    for row in rows:
+        if row.get("source_type") != "records":
+            continue
+        if row.get("main_sleep") is not True:
+            reasons.add(
+                "somni_record_not_main_sleep"
+                if row.get("main_sleep") is False
+                else "somni_record_main_sleep_unverified"
+            )
+            continue
+        raw = row.get("raw_data")
+        if not isinstance(raw, dict):
+            reasons.add("somni_record_raw_data_missing")
+            continue
+        record_date = row.get("record_date")
+        try:
+            record_date = parse_date(record_date).isoformat()
+        except (TypeError, ValueError):
+            reasons.add("somni_record_date_invalid")
+            continue
+        quality = row.get("quality")
+        if quality is not None and (
+            not isinstance(quality, dict) or quality.get("valid") is not True
+        ):
+            reasons.add("somni_record_quality_unverified")
+            continue
+
+        bed = instant(raw.get("bed_time"))
+        wake = instant(raw.get("wake_time"))
+        wake_up = instant(raw.get("wake_up_time"))
+        if not bed or not wake_up or bed >= wake_up or wake_up > cutoff:
+            reasons.add("somni_record_sleep_interval_unverified")
+            continue
+        offset = str(row.get("timezone_offset") or timezone_offset)
+        try:
+            wake_date = attribute_sleep_date(wake_up, offset)
+        except ValueError:
+            reasons.add("somni_record_timezone_unverified")
+            continue
+        if wake_date != record_date:
+            reasons.add("somni_record_wake_date_mismatch")
+            continue
+        bed_minutes = minutes_between(bed, wake_up)
+        if bed_minutes <= 0:
+            reasons.add("somni_record_sleep_interval_invalid")
+            continue
+
+        refs = row.get("source_refs")
+        if (
+            not isinstance(refs, list)
+            or not refs
+            or not all(isinstance(ref, str) and ref for ref in refs)
+        ):
+            reasons.add("somni_record_source_refs_missing")
+            continue
+
+        source = str(row.get("source") or "somni_records")
+        common: dict[str, Any] = {
+            "unit": "min",
+            "source": source,
+            "local_date": record_date,
+            "quality": "valid",
+            "source_refs": refs,
+        }
+        if row.get("episode_id"):
+            common["episode_id"] = str(row["episode_id"])
+
+        ratio_keys = ("awake_ratio", "rem_ratio", "light_sleep_ratio", "deep_sleep_ratio")
+        ratios = {key: raw.get(key) for key in ratio_keys}
+        if all(finite_number(value) and 0 <= value <= 100 for value in ratios.values()):
+            parts = sleep_stage_parts(raw)
+            total_sleep = parts["total_minutes"]
+            if 0 <= total_sleep <= bed_minutes:
+                result.append(
+                    {
+                        **common,
+                        "metric_id": "total_sleep_min",
+                        "method": "somni_report_stage_projection_v1",
+                        "definition_version": "somni_records_raw_data_v1",
+                        "value": total_sleep,
+                    }
+                )
+            else:
+                reasons.add("somni_record_sleep_stage_duration_invalid")
+        else:
+            reasons.add("somni_record_sleep_stage_ratios_unverified")
+
+        latency = raw.get("sleep_latency")
+        if finite_number(latency) and 0 <= latency <= bed_minutes:
+            result.append(
+                {
+                    **common,
+                    "metric_id": "sol_min",
+                    "method": "somni_record_sleep_latency_v1",
+                    "definition_version": "somni_records_raw_data_v1",
+                    "value": int(latency),
+                }
+            )
+        else:
+            reasons.add("somni_record_sleep_latency_unverified")
+
+        efficiency = raw.get("sleep_efficiency")
+        if finite_number(efficiency) and 0 <= efficiency <= 100:
+            result.append(
+                {
+                    **common,
+                    "unit": "pct",
+                    "metric_id": "sleep_efficiency_pct",
+                    "method": "somni_record_sleep_efficiency_v1",
+                    "definition_version": "somni_records_raw_data_v1",
+                    "value": int(efficiency),
+                }
+            )
+        else:
+            reasons.add("somni_record_sleep_efficiency_unverified")
+
+        if wake and bed <= wake <= wake_up:
+            result.append(
+                {
+                    **common,
+                    "metric_id": "waso_min",
+                    "method": "somni_record_awake_interval_v1",
+                    "definition_version": "somni_records_raw_data_v1",
+                    "value": minutes_between(wake, wake_up),
+                }
+            )
+        else:
+            reasons.add("somni_record_waso_interval_unverified")
+
+    return result, sorted(reasons)
+
+
 def build_series(metrics: list[dict], scope: TimeScope) -> list[dict]:
     grouped = {}
-    fields = (
-        "metric_id",
-        "unit",
-        "source",
-        "device_algorithm",
-        "method",
-        "definition_version",
-        "hrv_method",
-    )
     for metric in metrics:
         if not scope.start(28).isoformat() <= metric["local_date"] < scope.end.isoformat():
             continue
-        key = tuple(metric.get(field, "") for field in fields)
+        key = (metric.get("metric_id", ""), metric.get("unit", ""))
         grouped.setdefault(key, {}).setdefault(metric["local_date"], []).append(metric)
     result = []
     for key, days in sorted(grouped.items()):
@@ -281,9 +547,35 @@ def build_series(metrics: list[dict], scope: TimeScope) -> list[dict]:
             if len(candidates) > 1:
                 item.pop("value", None)
                 item.update(quality="missing", missing_reason="ambiguous_daily_value")
+                item["source_refs"] = list(
+                    dict.fromkeys(
+                        ref
+                        for candidate in candidates
+                        for ref in candidate.get("source_refs", [])
+                        if isinstance(ref, str) and ref
+                    )
+                )
+                for field in (
+                    "source",
+                    "method",
+                    "device_algorithm",
+                    "definition_version",
+                    "hrv_method",
+                ):
+                    if len({str(candidate.get(field) or "") for candidate in candidates}) > 1:
+                        item[field] = "mixed"
             daily.append(item)
         indexed = {item["local_date"]: item for item in daily}
-        series = {**dict(zip(fields, key, strict=True)), "daily": daily}
+        series = {"metric_id": key[0], "unit": key[1], "daily": daily}
+        source_metrics = [item for candidates in days.values() for item in candidates]
+        for field in ("source", "device_algorithm", "method", "definition_version", "hrv_method"):
+            values = {str(item.get(field) or "") for item in source_metrics}
+            if len(values) == 1:
+                value = next(iter(values))
+                if value:
+                    series[field] = value
+            elif values:
+                series[field] = "mixed"
         for window in (7, 28):
             values, missing = [], {}
             for index in range(window):

@@ -572,6 +572,7 @@ message InputNumericStats {
   optional double mad = 3;
   optional double min = 4;
   optional double max = 5;
+  optional double std_dev = 6;
 }
 
 message InputClockStats {
@@ -614,6 +615,25 @@ message InputMetricSeries {
   InputCoverage coverage_28d = 11;
 }
 
+message InputMetricWindow {
+  string metric_id = 1;
+  string unit = 2;
+  string source = 3;
+  string method = 4;
+  string definition_version = 5;
+  string local_date = 6;
+  string episode_id = 7;
+  google.protobuf.Timestamp start_at_utc = 8;
+  google.protobuf.Timestamp end_at_utc = 9;
+  optional double value = 10;
+  string quality = 11;
+  optional double covered_sec = 12;
+  optional int32 sample_count = 13;
+  string measurement_condition = 14;
+  optional string hrv_method = 15;
+  repeated string source_refs = 16;
+}
+
 message InputFacts {
   InputEpisode latest_episode = 1;
   repeated InputMetricValue latest_values = 2;
@@ -621,6 +641,7 @@ message InputFacts {
   repeated InputEpisode episodes = 4;
   repeated InputMetricSeries series = 5;
   repeated InputMetricValue current_observations = 6;
+  repeated InputMetricWindow metric_windows = 7;
 }
 
 message InputFactsSection {

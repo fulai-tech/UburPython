@@ -140,6 +140,33 @@ async def test_build_facts_projects_daily_report_vitals_with_report_provenance()
     assert manifest["sleep_reports:report-20261007"]["record_id"] == "report-20261007"
 
 
+async def test_build_facts_preserves_other_sources_and_exclusion_reason() -> None:
+    from app.server.somni.facts.time import resolve_scope
+
+    svc, store = service()
+
+    async def exclude_late_record(*args, missing_reasons):
+        missing_reasons.append("records_historical_version_unavailable")
+        return []
+
+    store.list_sleep_episodes.side_effect = exclude_late_record
+    store.list_daily_sleep_reports.return_value = [
+        {
+            "uid": "u",
+            "reports_id": "synthetic-report",
+            "record_date": "2026-10-07",
+            "language": "en",
+            "overnight_vitals": {"hr": {"value": 61.5}},
+        }
+    ]
+    facts = await svc.build_facts(
+        "u", resolve_scope("2026-10-08", "+00:00"), datetime(2026, 10, 8, tzinfo=UTC), {}
+    )
+    assert facts["status"] == "partial"
+    assert "records_historical_version_unavailable" in facts["missing_reasons"]
+    assert facts["value"]["series"][0]["daily"][0]["value"] == 61.5
+
+
 async def test_build_facts_deduplicates_equal_language_report_values() -> None:
     svc, store = service()
     store.list_daily_sleep_reports.return_value = [
@@ -222,7 +249,7 @@ async def test_build_facts_prefers_usable_daily_fact_over_report_projection() ->
                 "heart_rate_sleep_avg_bpm": 58,
                 "respiratory_rate_sleep_avg": 13,
             },
-        }
+        },
     ]
     store.list_daily_sleep_reports.return_value = [
         {
@@ -243,6 +270,179 @@ async def test_build_facts_prefers_usable_daily_fact_over_report_projection() ->
     assert series["sleep_hr_mean_bpm"]["source"] == "wearable"
     assert series["sleep_hr_mean_bpm"]["daily"][0]["value"] == 58
     assert series["sleep_resp_mean_per_min"]["daily"][0]["value"] == 13
+
+
+async def test_build_facts_fills_report_gaps_per_metric_and_local_date() -> None:
+    svc, store = service()
+    store.list_sleep_episodes.return_value = [
+        {
+            "_id": "daily-fact-20261006",
+            "source": "wearable",
+            "record_date": "2026-10-06",
+            "revision": 1,
+            "main_sleep": True,
+            "selection_policy_version": "main_sleep_v1",
+            "device_algorithm": "wearable_v1",
+            "definition_version": "metrics_v1",
+            "quality": {"valid": True},
+            "sleep": {
+                "start_at": "2026-10-05T22:00:00Z",
+                "end_at": "2026-10-06T06:00:00Z",
+            },
+            "physiology": {
+                "heart_rate_sleep_avg_bpm": 58,
+                "respiratory_rate_sleep_avg": 13,
+            },
+        },
+        {
+            "_id": "invalid-fact-20261007",
+            "source": "wearable",
+            "record_date": "2026-10-07",
+            "revision": 1,
+            "main_sleep": True,
+            "selection_policy_version": "main_sleep_v1",
+            "device_algorithm": "wearable_v1",
+            "definition_version": "metrics_v1",
+            "quality": {"valid": True},
+            "sleep": {
+                "start_at": "2026-10-06T22:00:00Z",
+                "end_at": "2026-10-07T06:00:00Z",
+            },
+            "physiology": {
+                "heart_rate_sleep_avg_bpm": "invalid",
+                "respiratory_rate_sleep_avg": True,
+            },
+        },
+        {
+            "_id": "record-fact-20261007",
+            "source_type": "records",
+            "source": "somni_records",
+            "record_date": "2026-10-07",
+            "revision": 1,
+            "main_sleep": True,
+            "selection_policy_version": "main_sleep_v1",
+            "device_algorithm": "radar_v1",
+            "definition_version": "record_metrics_v1",
+            "quality": {"valid": True},
+            "physiology": {
+                "heart_rate_sleep_avg_bpm": 55,
+                "respiratory_rate_sleep_avg": 12,
+            },
+        },
+    ]
+    store.list_daily_sleep_reports.return_value = [
+        {
+            "uid": "u",
+            "reports_id": "report-20261006",
+            "record_date": "2026-10-06",
+            "language": "en",
+            "overnight_vitals": {"hr": {"value": 70}, "br": {"value": 16}},
+        },
+        {
+            "uid": "u",
+            "reports_id": "report-20261007",
+            "record_date": "2026-10-07",
+            "language": "en",
+            "overnight_vitals": {"hr": {"value": 72}, "br": {"value": 14}},
+        },
+    ]
+    from app.server.somni.facts.time import resolve_scope
+
+    facts = await svc.build_facts(
+        "u", resolve_scope("2026-10-08", "+00:00"), datetime(2026, 10, 8, tzinfo=UTC), {}
+    )
+
+    series = {item["metric_id"]: item for item in facts["value"]["series"]}
+    heart_rate = series["sleep_hr_mean_bpm"]
+    daily = {item["local_date"]: item for item in heart_rate["daily"]}
+    assert heart_rate["source"] == "mixed"
+    assert heart_rate["stats_7d"]["valid_count"] == 2
+    assert daily["2026-10-06"]["value"] == 58
+    assert daily["2026-10-06"]["source"] == "wearable"
+    assert daily["2026-10-07"]["value"] == 72
+    assert daily["2026-10-07"]["source"] == "somni_sleep_reports"
+
+
+async def test_build_facts_projects_somni_records_when_reports_are_absent() -> None:
+    svc, store = service()
+    store.list_sleep_episodes.return_value = [
+        {
+            "_id": "record-20261007",
+            "source_type": "records",
+            "source": "somni_records",
+            "record_date": "2026-10-07",
+            "main_sleep": True,
+            "timezone_offset": "+08:00",
+            "raw_data": {
+                "bed_time": datetime(2026, 10, 6, 14, tzinfo=UTC),
+                "wake_time": datetime(2026, 10, 6, 20, tzinfo=UTC),
+                "wake_up_time": datetime(2026, 10, 6, 22, tzinfo=UTC),
+                "sleep_latency": 20,
+                "sleep_efficiency": 85,
+                "awake_ratio": 5,
+                "rem_ratio": 20,
+                "light_sleep_ratio": 50,
+                "deep_sleep_ratio": 25,
+            },
+        }
+    ]
+    store.list_daily_sleep_reports.return_value = []
+    from app.server.somni.facts.time import resolve_scope
+
+    facts = await svc.build_facts(
+        "u", resolve_scope("2026-10-08", "+08:00"), datetime(2026, 10, 8, tzinfo=UTC), {}
+    )
+
+    series = {item["metric_id"]: item for item in facts["value"]["series"]}
+    expected = {
+        "total_sleep_min": 456,
+        "sol_min": 20,
+        "waso_min": 120,
+        "sleep_efficiency_pct": 85,
+    }
+    for metric_id, value in expected.items():
+        daily = series[metric_id]["daily"]
+        assert len(daily) == 1
+        assert daily[0]["local_date"] == "2026-10-07"
+        assert daily[0]["quality"] == "valid"
+        assert daily[0]["value"] == value
+        assert daily[0]["source_refs"] == ["records:record-20261007"]
+
+
+async def test_build_facts_rejects_ambiguous_same_date_somni_records() -> None:
+    svc, store = service()
+    record = {
+        "_id": "record-20261007-a",
+        "source_type": "records",
+        "source": "somni_records",
+        "record_date": "2026-10-07",
+        "main_sleep": True,
+        "timezone_offset": "+08:00",
+        "raw_data": {
+            "bed_time": datetime(2026, 10, 6, 14, tzinfo=UTC),
+            "wake_time": datetime(2026, 10, 6, 20, tzinfo=UTC),
+            "wake_up_time": datetime(2026, 10, 6, 22, tzinfo=UTC),
+            "sleep_latency": 20,
+            "sleep_efficiency": 85,
+            "awake_ratio": 5,
+            "rem_ratio": 20,
+            "light_sleep_ratio": 50,
+            "deep_sleep_ratio": 25,
+        },
+    }
+    store.list_sleep_episodes.return_value = [
+        record,
+        {**record, "_id": "record-20261007-b"},
+    ]
+    store.list_daily_sleep_reports.return_value = []
+    from app.server.somni.facts.time import resolve_scope
+
+    facts = await svc.build_facts(
+        "u", resolve_scope("2026-10-08", "+08:00"), datetime(2026, 10, 8, tzinfo=UTC), {}
+    )
+
+    assert not any(item["metric_id"] == "total_sleep_min" for item in facts["value"]["series"])
+    assert "somni_record_revision_ambiguous" in facts["missing_reasons"]
 
 
 async def test_plan_inline_no_health_queries() -> None:

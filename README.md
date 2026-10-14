@@ -8,6 +8,63 @@
 - **写路径**：直连 Mongo，再同步本侧 ES（不再调用 BioNode）
 - **接口文档**：`docs/功能手板接口文档.md`、`docs/量产接口文档.md`
 
+### GenerationData facts visibility
+
+`build_facts` opts into per-row time exclusion for sleep episodes, daily activity and
+sleep reports. A row with unverified timestamps or a version later than the requested
+cutoff is excluded and a `<source>_source_time_unverified` or
+`<source>_historical_version_unavailable` reason is retained in the partial facts
+section. Other verified rows remain available; missing values are not zero-filled.
+Strict core profile/blueprint reads, UID/date queries, projection and raw query budgets
+are unchanged. This does not reconstruct overwritten versions or complete pending
+radar raw-signal aggregation. No persisted timestamps or hashes are repaired.
+
+Regression checks: `python -m pytest tests/test_somni_facts_store.py tests/test_somni_facts_service.py tests/test_grpc_generation_data.py -q`.
+
+### Legacy `somni_records` profile-facts fallback (local, not deployed)
+
+When report or normalized daily metrics do not cover a metric/date, `build_facts`
+can project validated `somni_records.raw_data` fields into the existing typed
+daily series. The projection reuses the current report definitions: total sleep
+is the floored sum of REM/light/deep stage minutes over bed-to-final-wake time;
+SOL uses `sleep_latency`; WASO uses `wake_time` to `wake_up_time`; sleep
+efficiency uses `sleep_efficiency` percent. It requires finite in-range values,
+an aware ordered sleep interval, a cutoff-visible wake time whose local date
+matches `record_date`, and source refs. The row's `timezone_offset` is used when
+present; otherwise the request's fixed offset is used and historical travel/DST
+cannot be reconstructed. If a quality object explicitly marks the record
+invalid/unverified, it is rejected; absence of a legacy quality object is not
+proof of device quality. Values only certify the field projection checks, not
+clinical accuracy. Missing fields stay missing, never zero.
+
+Per metric and local wake date, a validated normalized wearable value wins,
+then a validated daily-report value, then a validated legacy-record projection.
+Only one source contributes a value for a given date; conflicting duplicate
+records remain missing/partial. The internal `facts.series` shape is unchanged;
+top-level source/method metadata is `mixed` when daily rows use more than one
+source, while each daily value retains its own source and refs. This does not
+generate reports or aggregate raw radar/HR/RR/IBI signals. The facts section
+continues to report unrelated pending aggregation/visibility limitations.
+
+### v6 presleep evidence (local, not deployed)
+
+Internal Somni Proto adds `InputFacts.metric_windows=7` and optional
+`InputNumericStats.std_dev=6`; absent fields remain readable, not zero evidence.
+`InputMetricWindow` carries metric/unit/source/method/definition, date/episode,
+UTC bounds, optional value/coverage/count, quality/measurement condition,
+HRV method and source refs.
+
+`normalize_metric_windows` validates existing aggregate `metric_windows` from
+records/wearable_daily (or records raw_data). Full duration coverage, provenance,
+presleep awake-rest condition and RMSSD/ms for HRV are required; conflicting
+duplicates and post-cutoff windows are excluded. Raw HR/RR/IBI aggregation and
+main-sleep inference remain pending. Missing windows adds
+`presleep_metric_windows_unavailable`, retaining original partial reasons.
+Generic numeric aggregation does not populate std_dev; DeepHealth computes
+reviewed sample SD from seven preceding nights. No database writes, migration
+or seeding. Stable questionnaire/DQ codes and device-quality/window producers
+remain dependencies. Producer/consumer rollout requires separate authorization.
+
 ## 架构
 
 ```text

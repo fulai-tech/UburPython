@@ -24,6 +24,8 @@ class FactsStore:
         fields: str,
         sort: list[tuple[str, int]] | None = None,
         limit: int | None = None,
+        *,
+        missing_reasons: list[str] | None = None,
     ) -> list[dict]:
         if self._client is None:
             raise DataError("UNAVAILABLE", "mongo_not_configured")
@@ -52,8 +54,20 @@ class FactsStore:
             raise DataError("RESOURCE_EXHAUSTED", "source_query_budget_exceeded")
         if cutoff is not None:
             rows = [self._normalize_times(row) for row in rows]
+            verified = []
             for row in rows:
-                self._validate_time(row, cutoff)
+                try:
+                    self._validate_time(row, cutoff)
+                except DataError as exc:
+                    if missing_reasons is None or exc.reason not in (
+                        "source_time_unverified",
+                        "historical_version_unavailable",
+                    ):
+                        raise
+                    reason = f"{name}_{exc.reason}"
+                    if reason not in missing_reasons:
+                        missing_reasons.append(reason)
+                    continue
                 required_time = {
                     "user_profiles_short_terms": "generated_at",
                     "generations": "generated_at",
@@ -61,6 +75,8 @@ class FactsStore:
                 }.get(name)
                 if required_time and instant(row.get(required_time)) is None:
                     raise DataError("FAILED_PRECONDITION", "source_time_unverified")
+                verified.append(row)
+            rows = verified
             if not rows and query.get("status") in ("active", "committed"):
                 historical_query = {key: value for key, value in query.items() if key != "status"}
                 candidates = await (
@@ -404,19 +420,27 @@ class FactsStore:
         return bool(rows)
 
     async def list_sleep_episodes(
-        self, uid: str, start: str, end: str, read_at: datetime
+        self,
+        uid: str,
+        start: str,
+        end: str,
+        read_at: datetime,
+        *,
+        missing_reasons: list[str] | None = None,
     ) -> list[dict]:
         dates = {"$gte": start, "$lt": end}
         wearable = await self._read(
             "wearable_daily",
             self._visible({"user_id": uid, "status": 1, "record_date": dates}, read_at),
             self._daily_fields(),
+            missing_reasons=missing_reasons,
         )
         radar = await self._read(
             "records",
             self._visible({"uid": uid, "record_date": dates}, read_at),
             "episode_id source revision record_date timezone_offset main_sleep "
-            "selection_policy_version raw_data quality received_at",
+            "selection_policy_version raw_data quality received_at metric_windows",
+            missing_reasons=missing_reasons,
         )
         return [{**row, "source_type": "wearable_daily"} for row in wearable] + [
             {**row, "source_type": "records"} for row in radar
@@ -427,11 +451,18 @@ class FactsStore:
         return (
             "episode_id source revision record_date activity_date timezone_offset "
             "sleep physiology activity quality data_gaps device_algorithm definition_version "
-            "hrv_method main_sleep selection_policy_version source_upload_record_ids received_at"
+            "hrv_method main_sleep selection_policy_version source_upload_record_ids received_at "
+            "metric_windows"
         )
 
     async def load_daily_metrics(
-        self, uid: str, start: str, end: str, read_at: datetime
+        self,
+        uid: str,
+        start: str,
+        end: str,
+        read_at: datetime,
+        *,
+        missing_reasons: list[str] | None = None,
     ) -> list[dict]:
         return await self._read(
             "wearable_daily",
@@ -439,10 +470,17 @@ class FactsStore:
                 {"user_id": uid, "status": 1, "activity_date": {"$gte": start, "$lt": end}}, read_at
             ),
             self._daily_fields(),
+            missing_reasons=missing_reasons,
         )
 
     async def list_daily_sleep_reports(
-        self, uid: str, start: str, end: str, read_at: datetime
+        self,
+        uid: str,
+        start: str,
+        end: str,
+        read_at: datetime,
+        *,
+        missing_reasons: list[str] | None = None,
     ) -> list[dict]:
         return await self._read(
             "sleep_reports",
@@ -452,6 +490,7 @@ class FactsStore:
             ),
             "uid reports_id record_date language overnight_vitals",
             [("record_date", 1), ("language", 1), ("reports_id", 1), ("_id", 1)],
+            missing_reasons=missing_reasons,
         )
 
     async def load_upload_status(self, uid: str, ids: list[str], read_at: datetime) -> list[dict]:
