@@ -8,6 +8,20 @@
 - **写路径**：直连 Mongo，再同步本侧 ES（不再调用 BioNode）
 - **接口文档**：`docs/功能手板接口文档.md`、`docs/量产接口文档.md`
 
+### Profile and plan hashes as metadata (local, not deployed)
+
+All `GetProfileInputs` purposes and inline profiles in `GetPlanInputs` skip stored
+body and transport-envelope hash comparisons. Original bodies and hash values are
+returned without database writes; envelope hashes are still generated. The section
+reason is `long_term_hash_verification_skipped`. Owner/schema/version-link/status,
+object shape, finite JSON, visibility, source and snapshot-ambiguity checks remain.
+The user explicitly retained existing UID/schema/hash database association queries.
+Missing linked records and malformed bodies do not become empty successful profiles.
+This does not repair missing preferences, obsolete dates or duplicate active snapshots.
+DPH must also use the metadata-only policy; updating only DPH cannot change this service.
+
+Regression: `python -m pytest tests/test_somni_facts_service.py -q`.
+
 ### GenerationData facts visibility
 
 `build_facts` opts into per-row time exclusion for sleep episodes, daily activity and
@@ -300,17 +314,14 @@ record ownership, profile/hash links, plan versions, cursor signatures and query
 budgets remain enforced. Account eligibility and user consent are enforced by the
 caller; GenerationData does not require a `somni_users` record or `privacy_switches`.
 
-Original saved-profile body validation precedes computing the wire-envelope hash.
-For schema 0.0.1, hash the original long_term_profile with compact sorted-key UTF-8
-JSON, preserving arrays, nulls and numeric types, disallowing NaN, and prefix SHA256
-with `sha256:`. Other legacy formats retain their existing algorithm. DeepHealth
-produces this hash; writers must preserve the final body/hash pair. Matching stored
-hash references and status=valid do not prove body integrity. A body mismatch returns
-partial/long_term_hash_mismatch without value, not not_found or a repaired checksum.
-DeepHealth maps this stored conflict to nonretryable application409 for profile and
-plan requests; no historical-data repair or checksum rewrite is performed.
-The separately normalized GenerationProfile envelope checksum is not authentication
-and must never replace validation of the stored original body.
+Saved-profile bodies must remain finite JSON objects, but hashes are output metadata,
+not validation gates in either profile or plan generation. DPH retains existing hash
+generation algorithms and returns stored hashes without comparing body/envelope
+digests. The middleware generates normalized envelope metadata without digest rejection.
+Hash mismatches no longer produce partial/long_term_hash_mismatch; missing bodies,
+invalid dates, ownership failures and duplicate snapshots remain separate errors.
+Existing UID/schema/hash association queries remain; no historical-data repair or
+checksum rewrite is performed. Hash fields are not authentication or proof of integrity.
 
 `GetProfileInputs.data_cutoff_at_utc` applies to every requested section, including
 questionnaires, prior profiles, facts, observations, execution, plan comparisons

@@ -15,12 +15,12 @@ from app.server.somni.facts.service import GenerationDataService
 @pytest.mark.parametrize(
     "body,reason",
     [
-        ({}, "long_term_hash_mismatch"),
+        ({}, None),
         (None, "incomplete_profile_content"),
         ({"value": float("nan")}, "invalid_canonical_content"),
     ],
 )
-async def test_invalid_original_profile_never_gets_envelope_hash(
+async def test_original_profile_hash_is_metadata_with_finite_body_required(
     monkeypatch, schema_version, body, reason
 ) -> None:
     from app.server.somni.facts.models import compute_long_term_content_hash
@@ -48,17 +48,73 @@ async def test_invalid_original_profile_never_gets_envelope_hash(
 
     monkeypatch.setattr("app.server.somni.facts.service.canonical_hash", envelope_hash)
     rejected = await svc._profile("u", "", utc_now(), {})
-    assert rejected["status"] == "partial"
-    assert rejected["missing_reasons"] == [reason]
-    assert "value" not in rejected
-    assert calls == []
+    if reason is None:
+        assert rejected["status"] == "ok"
+        assert rejected["value"]["long_term_content_hash"] == short["long_term_content_hash"]
+    else:
+        assert rejected["status"] == "partial"
+        assert rejected["missing_reasons"] == [reason]
+        assert "value" not in rejected
 
+    calls.clear()
     long["long_term_profile"] = {}
     short["long_term_content_hash"] = compute_long_term_content_hash({}, schema_version)
     long["content_hash"] = short["long_term_content_hash"]
     accepted = await svc._profile("u", "", utc_now(), {})
     assert accepted["status"] == "ok"
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    "purpose", ["plan_generation", "profile_refresh", "initial", "weekly", "correction"]
+)
+@pytest.mark.parametrize("schema_version", ["0.0.1", "2"])
+async def test_all_profile_purposes_skip_original_profile_hash(purpose, schema_version) -> None:
+    svc, store = service()
+    short = profile()
+    short.update(schema_version=schema_version, snapshot_id="test-placeholder", snapshot_revision=1)
+    long = {
+        "uid": "u",
+        "schema_version": schema_version,
+        "status": "valid",
+        "content_hash": short["long_term_content_hash"],
+        "long_term_profile": {"test-placeholder": "changed-body"},
+    }
+    original = deepcopy((short, long))
+    store.load_profile.return_value = (short, long)
+    result = await svc.get_profile_inputs(
+        "u",
+        "test-placeholder",
+        purpose=purpose,
+        review_end_local_date="2026-09-21",
+        timezone_offset="+00:00",
+        review_generation_id="test-placeholder" if purpose == "weekly" else "",
+        requested_sections=["prior_profile"],
+    )
+    received = result["data"]["prior_profile"]
+    assert received["status"] == "ok"
+    assert received["missing_reasons"] == ["long_term_hash_verification_skipped"]
+    assert received["value"]["long_term_profile"] == long["long_term_profile"]
+    assert received["value"]["long_term_content_hash"] == short["long_term_content_hash"]
+    assert (short, long) == original
+
+
+@pytest.mark.parametrize("body", [None, [], {"test-placeholder": float("nan")}])
+async def test_plan_hash_bypass_still_rejects_malformed_body(body) -> None:
+    svc, store = service()
+    short = profile()
+    store.load_profile.return_value = (
+        short,
+        {
+            "uid": "u",
+            "schema_version": short["schema_version"],
+            "content_hash": short["long_term_content_hash"],
+            "long_term_profile": body,
+        },
+    )
+    result = await svc._profile("u", "", utc_now(), {}, verify_long_term_hash=False)
+    assert result["status"] == "partial"
+    assert "value" not in result
 
 
 def profile() -> dict:
@@ -1192,11 +1248,11 @@ async def test_questionnaire_without_survey_version_preserves_actual_answer_fiel
     assert result["missing_reasons"] == []
 
 
-def test_current_profile_prefixed_hash_is_verified_not_rewritten() -> None:
+def test_current_profile_hashes_are_returned_without_comparison() -> None:
     import hashlib
     import json
 
-    from app.server.somni.facts.models import validate_profile
+    from app.server.somni.facts.models import validate_long_term_profile, validate_profile
 
     value = profile()
     value["schema_version"] = "0.0.1"
@@ -1207,8 +1263,11 @@ def test_current_profile_prefixed_hash_is_verified_not_rewritten() -> None:
     value["content_hash"] = canonical_hash(value)
     assert validate_profile(value, "u")["long_term_content_hash"] == value["long_term_content_hash"]
     value["long_term_profile"]["number"] = 31.0
-    with pytest.raises(DataError, match="long_term_hash_mismatch"):
-        validate_profile(value, "u")
+    value["content_hash"] = "test-placeholder"
+    validate_long_term_profile(value)
+    accepted = validate_profile(value, "u")
+    assert accepted["long_term_content_hash"] == value["long_term_content_hash"]
+    assert accepted["content_hash"] == "test-placeholder"
 
 
 async def test_prior_version_live_change_cannot_override_later_saved_version() -> None:

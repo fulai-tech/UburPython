@@ -30,7 +30,6 @@ from app.server.somni.facts.models import (
     section,
     timestamp,
     utc_now,
-    validate_long_term_profile,
     validate_profile,
 )
 from app.server.somni.facts.sleep_debt import calculate_sleep_debt
@@ -188,7 +187,14 @@ class GenerationDataService:
         }
 
     async def _profile(
-        self, uid: str, snapshot_id: str, read_at: datetime, manifest: dict, end_date: str = ""
+        self,
+        uid: str,
+        snapshot_id: str,
+        read_at: datetime,
+        manifest: dict,
+        end_date: str = "",
+        *,
+        verify_long_term_hash: bool = False,
     ) -> dict:
         short, long = await self.store.load_profile(uid, snapshot_id, read_at, end_date)
         if short is None:
@@ -230,14 +236,16 @@ class GenerationDataService:
         ):
             raise DataError("PERMISSION_DENIED", "profile_link_mismatch")
         try:
-            validate_long_term_profile(profile)
             profile["content_hash"] = canonical_hash(profile)
-            profile = validate_profile(profile, uid)
+            profile = validate_profile(profile, uid, verify_long_term_hash=verify_long_term_hash)
         except DataError as exc:
             if exc.code == "PERMISSION_DENIED":
                 raise
             return section(status="partial", reasons=[exc.reason])
-        return section(profile)
+        return section(
+            profile,
+            reasons=["long_term_hash_verification_skipped"],
+        )
 
     async def _blueprint(
         self, uid: str, generation_id: str, read_at: datetime, manifest: dict
@@ -910,7 +918,12 @@ class GenerationDataService:
             ),
             "questionnaires": lambda: self._questionnaires(uid, cutoff, manifest, answer_id),
             "prior_profile": lambda: self._profile(
-                uid, previous_profile_snapshot_id, cutoff, manifest, profile_end_date
+                uid,
+                previous_profile_snapshot_id,
+                cutoff,
+                manifest,
+                profile_end_date,
+                verify_long_term_hash=False,
             ),
             "facts": lambda: self.build_facts(uid, scope, cutoff, manifest),
             "observations": lambda: self._observations(uid, scope, cutoff, manifest),

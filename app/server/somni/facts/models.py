@@ -90,12 +90,13 @@ def validate_long_term_profile(profile: dict) -> None:
     body = profile.get("long_term_profile")
     if not isinstance(body, dict):
         raise DataError("INVALID_ARGUMENT", "incomplete_profile_content")
-    expected = compute_long_term_content_hash(body, profile.get("schema_version", ""))
-    if profile.get("long_term_content_hash") != expected:
-        raise DataError("INVALID_ARGUMENT", "long_term_hash_mismatch")
+    try:
+        json.dumps(body, allow_nan=False)
+    except (ValueError, TypeError) as exc:
+        raise DataError("INVALID_ARGUMENT", "invalid_canonical_content") from exc
 
 
-def validate_profile(profile: dict, uid: str) -> dict:
+def validate_profile(profile: dict, uid: str, *, verify_long_term_hash: bool = False) -> dict:
     if profile.get("uid") != uid:
         raise DataError("PERMISSION_DENIED", "profile_owner_mismatch")
     required = ("schema_version", "record_date", "data_cutoff_at_utc", "generated_at_utc", "status")
@@ -110,8 +111,6 @@ def validate_profile(profile: dict, uid: str) -> dict:
     ):
         if not isinstance(profile.get(key), dict):
             raise DataError("INVALID_ARGUMENT", "incomplete_profile_content")
-    validate_long_term_profile(profile)
     content = {key: profile[key] for key in PROFILE_FIELDS if key in profile}
-    if profile.get("content_hash") != canonical_hash(content):
-        raise DataError("INVALID_ARGUMENT", "profile_hash_mismatch")
-    return {**content, "content_hash": profile["content_hash"]}
+    generated_hash = canonical_hash(content)
+    return {**content, "content_hash": profile.get("content_hash", generated_hash)}
