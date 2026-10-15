@@ -6,7 +6,13 @@ from datetime import timedelta
 from statistics import mean, median
 from typing import Any
 
-from app.server.somni.facts.time import TimeScope, attribute_sleep_date, instant, parse_date
+from app.server.somni.facts.time import (
+    TimeScope,
+    attribute_sleep_date,
+    instant,
+    parse_date,
+    visible_by,
+)
 from app.server.somni.report.calc import minutes_between, sleep_stage_parts
 
 
@@ -70,7 +76,7 @@ def normalize_metric_windows(rows: list[dict], read_at: Any) -> tuple[list[dict]
                 or not start
                 or not end
                 or duration <= 0
-                or end > read_at
+                or not visible_by(end, read_at)
                 or not finite_number(item.get("value"))
                 or item["value"] <= 0
                 or not finite_number(item.get("covered_sec"))
@@ -430,7 +436,7 @@ def normalize_somni_record_metrics(
         bed = instant(raw.get("bed_time"))
         wake = instant(raw.get("wake_time"))
         wake_up = instant(raw.get("wake_up_time"))
-        if not bed or not wake_up or bed >= wake_up or wake_up > cutoff:
+        if not bed or not wake_up or bed >= wake_up or not visible_by(wake_up, cutoff):
             reasons.add("somni_record_sleep_interval_unverified")
             continue
         offset = str(row.get("timezone_offset") or timezone_offset)
@@ -626,7 +632,7 @@ def select_last_effective_setting(operations: list[dict], read_at: Any = None) -
         for row in operations
         if _applied(row)
         and instant(row.get("executed_at"))
-        and (read_at is None or instant(row["executed_at"]) <= read_at)
+        and (read_at is None or visible_by(instant(row["executed_at"]), read_at))
         and row.get("origin") != "safety"
         and row.get("reason") not in ("normal_end", "safety_stop")
         and isinstance(row.get("parameters"), dict)
@@ -643,7 +649,7 @@ def summarize_execution(session: dict, operations: list[dict], read_at: Any) -> 
     for row in operations:
         if row.get("session_id") == session.get("session_id") and row.get("op_id"):
             when = instant(row.get("executed_at"))
-            if when and when <= read_at:
+            if when and visible_by(when, read_at):
                 unique[row["op_id"]] = row
     groups = {}
     channel_states = {}
@@ -660,7 +666,7 @@ def summarize_execution(session: dict, operations: list[dict], read_at: Any) -> 
             if len(states[start]) != 1:
                 continue
             boundaries = times[index + 1 : index + 2]
-            if session_end and start < session_end <= read_at:
+            if session_end and start < session_end and visible_by(session_end, read_at):
                 boundaries.append(session_end)
             if boundaries:
                 boundaries_by_op[states[start][0]["op_id"]] = min(boundaries)
@@ -767,7 +773,7 @@ def compare_plan_execution(final: dict, operations: list[dict], read_at: Any) ->
         for row in operations
         if _applied(row)
         and instant(row.get("executed_at"))
-        and instant(row["executed_at"]) <= read_at
+        and visible_by(instant(row["executed_at"]), read_at)
         and row.get("origin") != "safety"
         and row.get("reason") not in ("normal_end", "safety_stop")
     ]

@@ -832,7 +832,7 @@ async def test_realtime_execution_cursor_requires_explicit_unexecuted_node() -> 
     assert partial["missing_reasons"] == ["execution_apply_boundary_unverified"]
 
 
-async def test_profile_inputs_reads_exact_answer_at_supplied_cutoff() -> None:
+async def test_profile_inputs_reads_exact_answer_ignoring_legacy_cutoff() -> None:
     svc, store = service()
     cutoff = utc_now()
     store.load_questionnaires.return_value = [
@@ -854,7 +854,9 @@ async def test_profile_inputs_reads_exact_answer_at_supplied_cutoff() -> None:
         answer_id="answer-exact",
         data_cutoff_at_utc=timestamp(cutoff),
     )
-    store.load_questionnaires.assert_awaited_once_with("u", cutoff, "answer-exact")
+    uid, read_at, answer_id = store.load_questionnaires.call_args.args
+    assert uid == "u" and answer_id == "answer-exact"
+    assert read_at >= cutoff
 
 
 @pytest.mark.parametrize("current_format", [False, True])
@@ -1173,7 +1175,7 @@ async def test_pagination_keeps_read_marker_without_permissions() -> None:
     store.load_permissions.assert_not_awaited()
 
 
-async def test_all_profile_sections_share_cutoff_not_actual_read_start() -> None:
+async def test_all_profile_sections_share_actual_read_start_ignoring_legacy_cutoff() -> None:
     svc, store = service()
     cutoff = datetime(2026, 9, 20, tzinfo=UTC)
     methods = {
@@ -1196,7 +1198,9 @@ async def test_all_profile_sections_share_cutoff_not_actual_read_start() -> None
         data_cutoff_at_utc=timestamp(cutoff),
     )
     for name, position in methods.items():
-        assert getattr(svc, name).call_args.args[position] == cutoff
+        assert (
+            timestamp(getattr(svc, name).call_args.args[position]) == result["read_started_at_utc"]
+        )
     assert result["read_started_at_utc"] != timestamp(cutoff)
     store.load_permissions.assert_not_called()
 

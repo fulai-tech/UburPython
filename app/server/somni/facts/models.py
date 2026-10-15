@@ -6,6 +6,8 @@ import math
 from datetime import UTC, datetime
 from typing import Any
 
+from app.server.somni.facts.time import without_legacy_cutoff
+
 
 class DataError(Exception):
     def __init__(self, code: str, reason: str) -> None:
@@ -58,7 +60,6 @@ PROFILE_FIELDS = (
     "profile_snapshot_id",
     "snapshot_revision",
     "record_date",
-    "data_cutoff_at_utc",
     "generated_at_utc",
     "status",
     "long_term_content_hash",
@@ -97,9 +98,10 @@ def validate_long_term_profile(profile: dict) -> None:
 
 
 def validate_profile(profile: dict, uid: str, *, verify_long_term_hash: bool = False) -> dict:
+    profile = without_legacy_cutoff(profile)
     if profile.get("uid") != uid:
         raise DataError("PERMISSION_DENIED", "profile_owner_mismatch")
-    required = ("schema_version", "record_date", "data_cutoff_at_utc", "generated_at_utc", "status")
+    required = ("schema_version", "record_date", "generated_at_utc", "status")
     if any(not profile.get(key) for key in required):
         raise DataError("INVALID_ARGUMENT", "incomplete_profile_metadata")
     for key in (

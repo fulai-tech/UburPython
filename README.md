@@ -22,18 +22,24 @@ DPH must also use the metadata-only policy; updating only DPH cannot change this
 
 Regression: `python -m pytest tests/test_somni_facts_service.py -q`.
 
-### GenerationData facts visibility
+### Current-version profile and plan inputs
 
-`build_facts` opts into per-row time exclusion for sleep episodes, daily activity and
-sleep reports. A row with unverified timestamps or a version later than the requested
-cutoff is excluded and a `<source>_source_time_unverified` or
-`<source>_historical_version_unavailable` reason is retained in the partial facts
-section. Other verified rows remain available; missing values are not zero-filled.
-Strict core profile/blueprint reads, UID/date queries, projection and raw query budgets
-are unchanged. This does not reconstruct overwritten versions or complete pending
-radar raw-signal aggregation. No persisted timestamps or hashes are repaired.
+Profile/plan generation no longer accepts or emits `data_cutoff_at`,
+`data_cutoff_at_utc` or `cutoff_policy_version`. Old JSON/DB metadata is ignored;
+retired protobuf field numbers and names are reserved. Source receipt/update times
+are provenance, without an implicit read-start visibility cap. Business-date windows,
+active status, revision/association rules, ownership, finite values, quality checks and
+query budgets remain. Historical business dates use currently available versions;
+this is a best-effort read, not an archival or transactional snapshot. No DB migration
+or repair is performed. Same-day unchanged profiles can be reused independent of
+read time; changed business evidence can produce a new revision.
 
-Regression checks: `python -m pytest tests/test_somni_facts_store.py tests/test_somni_facts_service.py tests/test_grpc_generation_data.py -q`.
+The policy is scoped to each async profile/plan request and resets on errors.
+Reminder and evidence-pagination read boundaries retain their independent behavior.
+Observation validity uses the target business date at the supplied fixed UTC offset.
+Both middleware and DeepHealth must be updated together; no deployment is included.
+
+Regression: `uv run --no-sync pytest tests/test_cutoff_removal.py tests/test_grpc_generation_data.py -q`.
 
 ### Legacy `somni_records` profile-facts fallback (local, not deployed)
 
@@ -43,7 +49,7 @@ daily series. The projection reuses the current report definitions: total sleep
 is the floored sum of REM/light/deep stage minutes over bed-to-final-wake time;
 SOL uses `sleep_latency`; WASO uses `wake_time` to `wake_up_time`; sleep
 efficiency uses `sleep_efficiency` percent. It requires finite in-range values,
-an aware ordered sleep interval, a cutoff-visible wake time whose local date
+an aware ordered sleep interval, a wake time whose local date
 matches `record_date`, and source refs. The row's `timezone_offset` is used when
 present; otherwise the request's fixed offset is used and historical travel/DST
 cannot be reconstructed. If a quality object explicitly marks the record
@@ -71,7 +77,7 @@ HRV method and source refs.
 `normalize_metric_windows` validates existing aggregate `metric_windows` from
 records/wearable_daily (or records raw_data). Full duration coverage, provenance,
 presleep awake-rest condition and RMSSD/ms for HRV are required; conflicting
-duplicates and post-cutoff windows are excluded. Raw HR/RR/IBI aggregation and
+duplicates are excluded; profile/plan reads do not filter by read time. Raw HR/RR/IBI aggregation and
 main-sleep inference remain pending. Missing windows adds
 `presleep_metric_windows_unavailable`, retaining original partial reasons.
 Generic numeric aggregation does not populate std_dev; DeepHealth computes
@@ -323,20 +329,14 @@ invalid dates, ownership failures and duplicate snapshots remain separate errors
 Existing UID/schema/hash association queries remain; no historical-data repair or
 checksum rewrite is performed. Hash fields are not authentication or proof of integrity.
 
-`GetProfileInputs.data_cutoff_at_utc` applies to every requested section, including
-questionnaires, prior profiles, facts, observations, execution, plan comparisons
-and sleep debt. Omission uses the request start; future/invalid cutoffs are rejected.
-The envelope's `read_started_at_utc` is the actual read start, not the data cutoff.
-Availability timestamps must be trustworthy: missing receipt time yields a partial
-section with `source_time_unverified`; an overwritten or unresolved lifecycle
-version yields `historical_version_unavailable`, not a confirmed first generation.
-Queries remain `best_effort`, not a transactional/archival snapshot. Current
-records cannot reconstruct overwritten history. Database writers must preserve
-receipt times and immutable versions; this change does not create an archive.
+`GetProfileInputs` and `GetPlanInputs` use the current-version generation policy above.
+The envelope's `read_started_at_utc` and `generated_at_utc` retain actual audit times.
+
+Database writers may preserve receipt times and immutable versions; this change does not create an archive.
 
 Mongo compatibility: when no `received_at` exists, the persisted `update_time`
-(otherwise `create_time`) is the current-version visibility boundary, not proof
-of network receipt. Later updates still cannot satisfy an earlier cutoff. Completed
+(otherwise `create_time`) is a provenance timestamp, not proof
+of network receipt. Later updates are eligible in current-version profile/plan reads. Completed
 answer ObjectIds map to `answer_id`; completion time uses the persisted version
 time when absent. Missing optional survey versions are omitted without inventing
 values or rejecting the completed answer. `InputAnswer` adds stored `title` (field 8),

@@ -132,7 +132,6 @@ async def test_plan_round_trip_hash_and_missing_id() -> None:
         "schema_version": "2",
         "record_date": "2026-09-20",
         "status": "active",
-        "data_cutoff_at_utc": "2026-09-20T00:00:00Z",
         "generated_at_utc": "2026-09-20T00:00:00Z",
         "long_term_profile": {"age": 30},
         "short_term_profile": {},

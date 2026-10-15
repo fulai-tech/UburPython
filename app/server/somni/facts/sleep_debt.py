@@ -4,7 +4,7 @@ from datetime import datetime
 from statistics import mean
 
 from app.server.somni.facts.calc import finite_number
-from app.server.somni.facts.models import section, timestamp
+from app.server.somni.facts.models import section
 from app.server.somni.facts.time import attribute_sleep_date, instant, parse_date
 
 POLICY = "sleep_debt_14_valid_days.v1"
@@ -12,7 +12,7 @@ REQUIRED_DAYS = 14
 FALLBACK_MIN = 450.0
 
 
-def eligible_sleep(row: dict, cutoff: datetime) -> bool:
+def eligible_sleep(row: dict, cutoff: datetime | None = None) -> bool:
     sleep = row.get("sleep")
     quality = row.get("quality")
     if not isinstance(sleep, dict) or not isinstance(quality, dict):
@@ -35,9 +35,10 @@ def eligible_sleep(row: dict, cutoff: datetime) -> bool:
         and row.get("definition_version")
         and start
         and end
-        and start < end <= cutoff
+        and start < end
+        and (cutoff is None or end <= cutoff)
         and received
-        and received <= cutoff
+        and (cutoff is None or received <= cutoff)
         and wake_date == row.get("record_date")
         and sleep.get("unit", "min") == "min"
         and sleep.get("method", "source_daily") == "source_daily"
@@ -51,7 +52,7 @@ def cohort(row: dict) -> tuple:
     )
 
 
-def select_daily(rows: list[dict], cutoff: datetime) -> dict[str, dict]:
+def select_daily(rows: list[dict], cutoff: datetime | None = None) -> dict[str, dict]:
     by_date: dict[str, list[dict]] = {}
     for row in rows:
         day = row.get("record_date")
@@ -60,7 +61,7 @@ def select_daily(rows: list[dict], cutoff: datetime) -> dict[str, dict]:
         except (TypeError, ValueError):
             continue
         received = instant(row.get("received_at"))
-        if received and received <= cutoff:
+        if received and (cutoff is None or received <= cutoff):
             by_date.setdefault(day, []).append(row)
     selected = {}
     for day, candidates in by_date.items():
@@ -93,7 +94,9 @@ def select_daily(rows: list[dict], cutoff: datetime) -> dict[str, dict]:
     return selected
 
 
-def calculate_sleep_debt(rows: list[dict], record_date: str, cutoff: datetime) -> dict:
+def calculate_sleep_debt(
+    rows: list[dict], record_date: str, cutoff: datetime | None = None
+) -> dict:
     parse_date(record_date)
     daily = select_daily(rows, cutoff)
     current = daily.get(record_date)
@@ -103,7 +106,6 @@ def calculate_sleep_debt(rows: list[dict], record_date: str, cutoff: datetime) -
         "baseline_valid_day_count": 0,
         "baseline_policy_version": POLICY,
         "target_source": "unknown",
-        "data_cutoff_at_utc": timestamp(cutoff),
     }
     if current is None:
         return section(value, "partial", ["current_main_sleep_missing_or_ambiguous"])
