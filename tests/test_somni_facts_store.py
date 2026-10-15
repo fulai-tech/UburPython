@@ -283,6 +283,61 @@ async def test_profile_lookup_rejects_ambiguous_ids() -> None:
     assert collection.find.call_count == 1
 
 
+
+
+async def test_profile_lookup_selects_latest_when_multiple_snapshots_without_snapshot_id() -> None:
+    store, collection = make_store([
+        {
+            "snapshot_id": "s_new",
+            "profile_snapshot_id": "s_new",
+            "record_date": "2026-10-15",
+            "snapshot_revision": 1,
+            "schema_version": "0.0.1",
+            "long_term_content_hash": "hash1",
+        },
+        {
+            "snapshot_id": "s_old",
+            "profile_snapshot_id": "s_old",
+            "record_date": "2026-10-15",
+            "snapshot_revision": 1,
+            "schema_version": "0.0.1",
+            "long_term_content_hash": "hash2",
+        },
+    ])
+    collection.find.side_effect = [
+        Cursor([
+            {
+                "snapshot_id": "s_new",
+                "profile_snapshot_id": "s_new",
+                "record_date": "2026-10-15",
+                "snapshot_revision": 1,
+                "schema_version": "0.0.1",
+                "long_term_content_hash": "hash1",
+            },
+            {
+                "snapshot_id": "s_old",
+                "profile_snapshot_id": "s_old",
+                "record_date": "2026-10-15",
+                "snapshot_revision": 1,
+                "schema_version": "0.0.1",
+                "long_term_content_hash": "hash2",
+            },
+        ]),
+        Cursor([
+            {
+                "uid": "u",
+                "schema_version": "0.0.1",
+                "content_hash": "hash1",
+                "status": "valid",
+                "long_term_profile": {"basic_info": {}},
+            }
+        ]),
+    ]
+    short, long = await store.load_profile("u", "", datetime.now(UTC), end_date="2026-10-15")
+    assert short is not None
+    assert short["snapshot_id"] == "s_new"
+    assert long is not None
+
 async def test_no_events_without_owned_sessions() -> None:
     store, collection = make_store([])
     result = await store.list_execution_events(

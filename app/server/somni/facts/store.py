@@ -331,12 +331,7 @@ class FactsStore:
         )
         if not rows:
             return None, None
-        if len(rows) > 1 and (
-            snapshot_id
-            or all(
-                rows[0].get(key) == rows[1].get(key) for key in ("record_date", "snapshot_revision")
-            )
-        ):
+        if len(rows) > 1 and snapshot_id:
             raise DataError("FAILED_PRECONDITION", "profile_snapshot_ambiguous")
         short = rows[0]
         if short.get("profile_snapshot_id") and short.get("snapshot_id") not in (
@@ -359,10 +354,9 @@ class FactsStore:
                 read_at,
             ),
             "uid schema_version content_hash status long_term_profile received_at",
-            limit=2,
+            [("_id", -1)],
+            limit=1,
         )
-        if len(long_rows) > 1:
-            raise DataError("FAILED_PRECONDITION", "long_term_profile_ambiguous")
         return short, long_rows[0] if long_rows else None
 
     async def load_blueprint(self, uid: str, generation_id: str, read_at: datetime) -> dict | None:
