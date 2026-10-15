@@ -428,7 +428,8 @@ message GenerationProfile {
   string content_hash = 5;
   string long_term_content_hash = 6;
   string record_date = 7;
-  google.protobuf.Timestamp data_cutoff_at_utc = 8;
+  reserved 8;
+  reserved "data_cutoff_at_utc";
   google.protobuf.Timestamp generated_at_utc = 9;
   string status = 10;
   google.protobuf.Struct long_term_profile = 11;
@@ -875,7 +876,8 @@ message GetProfileInputsReq {
   optional string previous_profile_snapshot_id = 6;
   optional string review_generation_id = 7;
   repeated string requested_sections = 8;
-  google.protobuf.Timestamp data_cutoff_at_utc = 9;
+  reserved 9;
+  reserved "data_cutoff_at_utc";
   // Optional exact completed questionnaire answer. When set, the response contains only this answer.
   optional string answer_id = 10;
 }
@@ -918,7 +920,8 @@ message GetPlanInputsReq {
   // Request scope is used for section completeness and realtime event/session validation.
   string scope = 8;
   string timezone_offset = 9;
-  google.protobuf.Timestamp data_cutoff_at_utc = 10;
+  reserved 10;
+  reserved "data_cutoff_at_utc";
   string trigger_type = 11;
   optional string event_id = 12;
   optional string session_id = 13;
@@ -1024,7 +1027,8 @@ message SleepDebt {
   string source = 13;
   string device_algorithm = 14;
   string definition_version = 15;
-  google.protobuf.Timestamp data_cutoff_at_utc = 16;
+  reserved 16;
+  reserved "data_cutoff_at_utc";
   repeated string source_refs = 17;
 }
 

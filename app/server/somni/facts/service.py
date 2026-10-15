@@ -36,10 +36,13 @@ from app.server.somni.facts.sleep_debt import calculate_sleep_debt
 from app.server.somni.facts.store import FactsStore
 from app.server.somni.facts.time import (
     attribute_sleep_date,
+    current_generation_inputs,
+    current_generation_read,
     instant,
     parse_date,
     parse_offset,
     resolve_scope,
+    visible_by,
 )
 
 
@@ -224,10 +227,7 @@ class GenerationDataService:
             profile_snapshot_id=resolved_id,
             long_term_profile=long.get("long_term_profile"),
         )
-        for source_key, target in (
-            ("data_cutoff_at", "data_cutoff_at_utc"),
-            ("generated_at", "generated_at_utc"),
-        ):
+        for source_key, target in (("generated_at", "generated_at_utc"),):
             value = instant(short.get(source_key))
             if value:
                 profile[target] = timestamp(value)
@@ -330,6 +330,7 @@ class GenerationDataService:
             raise DataError("FAILED_PRECONDITION", "previous_week_outputs_incomplete")
         return blueprint_section
 
+    @current_generation_inputs
     async def get_plan_inputs(
         self,
         uid: str,
@@ -342,7 +343,6 @@ class GenerationDataService:
         feedback_record_id: str = "",
         scope: str = "",
         timezone_offset: str = "",
-        data_cutoff_at_utc: str = "",
         trigger_type: str = "",
         event_id: str = "",
         session_id: str = "",
@@ -375,13 +375,7 @@ class GenerationDataService:
         if scope != "realtime" and (trigger_type or event_id or session_id):
             raise DataError("INVALID_ARGUMENT", "realtime_context_not_allowed")
         read_started_at = utc_now()
-        if data_cutoff_at_utc:
-            cutoff = instant(data_cutoff_at_utc)
-            if cutoff is None or cutoff > read_started_at:
-                raise DataError("INVALID_ARGUMENT", "invalid_data_cutoff")
-            read_at = cutoff
-        else:
-            read_at = read_started_at
+        read_at = read_started_at
         has_profile_input = bool(profile_snapshot_id) or inline_profile is not None
         if bool(profile_snapshot_id) == (inline_profile is not None) and has_profile_input:
             raise DataError("INVALID_ARGUMENT", "exactly_one_profile_input_required")
@@ -457,8 +451,6 @@ class GenerationDataService:
             )
         result = self._envelope(uid, request_id, read_at, data, manifest)
         result["read_started_at_utc"] = timestamp(read_started_at)
-        if read_at != read_started_at:
-            result["read_consistency"] = "cutoff_visible"
         return result
 
     async def _feedback_observation(
@@ -763,7 +755,7 @@ class GenerationDataService:
                 or not start
                 or not end
                 or start >= end
-                or end > read_at
+                or not visible_by(end, read_at)
                 or row.get("main_sleep") is not True
                 or not row.get("selection_policy_version")
             ):
@@ -868,6 +860,7 @@ class GenerationDataService:
             )
         return section(value, "partial", reasons)
 
+    @current_generation_inputs
     async def get_profile_inputs(
         self,
         uid: str,
@@ -879,7 +872,6 @@ class GenerationDataService:
         previous_profile_snapshot_id: str = "",
         review_generation_id: str = "",
         requested_sections: list[str] | None = None,
-        data_cutoff_at_utc: str = "",
         answer_id: str = "",
     ) -> dict:
         if purpose not in ("initial", "weekly", "correction", "plan_generation", "profile_refresh"):
@@ -895,12 +887,6 @@ class GenerationDataService:
             else review_end_local_date
         )
         read_at, manifest = utc_now(), {}
-        if data_cutoff_at_utc:
-            cutoff = instant(data_cutoff_at_utc)
-            if cutoff is None or cutoff > read_at:
-                raise DataError("INVALID_ARGUMENT", "invalid_data_cutoff")
-        else:
-            cutoff = read_at
         allowed_sections = {
             "questionnaires",
             "prior_profile",
@@ -914,23 +900,23 @@ class GenerationDataService:
             raise DataError("INVALID_ARGUMENT", "unknown_requested_section")
         tasks = {
             "sleep_debt": lambda: self.build_sleep_debt(
-                uid, (scope.end - timedelta(days=1)).isoformat(), cutoff, manifest
+                uid, (scope.end - timedelta(days=1)).isoformat(), read_at, manifest
             ),
-            "questionnaires": lambda: self._questionnaires(uid, cutoff, manifest, answer_id),
+            "questionnaires": lambda: self._questionnaires(uid, read_at, manifest, answer_id),
             "prior_profile": lambda: self._profile(
                 uid,
                 previous_profile_snapshot_id,
-                cutoff,
+                read_at,
                 manifest,
                 profile_end_date,
                 verify_long_term_hash=False,
             ),
-            "facts": lambda: self.build_facts(uid, scope, cutoff, manifest),
-            "observations": lambda: self._observations(uid, scope, cutoff, manifest),
+            "facts": lambda: self.build_facts(uid, scope, read_at, manifest),
+            "observations": lambda: self._observations(uid, scope, read_at, manifest),
             "plan_comparisons": lambda: self.build_plan_comparisons(
-                uid, review_generation_id, cutoff, manifest
+                uid, review_generation_id, read_at, manifest
             ),
-            "execution": lambda: self._execution(uid, scope, cutoff, manifest),
+            "execution": lambda: self._execution(uid, scope, read_at, manifest),
         }
         if requested_sections:
             tasks = {key: value for key, value in tasks.items() if key in requested_sections}
@@ -956,7 +942,9 @@ class GenerationDataService:
         rows = await self.store.load_sleep_debt_rows(uid, record_date, cutoff)
         for row in rows:
             row["source_refs"] = collect_source_refs(row, "wearable_daily", manifest)
-        return calculate_sleep_debt(rows, record_date, cutoff)
+        return calculate_sleep_debt(
+            rows, record_date, None if current_generation_read() else cutoff
+        )
 
     async def _reminder_schedules(
         self, uid: str, target: str, offset: str, read_at: datetime, manifest: dict
@@ -1190,7 +1178,7 @@ class GenerationDataService:
             for row in session.get("adopted_versions", [])
             if row.get("applied") is True
             and instant(row.get("applied_at"))
-            and instant(row["applied_at"]) <= read_at
+            and visible_by(instant(row["applied_at"]), read_at)
         ]
         final_version = (
             max(adopted, key=lambda row: instant(row["applied_at"]))["version"]
@@ -1243,7 +1231,7 @@ class GenerationDataService:
         timed_operations = [
             row
             for row in operations
-            if instant(row.get("executed_at")) and instant(row["executed_at"]) <= read_at
+            if instant(row.get("executed_at")) and visible_by(instant(row["executed_at"]), read_at)
         ]
         if len(timed_operations) != len(operations):
             reasons.append("operation_time_missing_or_outside_read_scope")
@@ -1322,7 +1310,11 @@ class GenerationDataService:
         reasons.extend(["execution_segments_and_metadata_pending"])
         ended = instant(session.get("ended_at"))
         item["status"] = (
-            "ongoing" if ended is None or ended > read_at else "partial" if reasons else "complete"
+            "ongoing"
+            if ended is None or not visible_by(ended, read_at)
+            else "partial"
+            if reasons
+            else "complete"
         )
         return item
 
@@ -1360,7 +1352,7 @@ class GenerationDataService:
                 session = _pick(row, "session_id plan_id plan_version state")
                 for source, target in (("started_at", "start_at_utc"), ("ended_at", "end_at_utc")):
                     when = instant(row.get(source))
-                    if when and when <= read_at:
+                    if when and visible_by(when, read_at):
                         session[target] = timestamp(when)
                 if row.get("episode_id"):
                     session["episode_ref"] = {

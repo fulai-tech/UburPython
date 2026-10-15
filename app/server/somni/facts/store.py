@@ -9,7 +9,7 @@ from bson.codec_options import CodecOptions
 from app.core.config import Settings
 from app.server.somni.facts.models import DataError
 from app.server.somni.facts.sleep_debt import cohort, select_daily
-from app.server.somni.facts.time import instant
+from app.server.somni.facts.time import current_generation_read, instant, observation_reference
 
 
 class FactsStore:
@@ -33,9 +33,11 @@ class FactsStore:
             getattr(self._settings, f"somni_mongo_{name}_collection")
         ].with_options(codec_options=CodecOptions(tz_aware=True, tzinfo=UTC))
         maximum = limit or self._settings.generation_query_limit
+        if current_generation_read():
+            query = self._current_query(query)
         cutoff = self._visibility_cutoff(query)
         projection = {field: 1 for field in fields.split()}
-        if cutoff is not None:
+        if cutoff is not None or current_generation_read():
             projection.update(
                 received_at=1,
                 create_time=1,
@@ -52,6 +54,8 @@ class FactsStore:
         rows = await cursor.limit(maximum + 1).to_list(length=maximum + 1)
         if len(rows) > maximum and limit is None:
             raise DataError("RESOURCE_EXHAUSTED", "source_query_budget_exceeded")
+        if current_generation_read():
+            rows = [self._normalize_times(row) for row in rows]
         if cutoff is not None:
             rows = [self._normalize_times(row) for row in rows]
             verified = []
@@ -91,6 +95,23 @@ class FactsStore:
         return rows[:maximum]
 
     @staticmethod
+    def _current_query(query: dict) -> dict:
+        result = {}
+        for key, value in query.items():
+            if key in {"received_at", "created_at", "generated_at", "completed_at", "update_time"}:
+                continue
+            if key in {"$and", "$or"}:
+                children = [FactsStore._current_query(child) for child in value]
+                if key == "$or" and any(not child for child in children):
+                    continue
+                children = [child for child in children if child]
+                if children:
+                    result[key] = children
+            else:
+                result[key] = value
+        return result
+
+    @staticmethod
     def _normalize_times(row: dict) -> dict:
         row = dict(row)
         if row.get("created_at") is None and row.get("create_time") is not None:
@@ -113,6 +134,8 @@ class FactsStore:
 
     @staticmethod
     def _validate_time(row: dict, cutoff: datetime) -> None:
+        if current_generation_read():
+            return
         received = instant(row.get("received_at"))
         if received is None:
             raise DataError("FAILED_PRECONDITION", "source_time_unverified")
@@ -129,6 +152,8 @@ class FactsStore:
 
     @staticmethod
     def _visible(query: dict, read_at: datetime) -> dict:
+        if current_generation_read():
+            return FactsStore._current_query(query)
         return {
             **query,
             "$and": [
@@ -153,10 +178,12 @@ class FactsStore:
             "user_id": uid,
             "status": 1,
             "record_date": record_date,
-            "received_at": {"$lte": cutoff},
+            **({} if current_generation_read() else {"received_at": {"$lte": cutoff}}),
         }
         current = await self._read("wearable_daily", query, self._daily_fields())
-        chosen = select_daily(current, cutoff).get(record_date)
+        chosen = select_daily(current, None if current_generation_read() else cutoff).get(
+            record_date
+        )
         if chosen is None:
             return current
         query.update(record_date={"$lt": record_date}, source=chosen["source"])
@@ -177,7 +204,9 @@ class FactsStore:
                 if scanned > self._settings.generation_query_limit:
                     raise DataError("RESOURCE_EXHAUSTED", "sleep_history_budget_exceeded")
                 if day is not None and row.get("record_date") != day:
-                    selected = select_daily(group, cutoff).get(day)
+                    selected = select_daily(
+                        group, None if current_generation_read() else cutoff
+                    ).get(day)
                     if selected and cohort(selected) == cohort(chosen):
                         rows.append(selected)
                         valid_count += 1
@@ -187,7 +216,9 @@ class FactsStore:
                 day = row.get("record_date")
                 group.append(row)
             if group:
-                selected = select_daily(group, cutoff).get(day)
+                selected = select_daily(group, None if current_generation_read() else cutoff).get(
+                    day
+                )
                 if selected and cohort(selected) == cohort(chosen):
                     rows.append(selected)
             return rows
@@ -233,7 +264,7 @@ class FactsStore:
             self._visible(
                 {
                     "uid": uid,
-                    "started_at": {"$lte": read_at},
+                    **({} if current_generation_read() else {"started_at": {"$lte": read_at}}),
                     "$and": [
                         {
                             "$or": [
@@ -324,7 +355,7 @@ class FactsStore:
             self._visible(query, read_at),
             "uid profile_snapshot_id snapshot_id snapshot_revision schema_version "
             "content_hash long_term_content_hash "
-            "record_date data_cutoff_at generated_at status short_term_profile rolling_baseline "
+            "record_date generated_at status short_term_profile rolling_baseline "
             "profile_quality based_on received_at",
             [("record_date", -1), ("snapshot_revision", -1), ("_id", -1)],
             limit=2,
@@ -509,11 +540,16 @@ class FactsStore:
                     "$and": [
                         {
                             "$or": [
-                                {"valid_from": {"$lte": read_at}},
+                                {"valid_from": {"$lte": observation_reference(read_at)}},
                                 {"valid_from": {"$exists": False}},
                             ]
                         },
-                        {"$or": [{"valid_to": {"$gt": read_at}}, {"valid_to": None}]},
+                        {
+                            "$or": [
+                                {"valid_to": {"$gt": observation_reference(read_at)}},
+                                {"valid_to": None},
+                            ]
+                        },
                     ],
                 },
                 read_at,
@@ -535,11 +571,16 @@ class FactsStore:
                     "$and": [
                         {
                             "$or": [
-                                {"valid_from": {"$lte": read_at}},
+                                {"valid_from": {"$lte": observation_reference(read_at)}},
                                 {"valid_from": {"$exists": False}},
                             ]
                         },
-                        {"$or": [{"valid_to": {"$gt": read_at}}, {"valid_to": None}]},
+                        {
+                            "$or": [
+                                {"valid_to": {"$gt": observation_reference(read_at)}},
+                                {"valid_to": None},
+                            ]
+                        },
                     ],
                 },
                 read_at,
