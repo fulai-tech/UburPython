@@ -54,6 +54,7 @@ class Settings(BaseSettings):
     somni_mongo_materials_collection: str = "somni_audio_materials"
     somni_mongo_tag_dictionary_collection: str = "somni_audio_tag_dictionary"
     somni_mongo_answers_collection: str = "somni_quiz_answers"
+    somni_mongo_questions_collection: str = "somni_quiz_questions"
     somni_mongo_devices_collection: str = "somni_devices"
     somni_mongo_telemetry_collection: str = "somni_telemetry"
     somni_mongo_records_collection: str = "somni_records"

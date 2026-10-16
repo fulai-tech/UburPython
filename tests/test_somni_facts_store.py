@@ -110,6 +110,24 @@ async def test_feedback_observation_is_exact_and_user_scoped() -> None:
     assert "value" in projection
 
 
+async def test_quiz_questions_are_loaded_by_id_without_visibility_filter() -> None:
+    question_id = "a0f15f100000000000000001"
+    store, collection = make_store(
+        [
+            {
+                "_id": question_id,
+                "input_type": "radio",
+                "options": {"items": [{"value": "A", "label": "18—24岁"}]},
+            }
+        ]
+    )
+    loaded = await store.load_quiz_questions([question_id, question_id])
+    query, projection = collection.find.call_args.args
+    assert projection == {"input_type": 1, "options": 1}
+    assert "received_at" not in query
+    assert loaded[question_id]["options"]["items"][0]["label"] == "18—24岁"
+
+
 async def test_questionnaire_query_filters_the_exact_answer_id() -> None:
     store, collection = make_store(
         [

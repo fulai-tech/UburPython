@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import grpc
@@ -22,6 +23,20 @@ def _context() -> MagicMock:
     ctx = MagicMock()
     ctx.abort = AsyncMock(side_effect=grpc.aio.AbortError)
     return ctx
+
+
+def _db_collections(answers: MagicMock, questions: list | None = None) -> Any:
+    question_cursor = MagicMock()
+    question_cursor.to_list = AsyncMock(return_value=questions or [])
+    question_collection = MagicMock()
+    question_collection.find = MagicMock(return_value=question_cursor)
+
+    def _get(name: str) -> MagicMock:
+        if "question" in name:
+            return question_collection
+        return answers
+
+    return _get
 
 
 @pytest.mark.asyncio
@@ -172,7 +187,7 @@ async def test_somni_quiz_service_loads_from_collection() -> None:
     collection = MagicMock()
     collection.find_one = AsyncMock(return_value=doc)
     db = MagicMock()
-    db.__getitem__ = MagicMock(return_value=collection)
+    db.__getitem__ = MagicMock(side_effect=_db_collections(collection))
     client = MagicMock()
     client.__getitem__ = MagicMock(return_value=db)
 
@@ -185,20 +200,11 @@ async def test_somni_quiz_service_loads_from_collection() -> None:
 
     assert settings.somni_mongo_answers_collection == "somni_quiz_answers"
     client.__getitem__.assert_called_with("Somni")
-    db.__getitem__.assert_called_with("somni_quiz_answers")
+    db.__getitem__.assert_any_call("somni_quiz_answers")
     assert payload["answers"][0]["input_type"] == "radio"
-    assert payload["answers"][0]["value"] == {
-        "option_id": "A",
-        "option_text": "先生",
-    }
-    assert payload["answers"][1]["value"] == {
-        "option_id": "A",
-        "option_text": "北京",
-    }
-    assert payload["answers"][2]["value"] == [
-        {"option_id": "A", "option_text": "早期"},
-        {"option_id": "B", "option_text": "VC"},
-    ]
+    assert payload["answers"][0]["value"] == "先生"
+    assert payload["answers"][1]["value"] == "北京"
+    assert payload["answers"][2]["value"] == ["早期", "VC"]
     assert payload["answers"][3]["extra_input"] == "备注"
     assert "tags" not in payload["answers"][0]
     query = collection.find_one.await_args.args[0]
@@ -206,6 +212,101 @@ async def test_somni_quiz_service_loads_from_collection() -> None:
         "uid": "user-001",
         "_id": ObjectId("69b10cc516d7472aedf6bb80"),
     }
+
+
+@pytest.mark.asyncio
+async def test_somni_quiz_service_resolves_option_codes_to_labels() -> None:
+    age_id = "a0f15f100000000000000001"
+    habit_id = "a0f15f100000000000000010"
+    doc = {
+        "_id": ObjectId(),
+        "uid": "user-001",
+        "answers": [
+            {
+                "question_id": age_id,
+                "input_type": "radio",
+                "title": "您的年龄段是？",
+                "value": "A",
+                "extra_input": "",
+            },
+            {
+                "question_id": habit_id,
+                "input_type": "checkbox",
+                "title": "睡眠困扰",
+                "value": ["B", "H"],
+                "extra_input": "自定义说明",
+            },
+            {
+                "question_id": "a0f15f100000000000000002",
+                "input_type": "time_picker",
+                "title": "作息",
+                "value": [{"value": "23:30", "label": "上床时间"}],
+            },
+            {
+                "question_id": "a0f15f100000000000000029",
+                "input_type": "composite",
+                "title": "不被打扰的时间",
+                "value": [
+                    {"key": "morning", "title": "清晨起床后", "input_type": "slider", "value": 30},
+                    {
+                        "key": "sound",
+                        "title": "声音",
+                        "input_type": "checkbox",
+                        "value": ["A"],
+                    },
+                ],
+            },
+        ],
+    }
+    collection = MagicMock()
+    collection.find_one = AsyncMock(return_value=doc)
+    questions = [
+        {
+            "_id": ObjectId(age_id),
+            "input_type": "radio",
+            "options": {
+                "label": "",
+                "items": [
+                    {"key": "opt_A", "value": "A", "label": "18—24岁"},
+                    {"key": "opt_B", "value": "B", "label": "25—34岁"},
+                ],
+            },
+        },
+        {
+            "_id": ObjectId(habit_id),
+            "input_type": "checkbox",
+            "options": {
+                "items": [
+                    {"key": "opt_B", "value": "B", "label": "越想赶紧睡着反而越紧张"},
+                    {"key": "opt_H", "value": "H", "label": "", "is_input": True},
+                ]
+            },
+        },
+        {
+            "_id": ObjectId("a0f15f100000000000000029"),
+            "input_type": "composite",
+            "options": [
+                {"key": "morning", "title": "清晨起床后", "input_type": "slider"},
+                {
+                    "key": "sound",
+                    "title": "声音",
+                    "input_type": "checkbox",
+                    "options": {"items": [{"key": "opt_A", "value": "A", "label": "自然声"}]},
+                },
+            ],
+        },
+    ]
+    db = MagicMock()
+    db.__getitem__ = MagicMock(side_effect=_db_collections(collection, questions))
+    client = MagicMock()
+    client.__getitem__ = MagicMock(return_value=db)
+    svc = QuizService(client, Settings())
+    payload = await svc.get_answer("user-001", str(doc["_id"]))
+    assert payload["answers"][0]["value"] == "18—24岁"
+    assert payload["answers"][1]["value"] == ["越想赶紧睡着反而越紧张", "自定义说明"]
+    assert payload["answers"][2]["value"] == [{"value": "23:30", "label": "上床时间"}]
+    assert payload["answers"][3]["value"][0]["value"] == 30
+    assert payload["answers"][3]["value"][1]["value"] == ["自然声"]
 
 
 @pytest.mark.asyncio
@@ -245,7 +346,7 @@ async def test_somni_quiz_service_loads_latest_when_answer_id_empty() -> None:
     collection = MagicMock()
     collection.find = MagicMock(return_value=cursor)
     db = MagicMock()
-    db.__getitem__ = MagicMock(return_value=collection)
+    db.__getitem__ = MagicMock(side_effect=_db_collections(collection))
     client = MagicMock()
     client.__getitem__ = MagicMock(return_value=db)
 
@@ -256,6 +357,7 @@ async def test_somni_quiz_service_loads_latest_when_answer_id_empty() -> None:
     cursor.sort.assert_called_once_with("create_time", -1)
     cursor.limit.assert_called_once_with(1)
     assert payload["answers"][0]["question_id"] == "q1"
+    assert payload["answers"][0]["value"] == "先生"
 
 
 @pytest.mark.asyncio

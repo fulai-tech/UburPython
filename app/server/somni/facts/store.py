@@ -335,6 +335,27 @@ class FactsStore:
                 )
         return list(selected.values())
 
+    async def load_quiz_questions(self, question_ids: list[str]) -> dict[str, dict]:
+        ids = list(dict.fromkeys(str(qid) for qid in question_ids if qid))
+        if not ids:
+            return {}
+        if self._client is None:
+            raise DataError("UNAVAILABLE", "mongo_not_configured")
+        oids = [ObjectId(qid) for qid in ids if ObjectId.is_valid(qid)]
+        clauses: list[dict] = []
+        if oids:
+            clauses.append({"_id": {"$in": oids}})
+        clauses.append({"_id": {"$in": ids}})
+        query = clauses[0] if len(clauses) == 1 else {"$or": clauses}
+        collection = self._client[self._settings.somni_mongo_db][
+            self._settings.somni_mongo_questions_collection
+        ]
+        cursor = collection.find(query, {"input_type": 1, "options": 1}).max_time_ms(
+            self._settings.generation_query_timeout_ms
+        )
+        docs = await cursor.to_list(length=len(ids) + len(oids))
+        return {str(doc["_id"]): doc for doc in docs if doc.get("_id") is not None}
+
     async def load_profile(
         self, uid: str, snapshot_id: str, read_at: datetime, end_date: str = ""
     ) -> tuple[dict | None, dict | None]:
