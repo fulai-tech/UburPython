@@ -371,3 +371,7 @@ uv run pytest
 daily兼容没有generation链接的旧当前方案，通过用户/日期/版本/快照正文一致核验返回现有目标协议；weekly/realtime的独立读取语义不扩展。当前方案内可选null占位不构成正文差异，真正数值/节点差异仍拒绝。候选保存需版本和正文hash CAS，并写`trigger_reason=daily_preference`防重复递减。
 
 五人包由DeepHealth的`scripts/somni_preference_seed.py`生成；本仓`scripts/somni_preference_fixture_import.py`默认只检查包、不连接数据库，只有`--apply`才会导入，连接通过已有`SOMNI_MONGODB_URI`进程环境读取。包采用Extended JSON BSON UTC日期、确定性隔离UID和_id，覆盖问卷、长短画像、7天方案、5晚会话、App修订及硬件重传。测试日期必须与daily请求当日一致（建议09:00），过期包需重新生成；不创建登录账户或真实设备绑定。
+
+### 画像关联不完整的默认读取
+
+未指定画像快照 ID 时，按原日期与 revision 排序，在现有两个候选的查询预算内选择第一组短期画像与长期画像哈希精确关联且长期状态有效的记录。跳过较新不完整关联时返回 `newer_profile_link_incomplete`；不会将较新的短期正文与较旧长期正文拼接。显式 ID 继续精确读取，关联缺失返回 partial，不替换其他快照。哈希重算仍跳过，UID、schema、有效状态和关联检查保留。保存方仍须原子保存新的长期记录和引用它的短期记录；本次读取兼容不修复数据库。

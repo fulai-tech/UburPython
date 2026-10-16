@@ -385,31 +385,41 @@ class FactsStore:
             return None, None
         if len(rows) > 1 and snapshot_id:
             raise DataError("FAILED_PRECONDITION", "profile_snapshot_ambiguous")
-        short = rows[0]
-        if short.get("profile_snapshot_id") and short.get("snapshot_id") not in (
-            None,
-            "",
-            short["profile_snapshot_id"],
-        ):
-            raise DataError("FAILED_PRECONDITION", "profile_snapshot_alias_mismatch")
-        short["snapshot_id"] = short.get("profile_snapshot_id") or short.get("snapshot_id", "")
-        if not short.get("long_term_content_hash") or not short.get("schema_version"):
-            return short, None
-        long_rows = await self._read(
-            "user_profile_long_terms",
-            self._visible(
-                {
-                    "uid": uid,
-                    "schema_version": short["schema_version"],
-                    "content_hash": short["long_term_content_hash"],
-                },
-                read_at,
-            ),
-            "uid schema_version content_hash status long_term_profile received_at",
-            [("_id", -1)],
-            limit=1,
-        )
-        return short, long_rows[0] if long_rows else None
+        for index, short in enumerate(rows):
+            if short.get("profile_snapshot_id") and short.get("snapshot_id") not in (
+                None,
+                "",
+                short["profile_snapshot_id"],
+            ):
+                raise DataError("FAILED_PRECONDITION", "profile_snapshot_alias_mismatch")
+            short["snapshot_id"] = short.get("profile_snapshot_id") or short.get("snapshot_id", "")
+            if not short.get("long_term_content_hash") or not short.get("schema_version"):
+                if snapshot_id:
+                    return short, None
+                continue
+            long_rows = await self._read(
+                "user_profile_long_terms",
+                self._visible(
+                    {
+                        "uid": uid,
+                        "schema_version": short["schema_version"],
+                        "content_hash": short["long_term_content_hash"],
+                    },
+                    read_at,
+                ),
+                "uid schema_version content_hash status long_term_profile received_at",
+                [("_id", -1)],
+                limit=1,
+            )
+            linked = long_rows[0] if long_rows else None
+            if snapshot_id or (
+                linked is not None
+                and (short["schema_version"] != "0.0.1" or linked.get("status") == "valid")
+            ):
+                if index:
+                    short["_profile_read_missing_reasons"] = ["newer_profile_link_incomplete"]
+                return short, linked
+        return rows[0], None
 
     async def load_blueprint(self, uid: str, generation_id: str, read_at: datetime) -> dict | None:
         rows = await self._read(

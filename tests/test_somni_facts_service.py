@@ -1383,3 +1383,22 @@ async def test_prior_version_live_change_cannot_override_later_saved_version() -
     assert result["final_plan_ref"]["version"] == 2
     assert result["diff"][0]["after"] == 15
     assert result["execution_diff"] == []
+
+
+async def test_profile_fallback_reason_is_exposed_without_rejecting_complete_pair():
+    svc, store = service()
+    short = profile()
+    short["_profile_read_missing_reasons"] = ["newer_profile_link_incomplete"]
+    store.load_profile.return_value = (
+        short,
+        {
+            "uid": "u",
+            "schema_version": short["schema_version"],
+            "status": "valid",
+            "content_hash": short["long_term_content_hash"],
+            "long_term_profile": {},
+        },
+    )
+    result = await svc._profile("u", "", utc_now(), {})
+    assert result["status"] == "ok"
+    assert "newer_profile_link_incomplete" in result["missing_reasons"]
