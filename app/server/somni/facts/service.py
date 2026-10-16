@@ -12,6 +12,7 @@ from typing import Any
 from pymongo.errors import PyMongoError
 
 from app.core.config import Settings
+from app.server.somni.quiz.answer_value import concrete_answer_value
 from app.server.somni.facts.calc import (
     build_series,
     compare_plan_execution,
@@ -48,6 +49,24 @@ from app.server.somni.facts.time import (
 
 def _pick(row: dict, fields: str) -> dict:
     return {key: row[key] for key in fields.split() if key in row and row[key] is not None}
+
+
+def _concrete_questionnaire_answer(answer: dict, questions: dict[str, dict]) -> dict:
+    item = _pick(
+        answer,
+        "question_id question_version field_code title input_type value extra_input "
+        "unit scale option_codes",
+    )
+    question = questions.get(str(answer.get("question_id") or ""))
+    options = question.get("options") if isinstance(question, dict) else None
+    if "value" in answer:
+        item["value"] = concrete_answer_value(
+            str(answer.get("input_type") or ""),
+            answer.get("value"),
+            options,
+            str(answer.get("extra_input") or ""),
+        )
+    return item
 
 
 def collect_source_refs(row: dict, source: str, manifest: dict) -> list[str]:
@@ -643,12 +662,28 @@ class GenerationDataService:
         collect_source_refs(session, "sessions", manifest)
         return section(status="partial", reasons=["authoritative_execution_boundary_unavailable"])
 
+    async def _questionnaire_questions(self, rows: Any) -> dict[str, dict]:
+        if not isinstance(rows, list):
+            return {}
+        question_ids = [
+            str(answer.get("question_id"))
+            for row in rows
+            if isinstance(row, dict)
+            for answer in (row.get("answers") or [])
+            if isinstance(answer, dict) and answer.get("question_id")
+        ]
+        if not question_ids:
+            return {}
+        loaded = await self.store.load_quiz_questions(question_ids)
+        return loaded if isinstance(loaded, dict) else {}
+
     async def _questionnaires(
         self, uid: str, read_at: datetime, manifest: dict, answer_id: str = ""
     ) -> dict:
         rows = await self.store.load_questionnaires(uid, read_at, answer_id)
         if answer_id and not rows:
             return section(status="not_found", reasons=["questionnaire_answer_not_found"])
+        questions = await self._questionnaire_questions(rows)
         values, reasons = [], []
         for row in rows:
             item = _pick(row, "answer_id survey_code survey_version")
@@ -663,11 +698,7 @@ class GenerationDataService:
                 if when:
                     item[target] = timestamp(when)
             item["answers"] = [
-                _pick(
-                    answer,
-                    "question_id question_version field_code title input_type value extra_input "
-                    "unit scale option_codes",
-                )
+                _concrete_questionnaire_answer(answer, questions)
                 for answer in row.get("answers", [])
                 if isinstance(answer, dict)
             ]

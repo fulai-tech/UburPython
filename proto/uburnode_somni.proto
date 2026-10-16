@@ -12,7 +12,8 @@ message GetAnswerReq {
   string answer_id = 2;  // 可选：答卷 _id；空则按 uid 取 create_time 最新一条
 }
 
-// answers 为整份答卷数组的 JSON 文本（与库 answers 同形），客户端一次 JSON.parse。
+// answers 为整份答卷数组的 JSON 文本，客户端一次 JSON.parse。
+// 选择类 value 为选项具体文案（题库 label / option_text），不是选项编码或选项对象。
 message GetAnswerRes {
   string answers = 1;
 }

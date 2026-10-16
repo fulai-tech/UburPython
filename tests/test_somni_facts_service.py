@@ -1252,6 +1252,70 @@ async def test_questionnaire_without_survey_version_preserves_actual_answer_fiel
     assert result["missing_reasons"] == []
 
 
+async def test_questionnaire_answers_include_selected_option_text() -> None:
+    svc, store = service()
+    store.load_quiz_questions.return_value = {
+        "a0f15f100000000000000001": {
+            "options": {
+                "items": [
+                    {"value": "A", "label": "18—24岁"},
+                    {"value": "B", "label": "25—34岁"},
+                ]
+            }
+        },
+        "a0f15f100000000000000010": {
+            "options": {
+                "items": [
+                    {"value": "B", "label": "越想越睡不着"},
+                    {"value": "D", "label": "半夜容易醒"},
+                ]
+            }
+        },
+    }
+    store.load_questionnaires.return_value = [
+        {
+            "_id": "a",
+            "answer_id": "a",
+            "survey_code": "initial",
+            "answers": [
+                {
+                    "question_id": "a0f15f100000000000000001",
+                    "title": "年龄段",
+                    "input_type": "radio",
+                    "value": "A",
+                    "extra_input": "",
+                },
+                {
+                    "question_id": "a0f15f100000000000000010",
+                    "title": "睡眠困扰",
+                    "input_type": "checkbox",
+                    "value": ["B", "D"],
+                    "extra_input": "",
+                },
+                {
+                    "question_id": "legacy",
+                    "title": "称呼",
+                    "input_type": "radio",
+                    "value": {"option_id": "A", "option_text": "先生"},
+                },
+                {
+                    "question_id": "time",
+                    "title": "作息",
+                    "input_type": "time_picker",
+                    "value": [{"value": "23:30", "label": "上床时间"}],
+                },
+            ],
+            "received_at": datetime(2026, 10, 10, tzinfo=UTC),
+        }
+    ]
+    result = await svc._questionnaires("u", datetime(2026, 10, 10, tzinfo=UTC), {})
+    answers = result["value"][0]["answers"]
+    assert answers[0]["value"] == "18—24岁"
+    assert answers[1]["value"] == ["越想越睡不着", "半夜容易醒"]
+    assert answers[2]["value"] == "先生"
+    assert answers[3]["value"] == [{"value": "23:30", "label": "上床时间"}]
+
+
 def test_current_profile_hashes_are_returned_without_comparison() -> None:
     import hashlib
     import json
