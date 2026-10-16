@@ -357,6 +357,8 @@ class EsSearch:
         *,
         sleep_stage_tags: list[str],
         size: int,
+        language: str = "",
+        include_source: bool = True,
     ) -> list[dict[str, Any]]:
         """description_vector 语义召回；缺少向量的旧文档自然不会命中。"""
         if not query_vector or size <= 0:
@@ -369,16 +371,21 @@ class EsSearch:
             "num_candidates": max(size * 3, 50),
         }
         filters = [{"term": {"status": True}}]
+        if language.strip():
+            filters.append({"term": {"language": language.strip()}})
         if sleep_stage_tags:
             filters.append(_sleep_stage_filter(sleep_stage_tags))
         knn["filter"] = {"bool": {"filter": filters}}
+        source: Any = (
+            {"includes": list(SEARCH_CANDIDATE_SOURCE_INCLUDES)} if include_source else False
+        )
 
         response = await self._client.search(
             index=self.audio_index,
             body={
                 "knn": knn,
                 "size": size,
-                "_source": {"includes": list(SEARCH_CANDIDATE_SOURCE_INCLUDES)},
+                "_source": source,
             },
         )
         results: list[dict[str, Any]] = []

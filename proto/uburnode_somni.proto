@@ -290,6 +290,9 @@ message GetAudioReq {
   optional string query_text = 4;  // 搜索词，如「雨声」；空则不过滤
   optional string tag_code = 5;    // 内容形态标签 code；空则不按标签过滤
   optional string language = 6;    // 音频语言 zh / en；缺省 zh
+  repeated string content_form_codes = 7; // 问卷喜欢的一级内容形态名称；与 query_text 同时出现时忽略
+  optional string preference_text = 8;    // 问卷自定义输入，按描述向量召回；与 query_text 同时出现时忽略
+  optional string dislike_text = 9;       // 问卷讨厌的声音原文；分词后按标签名命中并排到最后；与 query_text 同时出现时忽略
 }
 
 message AudioListItem {
