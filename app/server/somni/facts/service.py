@@ -265,7 +265,10 @@ class GenerationDataService:
             return section(status="partial", reasons=[exc.reason])
         return section(
             profile,
-            reasons=["long_term_hash_verification_skipped"],
+            reasons=[
+                "long_term_hash_verification_skipped",
+                *short.get("_profile_read_missing_reasons", []),
+            ],
         )
 
     async def _blueprint(

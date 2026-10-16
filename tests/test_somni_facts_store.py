@@ -301,29 +301,9 @@ async def test_profile_lookup_rejects_ambiguous_ids() -> None:
     assert collection.find.call_count == 1
 
 
-
-
 async def test_profile_lookup_selects_latest_when_multiple_snapshots_without_snapshot_id() -> None:
-    store, collection = make_store([
-        {
-            "snapshot_id": "s_new",
-            "profile_snapshot_id": "s_new",
-            "record_date": "2026-10-15",
-            "snapshot_revision": 1,
-            "schema_version": "0.0.1",
-            "long_term_content_hash": "hash1",
-        },
-        {
-            "snapshot_id": "s_old",
-            "profile_snapshot_id": "s_old",
-            "record_date": "2026-10-15",
-            "snapshot_revision": 1,
-            "schema_version": "0.0.1",
-            "long_term_content_hash": "hash2",
-        },
-    ])
-    collection.find.side_effect = [
-        Cursor([
+    store, collection = make_store(
+        [
             {
                 "snapshot_id": "s_new",
                 "profile_snapshot_id": "s_new",
@@ -340,21 +320,46 @@ async def test_profile_lookup_selects_latest_when_multiple_snapshots_without_sna
                 "schema_version": "0.0.1",
                 "long_term_content_hash": "hash2",
             },
-        ]),
-        Cursor([
-            {
-                "uid": "u",
-                "schema_version": "0.0.1",
-                "content_hash": "hash1",
-                "status": "valid",
-                "long_term_profile": {"basic_info": {}},
-            }
-        ]),
+        ]
+    )
+    collection.find.side_effect = [
+        Cursor(
+            [
+                {
+                    "snapshot_id": "s_new",
+                    "profile_snapshot_id": "s_new",
+                    "record_date": "2026-10-15",
+                    "snapshot_revision": 1,
+                    "schema_version": "0.0.1",
+                    "long_term_content_hash": "hash1",
+                },
+                {
+                    "snapshot_id": "s_old",
+                    "profile_snapshot_id": "s_old",
+                    "record_date": "2026-10-15",
+                    "snapshot_revision": 1,
+                    "schema_version": "0.0.1",
+                    "long_term_content_hash": "hash2",
+                },
+            ]
+        ),
+        Cursor(
+            [
+                {
+                    "uid": "u",
+                    "schema_version": "0.0.1",
+                    "content_hash": "hash1",
+                    "status": "valid",
+                    "long_term_profile": {"basic_info": {}},
+                }
+            ]
+        ),
     ]
     short, long = await store.load_profile("u", "", datetime.now(UTC), end_date="2026-10-15")
     assert short is not None
     assert short["snapshot_id"] == "s_new"
     assert long is not None
+
 
 async def test_no_events_without_owned_sessions() -> None:
     store, collection = make_store([])
@@ -533,3 +538,29 @@ async def test_current_profile_identifier_alias() -> None:
     store, _collection = make_store([{"profile_snapshot_id": "current", "uid": "u"}])
     short, _long = await store.load_profile("u", "current", datetime(2026, 10, 10, tzinfo=UTC))
     assert short["snapshot_id"] == "current"
+
+
+@pytest.mark.parametrize("snapshot_id", ["", "broken"])
+async def test_profile_default_uses_latest_complete_pair_but_exact_id_never_falls_back(snapshot_id):
+    from unittest.mock import AsyncMock
+
+    store, _ = make_store([])
+    broken = {
+        "uid": "u",
+        "profile_snapshot_id": "broken",
+        "schema_version": "0.0.1",
+        "long_term_content_hash": "missing",
+    }
+    good = {
+        "uid": "u",
+        "profile_snapshot_id": "good",
+        "schema_version": "0.0.1",
+        "long_term_content_hash": "found",
+    }
+    long = {"uid": "u", "schema_version": "0.0.1", "content_hash": "found", "status": "valid"}
+    store._read = AsyncMock(side_effect=[[broken] if snapshot_id else [broken, good], [], [long]])
+    short, linked = await store.load_profile("u", snapshot_id, datetime.now(UTC), "2026-10-16")
+    assert short["profile_snapshot_id"] == ("broken" if snapshot_id else "good")
+    assert linked == (None if snapshot_id else long)
+    if not snapshot_id:
+        assert store._read.await_args_list[-1].args[1]["content_hash"] == "found"
