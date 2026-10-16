@@ -111,6 +111,9 @@ def _get_audio_kwargs(request) -> dict[str, Any]:
         "fetch_all": bool(request.fetch_all) if request.HasField("fetch_all") else False,
         "query_text": request.query_text if request.HasField("query_text") else "",
         "tag_code": request.tag_code if request.HasField("tag_code") else "",
+        "content_form_codes": [code for code in request.content_form_codes if code],
+        "preference_text": request.preference_text if request.HasField("preference_text") else "",
+        "dislike_text": request.dislike_text if request.HasField("dislike_text") else "",
     }
 
 

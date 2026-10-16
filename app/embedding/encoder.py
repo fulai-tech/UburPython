@@ -30,6 +30,22 @@ class EncoderBase(ABC):
 Encoder = EncoderBase
 
 
+def create_english_encoder(settings: Settings) -> EncoderBase | None:
+    """英文标签名向量。模型文件不在时返回 None，中文路径不受影响。"""
+    if settings.embedding_backend.lower() != "onnx":
+        return None
+    from pathlib import Path
+
+    directory = settings.embedding_onnx_dir_en.strip()
+    if not directory:
+        directory = str(Path(settings.embedding_onnx_dir).parent / "bge-small-en-v1.5-int8")
+    if not (Path(directory) / "model.onnx").is_file():
+        return None
+    from app.embedding.onnx_encoder import OnnxEncoder
+
+    return OnnxEncoder(settings.model_copy(update={"embedding_onnx_dir": directory}))
+
+
 def create_encoder(settings: Settings) -> EncoderBase:
     backend = settings.embedding_backend.lower()
     if backend == "onnx":

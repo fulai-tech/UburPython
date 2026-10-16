@@ -37,6 +37,9 @@ async def test_get_audio_passes_language_en() -> None:
         fetch_all=False,
         query_text="",
         tag_code="",
+        content_form_codes=[],
+        preference_text="",
+        dislike_text="",
         language="en",
     )
 
@@ -82,6 +85,9 @@ async def test_get_audio_passes_page_and_query() -> None:
         fetch_all=False,
         query_text="雨声",
         tag_code="",
+        content_form_codes=[],
+        preference_text="",
+        dislike_text="",
         language="zh",
     )
     assert res.list[0].audio_name == "雨声"
@@ -112,6 +118,9 @@ async def test_get_audio_fetch_all() -> None:
         fetch_all=True,
         query_text="",
         tag_code="",
+        content_form_codes=[],
+        preference_text="",
+        dislike_text="",
         language="zh",
     )
 
@@ -135,6 +144,9 @@ async def test_get_audio_passes_tag_code() -> None:
         fetch_all=False,
         query_text="",
         tag_code="steady_rain",
+        content_form_codes=[],
+        preference_text="",
+        dislike_text="",
         language="zh",
     )
 

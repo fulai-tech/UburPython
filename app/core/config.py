@@ -93,6 +93,8 @@ class Settings(BaseSettings):
     sim_threshold: float = 0.7  # 内容形态向量模糊命中阈值（规范 §五-2）
     # GetAudio query_text 与内容形态标签（含二级）向量相似度下限
     get_audio_root_tag_sim_threshold: float = 0.75
+    # 问卷自定义输入：描述向量得分不低于最高分的该比例才进入优先组，不按条数截断
+    get_audio_preference_score_ratio: float = 0.945
     # 多路文本检索厌恶硬剔除阈值；≥ 该值 penalty=1.0 丢弃候选
     strong_dislike_sim_threshold: float = 0.85
     search_sleep_stage_filter_enabled: bool = True  # 检索步骤 1 是否按睡眠阶段过滤
@@ -102,6 +104,8 @@ class Settings(BaseSettings):
     embedding_model: str = "BAAI/bge-small-zh-v1.5"
     embedding_dim: int = 512  # 与 ES dense_vector.dims 一致
     embedding_onnx_dir: str = "models/onnx/bge-small-zh-v1.5"
+    # 英文自由输入对标签英文名。空则用中文模型目录同级的 bge-small-en-v1.5-int8。
+    embedding_onnx_dir_en: str = ""
     dashscope_api_key: str = ""
     dashscope_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     embedding_api_timeout_sec: float = 30.0
@@ -141,7 +145,8 @@ class Settings(BaseSettings):
     redis_max_connections: int = 512
     search_cache_max_size: int = 2048
     search_cache_ttl_sec: int = 604800  # 7 天
-    somni_audio_catalog_cache_ttl_sec: float = 60.0
+    # 量产音频目录内存缓存。≤0 表示常驻，进程重启前不因时间过期
+    somni_audio_catalog_cache_ttl_sec: float = 0
     # CUD 后延时重建睡眠阶段候选缓存，窗口内多次写入只重建一次
     sleep_stage_cache_rewarm_delay_sec: float = 5.0
 

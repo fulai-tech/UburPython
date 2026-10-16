@@ -18,6 +18,7 @@ from app.core.exceptions import AppError, EncoderNotReadyError
 from app.embedding.encoder import Encoder
 from app.es.search import CONTENT_TAG_TYPES, EsSearch
 from app.server.somni.audio.hot import HotTracker, normalize_tag_code
+from app.server.somni.audio.segment import segment_dislike_text, segment_dislike_text_en
 
 _TAG_ENABLED = "启用"
 _CONTENT_FORM = "content_form"
@@ -42,6 +43,7 @@ class AudioCatalogService:
         *,
         es_search: EsSearch | None = None,
         encoder: Encoder | None = None,
+        encoder_en: Encoder | None = None,
         hot: HotTracker | None = None,
         retrieval: Any | None = None,
     ) -> None:
@@ -49,7 +51,9 @@ class AudioCatalogService:
         self._settings = settings
         self._es_search = es_search
         self._encoder = encoder
+        self._encoder_en = encoder_en
         self._hot = hot
+        self._content_form_tag_bank_cache: list[dict[str, Any]] | None = None
         self._retrieval = retrieval
         self._audio_cache: dict[tuple[bool, str], tuple[float, list[dict[str, Any]]]] = {}
         self._audio_cache_lock = asyncio.Lock()
@@ -86,9 +90,20 @@ class AudioCatalogService:
         query_text: str,
         tag_code: str,
         language: str = "zh",
+        content_form_codes: list[str] | None = None,
+        preference_text: str = "",
+        dislike_text: str = "",
     ) -> dict[str, Any]:
         text = query_text.strip()
         code = normalize_tag_code(tag_code)
+        codes = _normalize_content_form_codes(content_form_codes)
+        pref = preference_text.strip()
+        dislike = dislike_text.strip()
+        # 搜索词走原检索，不套问卷偏好。分类筛选仍保留偏好排序。
+        if text:
+            codes = []
+            pref = ""
+            dislike = ""
         docs = await self._load_audios(from_es=bool(text), language=language)
         hot_tag_codes: set[str] = set()
         if code:
@@ -98,6 +113,15 @@ class AudioCatalogService:
             matched = await self._content_form_tags_by_text(text, language=language)
             docs = [doc for doc in docs if _has_content_form_tag_id(doc, matched.ids)]
             hot_tag_codes |= matched.codes
+        preferred_ids: set[str] = set()
+        if codes or pref:
+            preferred_ids = await self._preferred_audio_ids(
+                docs,
+                codes=codes,
+                preference_text=pref,
+            )
+            docs = _order_preferred_then_rest(docs, preferred_ids)
+        docs = _move_disliked_to_end(docs, await self._disliked_audio_ids(docs, dislike))
         payload = _paginate_docs(docs, page, page_size, fetch_all, self._settings)
         payload["list"] = [
             _to_audio_list_item(item, language=language) for item in payload["list"]
@@ -109,6 +133,111 @@ class AudioCatalogService:
             tag_codes=hot_tag_codes,
         )
         return payload
+
+    async def _preferred_audio_ids(
+        self,
+        docs: list[dict[str, Any]],
+        *,
+        codes: set[str],
+        preference_text: str,
+    ) -> set[str]:
+        """勾选按标签名精确命中；自由输入分词后对标签名向量，合并为优先展示的音频。"""
+        preferred = {
+            str(doc.get("id") or "")
+            for doc in docs
+            if any(_has_content_form_name(doc, name) for name in codes)
+        }
+        preferred.discard("")
+        if not preference_text:
+            return preferred
+        tag_ids = await self._free_text_tag_ids(preference_text)
+        preferred.update(_audio_ids_for_tag_ids(docs, tag_ids))
+        return preferred
+
+    async def _disliked_audio_ids(self, docs: list[dict[str, Any]], dislike_text: str) -> set[str]:
+        """讨厌的自由输入同样分词后对标签名向量，命中的音频排到最后。"""
+        if not dislike_text.strip():
+            return set()
+        return _audio_ids_for_tag_ids(docs, await self._free_text_tag_ids(dislike_text))
+
+    async def _free_text_tag_ids(self, text: str) -> set[str]:
+        """每个词单独编码。中文对标签中文名向量，英文对英文模型现算的英文名向量。"""
+        han_words = _han_words(segment_dislike_text(text))
+        en_words = segment_dislike_text_en(text)
+        if not han_words and not en_words:
+            return set()
+        try:
+            tags = await self._content_form_tag_bank()
+        except Exception as exc:  # noqa: BLE001 — 偏好排序失败不阻断目录
+            logger.warning("自由输入读取标签向量失败：{}", exc)
+            return set()
+        if not tags:
+            return set()
+        threshold = self._settings.get_audio_root_tag_sim_threshold
+        matched: set[str] = set()
+        if han_words:
+            matched.update(await self._tag_ids_for_words(tags, han_words, self._encoder, "vector", threshold))
+        if en_words:
+            await self._fill_english_name_vectors(tags)
+            matched.update(
+                await self._tag_ids_for_words(
+                    tags,
+                    en_words,
+                    self._encoder_en,
+                    "vector_en_model",
+                    threshold,
+                )
+            )
+        return matched
+
+    async def _tag_ids_for_words(
+        self,
+        tags: list[dict[str, Any]],
+        words: list[str],
+        encoder: Encoder | None,
+        vector_field: str,
+        threshold: float,
+    ) -> set[str]:
+        if encoder is None or not encoder.is_loaded:
+            logger.warning("自由输入未做{}向量：编码器未就绪", "英文" if vector_field != "vector" else "中文")
+            return set()
+        matched: set[str] = set()
+        for word in words:
+            try:
+                query = await encoder.encode_one(word)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("自由输入词向量失败：{}", exc)
+                continue
+            matched.update(_tag_ids_at_least(tags, query, vector_field, threshold))
+        return matched
+
+    async def _content_form_tag_bank(self) -> list[dict[str, Any]]:
+        if self._content_form_tag_bank_cache is not None:
+            return self._content_form_tag_bank_cache
+        if self._es_search is None:
+            return []
+        raw = await self._es_search.list_content_tag_vectors()
+        bank = [dict(tag) for tag in raw if isinstance(tag, dict) and _is_content_form_dict(tag)]
+        self._content_form_tag_bank_cache = bank
+        return bank
+
+    async def _fill_english_name_vectors(self, tags: list[dict[str, Any]]) -> None:
+        """库里的 name_en_vector 是中文模型的 512 维，不能和英文模型比。按英文名现算 384 维。"""
+        encoder = self._encoder_en
+        if encoder is None or not encoder.is_loaded:
+            return
+        for tag in tags:
+            if "vector_en_model" in tag:
+                continue
+            name_en = str(tag.get("name_en") or "").strip()
+            if not name_en:
+                tag["vector_en_model"] = []
+                continue
+            try:
+                tag["vector_en_model"] = await encoder.encode_one(name_en)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("英文标签名向量失败：{}", exc)
+                tag["vector_en_model"] = []
 
     async def search_prescription_audio(self, task: dict[str, Any]) -> list[dict[str, Any]]:
         """Use the configured ranked retrieval service without recording hot queries."""
@@ -244,15 +373,18 @@ class AudioCatalogService:
 
     def _is_cache_fresh(self, loaded_at: float, now: float) -> bool:
         ttl = self._settings.somni_audio_catalog_cache_ttl_sec
-        return ttl > 0 and now - loaded_at < ttl
+        if ttl <= 0:
+            return True
+        return now - loaded_at < ttl
 
     async def _fetch_audios_mongo(self, language: str) -> list[dict[str, Any]]:
         collection = self._materials()
         query = {"language": language}
-        total = await collection.count_documents(query)
-        self._reject_over_limit(total)
-        cursor = collection.find(query, {"embedding": 0})
-        return [bson_to_jsonable(doc) async for doc in cursor]
+        limit = self._settings.fetch_all_hard_limit + 1
+        cursor = collection.find(query, _AUDIO_LIST_PROJECTION, limit=limit)
+        docs = [bson_to_jsonable(doc) async for doc in cursor]
+        self._reject_over_limit(len(docs))
+        return docs
 
     async def _fetch_audios_es(self, language: str) -> list[dict[str, Any]]:
         if self._es_search is None:
@@ -341,6 +473,19 @@ def _select_matched_tag_ids(scored: list[tuple[float, str]]) -> set[str]:
     return {tag_id for _, tag_id in scored}
 
 
+_AUDIO_LIST_PROJECTION = {
+    "audio_name": 1,
+    "audio_url": 1,
+    "cover_url": 1,
+    "description": 1,
+    "short_description": 1,
+    "vip": 1,
+    "content_form_tags": 1,
+    "created_at": 1,
+    "create_time": 1,
+}
+
+
 def _root_tag_query() -> dict[str, Any]:
     return {
         "type": _CONTENT_FORM,
@@ -407,6 +552,7 @@ def _map_material(doc: dict[str, Any]) -> dict[str, Any]:
         "short_description": str(doc.get("short_description") or ""),
         "vip": _to_vip(doc.get("vip")),
         "content_form_tags": doc.get("content_form_tags") or [],
+        "created_at": doc.get("created_at") or doc.get("create_time") or "",
     }
 
 
@@ -500,6 +646,92 @@ def _is_root_content_form_dict(tag: dict[str, Any]) -> bool:
     return _is_content_form_dict(tag) and _is_blank(tag.get("parent_tag_id"))
 
 
+def _normalize_content_form_codes(codes: list[str] | None) -> set[str]:
+    """问卷传入的是标签名，只做去空白和大小写折叠。"""
+    return {normalize_tag_code(str(code)) for code in (codes or []) if str(code).strip()}
+
+
+def _created_stamp(value: Any) -> str:
+    if value is None:
+        return ""
+    if hasattr(value, "isoformat"):
+        return str(value.isoformat())
+    return str(value)
+
+
+def _order_preferred_then_rest(
+    docs: list[dict[str, Any]],
+    preferred_ids: set[str],
+) -> list[dict[str, Any]]:
+    """偏好音频在前，其余在后。两段按创建时间从新到旧；时间相同保持原顺序。"""
+    preferred = [doc for doc in docs if str(doc.get("id") or "") in preferred_ids]
+    rest = [doc for doc in docs if str(doc.get("id") or "") not in preferred_ids]
+    preferred.sort(key=lambda doc: _created_stamp(doc.get("created_at")), reverse=True)
+    rest.sort(key=lambda doc: _created_stamp(doc.get("created_at")), reverse=True)
+    return preferred + rest
+
+
+def _han_words(words: list[str]) -> list[str]:
+    return [word for word in words if any("\u4e00" <= char <= "\u9fff" for char in word)]
+
+
+def _audio_ids_for_tag_ids(docs: list[dict[str, Any]], tag_ids: set[str]) -> set[str]:
+    if not tag_ids:
+        return set()
+    found: set[str] = set()
+    for doc in docs:
+        audio_id = str(doc.get("id") or "")
+        if audio_id and _has_content_form_tag_id(doc, tag_ids):
+            found.add(audio_id)
+    return found
+
+
+def _tag_ids_at_least(
+    tags: list[dict[str, Any]],
+    query: list[float],
+    vector_field: str,
+    threshold: float,
+) -> set[str]:
+    matched: set[str] = set()
+    for tag in tags:
+        vector = tag.get(vector_field)
+        if not isinstance(vector, list) or not vector:
+            continue
+        if _cosine(query, vector) >= threshold:
+            tag_id = str(tag.get("id") or "").strip()
+            if tag_id:
+                matched.add(tag_id)
+    return matched
+
+
+def _cosine(left: list[float], right: list[float]) -> float:
+    if len(left) != len(right) or not left:
+        return 0.0
+    dot = 0.0
+    left_norm = 0.0
+    right_norm = 0.0
+    for a, b in zip(left, right, strict=True):
+        dot += a * b
+        left_norm += a * a
+        right_norm += b * b
+    if left_norm <= 0 or right_norm <= 0:
+        return 0.0
+    return dot / math.sqrt(left_norm * right_norm)
+
+
+def _move_disliked_to_end(
+    docs: list[dict[str, Any]],
+    disliked_ids: set[str],
+) -> list[dict[str, Any]]:
+    """讨厌的音频挪到末尾，并按创建时间从新到旧。其余音频保持原有顺序。"""
+    if not disliked_ids:
+        return docs
+    kept = [doc for doc in docs if str(doc.get("id") or "") not in disliked_ids]
+    disliked = [doc for doc in docs if str(doc.get("id") or "") in disliked_ids]
+    disliked.sort(key=lambda doc: _created_stamp(doc.get("created_at")), reverse=True)
+    return kept + disliked
+
+
 def _has_content_form_code(doc: dict[str, Any], tag_code: str) -> bool:
     needle = tag_code.casefold()
     if not needle:
@@ -509,6 +741,20 @@ def _has_content_form_code(doc: dict[str, Any], tag_code: str) -> bool:
             continue
         if str(item.get("code") or "").strip().casefold() == needle:
             return True
+    return False
+
+
+def _has_content_form_name(doc: dict[str, Any], tag_name: str) -> bool:
+    """问卷偏好按标签名整段匹配。中文对 name，英文对音频上的 en_name。"""
+    needle = tag_name.strip().casefold()
+    if not needle:
+        return False
+    for item in doc.get("content_form_tags") or []:
+        if not isinstance(item, dict):
+            continue
+        for key in ("name", "name_en", "en_name"):
+            if str(item.get(key) or "").strip().casefold() == needle:
+                return True
     return False
 
 
