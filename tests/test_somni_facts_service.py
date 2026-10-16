@@ -137,6 +137,7 @@ def profile() -> dict:
 
 def service() -> tuple:
     store = AsyncMock()
+    store.load_preference_sources.return_value = {"operations": [], "snapshots": [], "sessions": []}
     store.load_active_plan.return_value = []
     store.load_profile.return_value = (None, None)
     store.list_sleep_episodes.return_value = []
@@ -1186,6 +1187,7 @@ async def test_all_profile_sections_share_actual_read_start_ignoring_legacy_cuto
         "build_plan_comparisons": 2,
         "_execution": 2,
         "build_sleep_debt": 2,
+        "_preference_evidence": 3,
     }
     for name in methods:
         setattr(svc, name, AsyncMock(return_value={"status": "not_found", "missing_reasons": []}))

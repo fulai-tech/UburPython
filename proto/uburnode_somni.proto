@@ -886,6 +886,13 @@ message GetProfileInputsReq {
   optional string answer_id = 10;
 }
 
+// Facts only: learning thresholds and plan changes are owned by DeepHealth.
+message InputPreferenceEvidenceSection {
+  InputSectionStatus status = 1;
+  google.protobuf.Struct value = 2;
+  repeated string missing_reasons = 3;
+}
+
 message ProfileInputsData {
   InputQuestionnairesSection questionnaires = 1;
   GenerationProfileSection prior_profile = 2;
@@ -894,6 +901,7 @@ message ProfileInputsData {
   InputExecutionSection execution = 5;
   InputPlanComparisonsSection plan_comparisons = 6;
   SleepDebtSection sleep_debt = 7;
+  InputPreferenceEvidenceSection preference_evidence = 8;
 }
 
 message GetProfileInputsRes {
@@ -978,6 +986,7 @@ message PlanInputsData {
   ResolvedTargetPlanSection target_plan = 3;
   InputObservationsSection feedback = 4;
   InputRuntimeExecutionStateSection execution_state = 5;
+  InputPreferenceEvidenceSection preference_evidence = 6;
 }
 
 message GetPlanInputsRes {

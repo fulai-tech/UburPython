@@ -12,7 +12,6 @@ from typing import Any
 from pymongo.errors import PyMongoError
 
 from app.core.config import Settings
-from app.server.somni.quiz.answer_value import concrete_answer_value
 from app.server.somni.facts.calc import (
     build_series,
     compare_plan_execution,
@@ -45,6 +44,7 @@ from app.server.somni.facts.time import (
     resolve_scope,
     visible_by,
 )
+from app.server.somni.quiz.answer_value import concrete_answer_value
 
 
 def _pick(row: dict, fields: str) -> dict:
@@ -76,6 +76,8 @@ def collect_source_refs(row: dict, source: str, manifest: dict) -> list[str]:
         or row.get("snapshot_id")
         or row.get("generation_id")
         or row.get("observation_id")
+        or row.get("op_id")
+        or row.get("session_id")
     )
     if not identifier:
         return []
@@ -433,6 +435,7 @@ class GenerationDataService:
                 target_local_date,
                 read_at,
                 manifest,
+                stored_compat=scope == "daily",
             )
             data["target_plan"] = target_plan
             if not previous_generation_id and target_plan.get("value", {}).get(
@@ -445,6 +448,12 @@ class GenerationDataService:
                     manifest,
                 )
                 data["previous_blueprint"] = blueprint
+        if scope == "daily":
+            data["preference_evidence"] = await self._optional(
+                lambda: self._preference_evidence(
+                    uid, target_local_date, timezone_offset, read_at, manifest
+                )
+            )
         if scope == "realtime":
             if session_id:
                 data["execution_state"] = await self._runtime_execution_state(
@@ -471,6 +480,31 @@ class GenerationDataService:
         result = self._envelope(uid, request_id, read_at, data, manifest)
         result["read_started_at_utc"] = timestamp(read_started_at)
         return result
+
+    async def _preference_evidence(
+        self,
+        uid: str,
+        end_local_date: str,
+        timezone_offset: str,
+        read_at: datetime,
+        manifest: dict,
+    ) -> dict:
+        from app.server.somni.facts.preference import aggregate_preference_evidence
+
+        sources = await self.store.load_preference_sources(uid, end_local_date, timezone_offset)
+        # Register canonical references as well as compact aggregate references.
+        for name, rows in sources.items():
+            for row in rows:
+                collect_source_refs(row, name, manifest)
+        value = aggregate_preference_evidence(
+            uid,
+            end_local_date,
+            timezone_offset,
+            **sources,
+            read_at=read_at,
+        )
+        reasons = value["missing_reasons"]
+        return section(value, status="partial" if reasons else "ok", reasons=reasons)
 
     async def _feedback_observation(
         self,
@@ -514,6 +548,8 @@ class GenerationDataService:
         target_local_date: str,
         read_at: datetime,
         manifest: dict,
+        *,
+        stored_compat: bool = False,
     ) -> dict:
         try:
             target_date = parse_date(target_local_date).isoformat()
@@ -521,6 +557,8 @@ class GenerationDataService:
             raise DataError("INVALID_ARGUMENT", "invalid_target_local_date") from exc
         # Resolve the latest effective plan through the unique active pointer visible at read_at.
         rows = await self.store.load_active_plan(uid, target_date, read_at)
+        if not rows and stored_compat:
+            rows = await self.store.load_stored_current_plan(uid, target_date, read_at)
         if not rows:
             return section(status="not_found", reasons=["active_plan_not_found"])
         if len(rows) != 1:
@@ -532,6 +570,12 @@ class GenerationDataService:
             raise DataError("PERMISSION_DENIED", "active_plan_date_mismatch")
         plan_id = str(pointer.get("plan_id") or "")
         weekly_generation_id = str(pointer.get("weekly_generation_id") or "")
+        if (
+            "weekly_generation_id" not in pointer
+            and "generation_id" not in pointer
+            and "phases" in pointer
+        ):
+            return await self._stored_target_plan(uid, target_date, pointer, read_at, manifest)
         version = pointer.get("version")
         if (
             not plan_id
@@ -589,6 +633,58 @@ class GenerationDataService:
         created_at = instant(revision.get("created_at"))
         if created_at:
             value["created_at_utc"] = timestamp(created_at)
+        return section(value)
+
+    async def _stored_target_plan(
+        self, uid: str, target_date: str, pointer: dict, read_at: datetime, manifest: dict
+    ) -> dict:
+        """Resolve legacy current plans by exact immutable revision and body hash."""
+        from app.server.somni.facts.preference_storage import (
+            normalize_snapshot,
+            stored_phase_content,
+        )
+
+        version = pointer.get("version")
+        if type(version) is not int or version < 1 or not pointer.get("plan_id"):
+            raise DataError("FAILED_PRECONDITION", "active_plan_link_incomplete")
+        revision = await self.store.load_plan_revision(uid, pointer["plan_id"], version, read_at)
+        if revision is None:
+            raise DataError("NOT_FOUND", "active_plan_snapshot_not_found")
+        if revision.get("uid") != uid or revision.get("plan_id") != pointer["plan_id"]:
+            raise DataError("PERMISSION_DENIED", "active_plan_snapshot_owner_mismatch")
+        if type(revision.get("version")) is not int or revision["version"] != version:
+            raise DataError("FAILED_PRECONDITION", "active_plan_snapshot_version_mismatch")
+        normalized = normalize_snapshot(revision)
+        if normalized.get("plan_start_local_date") != target_date:
+            raise DataError("PERMISSION_DENIED", "active_plan_date_mismatch")
+        if normalized.get("lifecycle") != "committed":
+            raise DataError("FAILED_PRECONDITION", "active_plan_snapshot_not_active")
+        if not revision.get("snapshot_id") or not pointer.get("phases"):
+            raise DataError("FAILED_PRECONDITION", "active_plan_link_incomplete")
+        if canonical_hash(stored_phase_content(pointer["phases"])) != canonical_hash(
+            stored_phase_content(revision.get("phases"))
+        ):
+            raise DataError("FAILED_PRECONDITION", "active_plan_body_mismatch")
+        refs = collect_source_refs(pointer, "plans", manifest)
+        refs.extend(collect_source_refs(revision, "snapshots", manifest))
+        value = _pick(revision, "plan_id version snapshot_id phases")
+        value.update(
+            date=target_date,
+            lifecycle="active",
+            edit_source=normalized.get("edit_source"),
+            content_hash=canonical_hash(
+                {
+                    "uid": uid,
+                    "plan_id": pointer["plan_id"],
+                    "date": target_date,
+                    "version": version,
+                    "phases": stored_phase_content(revision["phases"]),
+                }
+            ),
+            source_refs=refs,
+        )
+        if revision.get("trigger_reason") == "daily_preference":
+            value["edit_source"] = "daily_preference"
         return section(value)
 
     async def _runtime_execution_state(
@@ -926,6 +1022,7 @@ class GenerationDataService:
             "plan_comparisons",
             "execution",
             "sleep_debt",
+            "preference_evidence",
         }
         if requested_sections and not set(requested_sections) <= allowed_sections:
             raise DataError("INVALID_ARGUMENT", "unknown_requested_section")
@@ -949,6 +1046,12 @@ class GenerationDataService:
             ),
             "execution": lambda: self._execution(uid, scope, read_at, manifest),
         }
+        if purpose in {"weekly", "profile_refresh", "plan_generation"} or (
+            requested_sections and "preference_evidence" in requested_sections
+        ):
+            tasks["preference_evidence"] = lambda: self._preference_evidence(
+                uid, (scope.end - timedelta(days=1)).isoformat(), timezone_offset, read_at, manifest
+            )
         if requested_sections:
             tasks = {key: value for key, value in tasks.items() if key in requested_sections}
         results = await asyncio.gather(*(self._optional(query) for query in tasks.values()))

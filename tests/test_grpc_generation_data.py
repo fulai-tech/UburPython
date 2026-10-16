@@ -29,6 +29,7 @@ async def channel(service):
 
 def make_service():
     store = AsyncMock()
+    store.load_preference_sources.return_value = {"operations": [], "snapshots": [], "sessions": []}
     store.load_active_plan.return_value = []
     store.load_permissions.return_value = {
         "status": "active",
@@ -430,3 +431,26 @@ async def test_populated_episode_and_weekly_comparison_round_trip() -> None:
         assert comparison.initial_plan_ref.version == 1
         assert comparison.sessions[0].plan_version == 2
         assert comparison.revisions[0].version == 2
+
+
+@pytest.mark.parametrize(
+    "purpose", [pb.GetProfileInputsReq.profile_refresh, pb.GetProfileInputsReq.initial]
+)
+async def test_profile_inputs_accepts_preference_evidence_section(purpose: int) -> None:
+    svc, store = make_service()
+    async with channel(svc) as client:
+        response = await client.GetProfileInputs(
+            pb.GetProfileInputsReq(
+                uid="u",
+                request_id="preference-section-compat",
+                purpose=purpose,
+                review_end_local_date="2026-10-17",
+                timezone_offset="+08:00",
+                requested_sections=["questionnaires", "prior_profile", "preference_evidence"],
+            )
+        )
+    assert response.HasField("data")
+    assert response.data.HasField("preference_evidence")
+    assert response.data.preference_evidence.status in (pb.ok, pb.partial)
+    assert response.data.preference_evidence.value["uid"] == "u"
+    store.load_preference_sources.assert_awaited_once_with("u", "2026-10-16", "+08:00")

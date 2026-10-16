@@ -351,3 +351,23 @@ but conflicts/ambiguous exact matches are rejected. Schema0.0.1 keeps its origin
 ```bash
 uv run pytest
 ```
+
+### 偏好证据聚合接入状态（2026-10-16）
+
+`app/server/somni/facts/preference.py` 和 `FactsStore.load_preference_sources` 已提供独立的只读聚合：
+按 UID、本地14晚业务窗口查询 UTC 数据，保留预算；重复包去重、近时旋钮首尾合并，
+精确关联方案版本、设备和完整会话，输出快照人工差异及暴露事实。
+偏好确认阈值归 DeepHealth；本仓不决定是否自动调整。
+
+已接入 gRPC。用户批准新增可选 `InputPreferenceEvidenceSection`，在 `ProfileInputsData` 使用字段8、
+`PlanInputsData` 使用字段6，两仓proto和生成文件已同步；旧端缺失证据时不能推断确认。
+真实快照字段、节点完成覆盖及硬件保持时长证明尚待数据核验，缺失时保守降级。
+本仓只返回事实证据，偏好判定与画像/方案候选由DPH完成；没有创建调度器、自动修改已保存方案或数据库迁移。
+
+### 生产结构偏好适配与验证数据
+
+偏好聚合支持快照`date/create_time/status=0/edit_source=app`，会话通过唯一归属的`plan_id + plan_version`关联。完整暴露必须同时验证completed、非预览、设备、时区、方案时间及节点总数；停止/失败/缺少时区不计。已采纳App修改仅比较连续唯一版本；排队/丢弃/拒绝快照不作采纳证据。硬件成功记录可归并为观察，但缺少持续生效证明仍不自动确认。
+
+daily兼容没有generation链接的旧当前方案，通过用户/日期/版本/快照正文一致核验返回现有目标协议；weekly/realtime的独立读取语义不扩展。当前方案内可选null占位不构成正文差异，真正数值/节点差异仍拒绝。候选保存需版本和正文hash CAS，并写`trigger_reason=daily_preference`防重复递减。
+
+五人包由DeepHealth的`scripts/somni_preference_seed.py`生成；本仓`scripts/somni_preference_fixture_import.py`默认只检查包、不连接数据库，只有`--apply`才会导入，连接通过已有`SOMNI_MONGODB_URI`进程环境读取。包采用Extended JSON BSON UTC日期、确定性隔离UID和_id，覆盖问卷、长短画像、7天方案、5晚会话、App修订及硬件重传。测试日期必须与daily请求当日一致（建议09:00），过期包需重新生成；不创建登录账户或真实设备绑定。

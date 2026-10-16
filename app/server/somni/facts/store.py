@@ -424,11 +424,31 @@ class FactsStore:
         return rows[0] if rows else None
 
     async def load_active_plan(self, uid: str, target_date: str, read_at: datetime) -> list[dict]:
-        """Load read-time-visible active pointers for a user/date; callers reject ambiguity."""
+        """Load canonical active pointers; independent callers retain their semantics."""
         return await self._read(
             "plans",
             self._visible({"uid": uid, "date": target_date, "status": "active"}, read_at),
             "uid date plan_id version weekly_generation_id generation_id received_at",
+            [("version", -1), ("_id", -1)],
+            limit=2,
+        )
+
+    async def load_stored_current_plan(
+        self, uid: str, target_date: str, read_at: datetime
+    ) -> list[dict]:
+        """Load unique current plans, accepting the production no-status shape."""
+        return await self._read(
+            "plans",
+            self._visible(
+                {
+                    "uid": uid,
+                    "date": target_date,
+                    "status": {"$exists": False},
+                },
+                read_at,
+            ),
+            "uid date plan_id version weekly_generation_id generation_id received_at "
+            "phases device_id scope name status",
             [("version", -1), ("_id", -1)],
             limit=2,
         )
@@ -621,9 +641,12 @@ class FactsStore:
             self._visible({"uid": uid, "plan_id": plan_id, "version": version}, read_at),
             "uid plan_id version snapshot_id content_hash generation_id base_plan_version "
             "edit_source editor_id created_at received_at phases status lifecycle source_op_id "
-            "plan_start_local_date timezone_offset execution_time",
-            limit=1,
+            "plan_start_local_date timezone_offset execution_time date create_time device_id "
+            "apply_status trigger_reason request_id",
+            limit=2,
         )
+        if len(rows) > 1:
+            raise DataError("FAILED_PRECONDITION", "plan_revision_ambiguous")
         return rows[0] if rows else None
 
     async def find_episode(
@@ -642,6 +665,81 @@ class FactsStore:
             if rows:
                 return rows[0]
         return None
+
+    async def load_preference_sources(
+        self, uid: str, end_local_date: str, timezone_offset: str
+    ) -> dict[str, list[dict]]:
+        """Read a bounded learning window; reception times never restrict visibility.
+
+        Operations without an owned session remain unverified in aggregation. A
+        historical device identifier alone is not sufficient authorization.
+        """
+        from datetime import timedelta
+
+        from app.server.somni.facts.time import parse_date, parse_offset
+
+        end_date = parse_date(end_local_date)
+        zone = parse_offset(timezone_offset)
+        first = end_date - timedelta(days=14)
+        lower = datetime.combine(first, datetime.min.time(), zone).astimezone(UTC)
+        # Include the morning completing the last business night.
+        upper = datetime.combine(end_date, datetime.min.time(), zone).astimezone(UTC)
+        upper += timedelta(hours=18)
+        operations = await self._read(
+            "operations",
+            {"uid": uid, "executed_at": {"$gte": lower, "$lt": upper}},
+            "uid op_id request_id device_id sn session_id plan_id plan_version phase "
+            "node_key resource_id origin method payload applied success executed_at",
+            [("executed_at", 1), ("_id", 1)],
+        )
+        snapshots = await self._read(
+            "snapshots",
+            {
+                "uid": uid,
+                "$or": [
+                    {
+                        "plan_start_local_date": {
+                            "$gte": first.isoformat(),
+                            "$lt": end_date.isoformat(),
+                        }
+                    },
+                    {"date": {"$gte": first.isoformat(), "$lt": end_date.isoformat()}},
+                ],
+            },
+            "uid plan_id version snapshot_id content_hash base_plan_version "
+            "edit_source editor_id created_at create_time phases status lifecycle apply_status "
+            "plan_start_local_date date timezone_offset source_op_id device_id",
+            [("plan_id", 1), ("version", 1), ("_id", 1)],
+        )
+        # Sessions have no persisted uid in production. Authorization comes from
+        # the owned immutable revision, never from a device identifier alone.
+        plan_ids = sorted(
+            {row["plan_id"] for row in snapshots if row.get("uid") == uid and row.get("plan_id")}
+        )
+        sessions = []
+        if plan_ids:
+            # A duplicated plan id owned by someone else is not an authorization.
+            foreign = await self._read(
+                "snapshots",
+                {"plan_id": {"$in": plan_ids}, "uid": {"$ne": uid}},
+                "plan_id uid",
+                limit=1,
+            )
+            if foreign:
+                raise DataError("PERMISSION_DENIED", "preference_plan_owner_ambiguous")
+            sessions = await self._read(
+                "sessions",
+                {
+                    "plan_id": {"$in": plan_ids},
+                    "started_at": {"$gte": lower, "$lt": upper},
+                    "$or": [{"uid": uid}, {"uid": {"$exists": False}}],
+                },
+                "uid session_id device_id sn plan_id plan_version started_at ended_at "
+                "state evidence_complete adopted_versions executed_nodes timezone "
+                "end_reason previewing total_nodes node_index phase phase_started_at",
+                [("started_at", 1), ("_id", 1)],
+            )
+        return {"operations": operations, "snapshots": snapshots, "sessions": sessions}
 
     async def list_sessions(
         self,
