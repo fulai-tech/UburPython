@@ -372,6 +372,31 @@ daily兼容没有generation链接的旧当前方案，通过用户/日期/版本
 
 五人包由DeepHealth的`scripts/somni_preference_seed.py`生成；本仓`scripts/somni_preference_fixture_import.py`默认只检查包、不连接数据库，只有`--apply`才会导入，连接通过已有`SOMNI_MONGODB_URI`进程环境读取。包采用Extended JSON BSON UTC日期、确定性隔离UID和_id，覆盖问卷、长短画像、7天方案、5晚会话、App修订及硬件重传。测试日期必须与daily请求当日一致（建议09:00），过期包需重新生成；不创建登录账户或真实设备绑定。
 
+导入工具已随分支补齐。以下两种用法都只检查本地包，不连接 MongoDB；`--remove` 单独使用也不会删除数据：
+
+```bash
+python scripts/somni_preference_fixture_import.py /path/to/fixture_package
+python scripts/somni_preference_fixture_import.py /path/to/fixture_package --remove
+```
+
+只有显式添加 `--apply` 才执行数据库操作，`--apply --remove` 按包内精确 `_id` 删除。该脚本是操作人员工具，不由服务启动或部署流程自动执行；只能使用受信任的隔离测试包和测试数据库。
+
 ### 画像关联不完整的默认读取
 
 未指定画像快照 ID 时，按原日期与 revision 排序，在现有两个候选的查询预算内选择第一组短期画像与长期画像哈希精确关联且长期状态有效的记录。跳过较新不完整关联时返回 `newer_profile_link_incomplete`；不会将较新的短期正文与较旧长期正文拼接。显式 ID 继续精确读取，关联缺失返回 partial，不替换其他快照。哈希重算仍跳过，UID、schema、有效状态和关联检查保留。保存方仍须原子保存新的长期记录和引用它的短期记录；本次读取兼容不修复数据库。
+
+
+### 2026-10-20 音频标签 code 与缓存兼容
+
+检索入口的 `sleep_stage_tags`、`content_tags`、`disliked_tags` 以及处方 RPC 的 `content_tag_codes` 统一归一为英文 dictionary code，独立于 UI language。比如 `soothe` / `breathing_guidance` / `steady_light_rain`。自然语言 `query_text` 和素材展示名称保留原语言。结构化素材优先 code；旧 name 通过 `app/core/audio_tag_aliases.json` 的已审计别名读取，未知中文标签返回参数错误，新增英文 code 可前向兼容。别名资产与 DeepHealth conf/somni/audio_tag_aliases.json 同步，来源为 2026-10-20 Somni 字典只读审计。不可把 `voice`（泛人声）与 `voice_guidance`（引导内容）合并；拒绝泛人声只接受工程 value.code=none，缺失信息不放行。
+
+阶段 ES 读取使用现有 nested `sleep_stage_tags.code`，无需新增索引字段。标签向量使用字典现有向量，进程缓存采用英文 code；自然句使用文本摘要 key。Redis 阶段缓存升级为 `sleep_stage_v3_index:<unwind|soothe|guard|wake>`、`sleep_stage_v3_doc:<hash>`；检索结果缓存升级 `audio_search_v4+`，LRU 使用独立 `audio_search_v4:_lru_index`。启动正常预热与按需加载都使用英文阶段 key，旧 namespace 不被新版本读取；正常启动预热只更新当前 v3 阶段缓存；显式管理 clear_all 才清理旧阶段 namespace，滚动发布时保留旧版本缓存。此次没有执行远端清理、重建、DB/ES 写入或部署；上线须与 DeepHealth 出站参数配套验证，允许新 namespace 冷启动。
+
+`GetAudio.tag_code`、问卷 `content_form_codes` 和热点标签记账也使用相同英文 code；已审计中英文别名先归一，再按素材 code 匹配。展示名称改变不改变选中分类，同 code 的多条素材仍按原排序规则排列。自由输入 preference_text/dislike_text 继续作为自然语言处理。
+
+
+别名来源加固：资产携带此前同日只读审计的170条 somni_audio_tag_dictionary 快照，aliases 只从 code/name/name_en 唯一映射派生，加载时核验。不再手写 rain→steady_light_rain、piano→slow_piano 或 silence/gentle_alarm_music 这类缩窄/不存在的映射。“风声”有两个 code，调用方必须明确 wind 或 wind_ambience；结构化“雨声”不等同“均匀小雨”，自由描述请用 query_text。U/S/G/W-S* 是独立阶段协议别名。此次尝试重新读取 Mongo 超时，使用既有同日审计快照；后续词典变化须重新导出并同步 DeepHealth，快照不保证实时更新。
+
+拒绝条件支持中文和英文子句，例如 不要人声 / no voice / without vocals / do not include voice。明确拒绝片段从正向扩展文本中移除，精确拒绝不参与模糊扩展且不受自动 TOP_K=5 截断。向量服务不可用时退回精确准入和硬拒绝；无向量的精确路径无需编码器。自然句与标签向量缓存分开。重复/冲突/缺失的 voice.value.code 不能证明无人声，仅唯一 none 可通过；显式空白/符号拒绝项返回参数错误。颜色噪音内部标签和拒绝标签统一为英文 code。
+
+0.62/0.65 是自动正向/负向标签的相似度阈值，0.2 是弱厌恶扣分，并非语言转换规则；本次不调数值。人工明确标签由 code 精确匹配，英文自由句的模糊质量需要真实双语标注集单独评估，不能用离线替身结果声称向量召回质量达标。

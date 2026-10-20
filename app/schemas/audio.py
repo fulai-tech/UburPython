@@ -7,8 +7,9 @@
 from enum import StrEnum
 from typing import Any, Self
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
+from app.core.audio_tags import canonical_tags
 from app.core.tags import (
     DIMENSION_FIELDS,
     dimensions_from_flat_tags,
@@ -82,11 +83,11 @@ class AudioTags(BaseModel):
         """内容形态准入精确交集使用的标签集合（四维度并集）。"""
         labels: set[str] = set()
         for dim in (self.content_form, self.mechanism, self.audio_feat, self.rhythm):
-            labels.update(item.label for item in dim)
+            labels.update(canonical_tags([item.label for item in dim], strict=False))
         return labels
 
     def sleep_stage_labels(self) -> set[str]:
-        return {item.label for item in self.sleep_stage}
+        return set(canonical_tags([item.label for item in self.sleep_stage], strict=False))
 
     def to_label_tags(self) -> AudioTagsInput:
         """检索出参：六维标签仅保留 label 字符串。"""
@@ -187,6 +188,17 @@ class SearchAudioRequest(BaseModel):
     disliked_tags: list[str] = Field(default_factory=list)
     top_k: int | None = Field(default=None, ge=1)
 
+    @field_validator(
+        "sleep_stage_tags", "content_tags", "content_tag_codes", "disliked_tags", mode="before"
+    )
+    @classmethod
+    def normalize_machine_tags(cls, values: Any) -> list[str]:
+        if not isinstance(values, (list, tuple)) or not all(
+            isinstance(value, str) for value in values
+        ):
+            raise ValueError("audio tags must be an array of strings")
+        return canonical_tags(values)
+
 
 class SearchAudioData(BaseModel):
     """检索成功时写入 ApiResponse.data。"""
@@ -246,9 +258,7 @@ class AudioMaterialData(BaseModel):
             sleep_stage_tags=_tag_messages_to_dicts(material.sleep_stage_tags),
             content_form_tags=_tag_messages_to_dicts(material.content_form_tags),
             mechanism_tags=_tag_messages_to_dicts(material.mechanism_tags),
-            audio_engineering_tags=_tag_messages_to_dicts(
-                material.audio_engineering_tags
-            ),
+            audio_engineering_tags=_tag_messages_to_dicts(material.audio_engineering_tags),
             medical_risk_tags=_tag_messages_to_dicts(material.medical_risk_tags),
             evidence_level_tags=_tag_messages_to_dicts(material.evidence_level_tags),
         )

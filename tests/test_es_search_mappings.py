@@ -40,12 +40,12 @@ def test_parse_tags_maps_somni_material_structure() -> None:
     }
     tags = EsSearch.parse_tags(raw)
 
-    assert tags.sleep_stage[0].label == "放松"
+    assert tags.sleep_stage[0].label == "unwind"
     assert tags.sleep_stage[0].vector_id == "s1"
-    assert tags.content_form[0].label == "音乐"
-    assert tags.mechanism[0].label == "遮蔽"
-    assert tags.audio_feat[0].label == "密度"
-    assert tags.risk_control[0].label == "谨慎"
+    assert tags.content_form[0].label == "music"
+    assert tags.mechanism[0].label == "masking"
+    assert tags.audio_feat[0].label == "event_density"
+    assert tags.risk_control[0].label == "caution"
     assert tags.rhythm == []
 
 

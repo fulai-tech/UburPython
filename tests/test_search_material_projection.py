@@ -44,7 +44,7 @@ def test_project_keeps_only_api_fields() -> None:
         "status": True,
         "sleep_stage_tags": [{"tag_id": "s1", "name": "放松"}],
         "mechanism_tags": [{"tag_id": "m1", "name": "放松"}],
-        "content_form_tags": [{"name": "雨声", "parent_tag_id": "p1"}],
+        "content_form_tags": [{"code": "rain", "name": "雨声", "parent_tag_id": "p1"}],
         "audio_engineering_tags": [{"code": "event_density", "value": {"code": "low"}}],
         "medical_risk_tags": [],
         "evidence_level_tags": [{"code": "B"}],

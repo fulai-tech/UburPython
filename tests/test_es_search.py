@@ -151,7 +151,8 @@ async def test_warm_dictionary_vectors_cache_seeds_from_content_tags() -> None:
                     {
                         "_id": "t1",
                         "_source": {
-                            "name": "雨声",
+                            "code": "steady_light_rain",
+                            "name": "均匀小雨",
                             "name_vector": [0.1, 0.2],
                             "type": "content_form",
                             "status": "启用",
@@ -181,7 +182,8 @@ async def test_list_content_tag_vectors_uses_process_cache() -> None:
                     {
                         "_id": "t1",
                         "_source": {
-                            "name": "雨声",
+                            "code": "steady_light_rain",
+                            "name": "均匀小雨",
                             "name_vector": [0.1],
                             "type": "content_form",
                             "status": "启用",
@@ -197,7 +199,7 @@ async def test_list_content_tag_vectors_uses_process_cache() -> None:
     second = await search.list_content_tag_vectors()
 
     assert first == second
-    assert first[0]["label"] == "雨声"
+    assert first[0]["label"] == "steady_light_rain"
     client.search.assert_awaited_once()
     search.clear_content_tag_vectors_cache()
     await search.list_content_tag_vectors()
@@ -220,9 +222,7 @@ async def test_filter_by_sleep_stage_uses_terms_and_includes_pipeline_fields() -
                             "sleep_stage_tags": [
                                 {"tag_id": "s1", "code": "unwind", "name": "放松"}
                             ],
-                            "content_form_tags": [
-                                {"tag_id": "c1", "code": "rain", "name": "雨声"}
-                            ],
+                            "content_form_tags": [{"tag_id": "c1", "code": "rain", "name": "雨声"}],
                         },
                     }
                 ]
@@ -241,13 +241,20 @@ async def test_filter_by_sleep_stage_uses_terms_and_includes_pipeline_fields() -
     assert body["query"] == {
         "bool": {
             "filter": [{"term": {"status": True}}],
-            "must": [{"terms": {"sleep_stage_names": ["放松", "入睡"]}}],
+            "must": [
+                {
+                    "nested": {
+                        "path": "sleep_stage_tags",
+                        "query": {"terms": {"sleep_stage_tags.code": ["unwind", "soothe"]}},
+                    }
+                }
+            ],
         }
     }
     assert body["_source"]["includes"] == list(SEARCH_CANDIDATE_SOURCE_INCLUDES)
     assert "status" in body["_source"]["includes"]
     assert "description_vector" not in body["_source"]["includes"]
-    assert "nested" not in str(body)
+    assert "sleep_stage_names" not in str(body)
 
 
 @pytest.mark.asyncio
@@ -331,5 +338,15 @@ async def test_search_by_description_vector_includes_pipeline_fields() -> None:
     assert body["knn"]["field"] == "description_vector"
     assert body["knn"]["query_vector"] == query_vector
     assert body["knn"]["filter"] == {
-        "bool": {"filter": [{"term": {"status": True}}, {"terms": {"sleep_stage_names": ["放松"]}}]}
+        "bool": {
+            "filter": [
+                {"term": {"status": True}},
+                {
+                    "nested": {
+                        "path": "sleep_stage_tags",
+                        "query": {"terms": {"sleep_stage_tags.code": ["unwind"]}},
+                    }
+                },
+            ]
+        }
     }

@@ -21,15 +21,11 @@ def test_search_returns_http_200_envelope() -> None:
                     "_id": "6a33a7928030d4cf420efeb6",
                     "audio_name": "雨声",
                     "audio_url": "https://cdn.example.com/a.mp3",
-                    "content_form_tags": [
-                        {"name": "雨声", "parent_tag_id": "p1"}
-                    ],
+                    "content_form_tags": [{"name": "雨声", "parent_tag_id": "p1"}],
                     "mechanism_tags": [],
                     "audio_engineering_tags": [],
                     "medical_risk_tags": [],
-                    "evidence_level_tags": [
-                        {"tag_id": "e1", "code": "B", "name": "中等证据"}
-                    ],
+                    "evidence_level_tags": [{"tag_id": "e1", "code": "B", "name": "中等证据"}],
                 }
             ]
         )
@@ -42,8 +38,8 @@ def test_search_returns_http_200_envelope() -> None:
         response = TestClient(app).post(
             "/api/audio/search",
             json={
-                "sleep_stage_tags": ["深睡"],
-                "content_tags": ["雨声"],
+                "sleep_stage_tags": ["guard"],
+                "content_tags": ["均匀小雨"],
                 "top_k": 5,
             },
         )

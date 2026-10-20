@@ -321,9 +321,7 @@ async def test_get_audio_keeps_mongo_and_es_caches_separate() -> None:
     )
     svc = _service(collection, es_search=es_search, encoder=encoder)
 
-    await svc.get_audio(
-        page=1, page_size=10, fetch_all=False, query_text="", tag_code=""
-    )
+    await svc.get_audio(page=1, page_size=10, fetch_all=False, query_text="", tag_code="")
     payload = await svc.get_audio(
         page=1, page_size=10, fetch_all=False, query_text="雨声", tag_code=""
     )
@@ -339,12 +337,8 @@ async def test_get_audio_cache_expires(monkeypatch) -> None:
     collection = _mongo_collection([_RAIN])
     svc = _service(collection, cache_ttl_sec=10.0)
 
-    await svc.get_audio(
-        page=1, page_size=10, fetch_all=False, query_text="", tag_code=""
-    )
-    await svc.get_audio(
-        page=1, page_size=10, fetch_all=False, query_text="", tag_code=""
-    )
+    await svc.get_audio(page=1, page_size=10, fetch_all=False, query_text="", tag_code="")
+    await svc.get_audio(page=1, page_size=10, fetch_all=False, query_text="", tag_code="")
 
     assert collection.find.call_count == 2
 
@@ -356,12 +350,8 @@ async def test_get_audio_cache_stays_resident(monkeypatch) -> None:
     collection = _mongo_collection([_RAIN])
     svc = _service(collection, cache_ttl_sec=0)
 
-    await svc.get_audio(
-        page=1, page_size=10, fetch_all=False, query_text="", tag_code=""
-    )
-    await svc.get_audio(
-        page=1, page_size=10, fetch_all=False, query_text="", tag_code=""
-    )
+    await svc.get_audio(page=1, page_size=10, fetch_all=False, query_text="", tag_code="")
+    await svc.get_audio(page=1, page_size=10, fetch_all=False, query_text="", tag_code="")
 
     assert collection.find.call_count == 1
 
@@ -872,30 +862,36 @@ async def test_drain_hot_tasks_waits_for_pending_recording() -> None:
     await svc.drain_hot_tasks(timeout_sec=1.0)
 
     assert not svc._hot_tasks
-    hot.record_search.assert_awaited_once_with(
-        "雨声", language="zh", hit_count=1, tag_codes=set()
-    )
+    hot.record_search.assert_awaited_once_with("雨声", language="zh", hit_count=1, tag_codes=set())
 
 
 @pytest.mark.asyncio
-async def test_prescription_search_resolves_codes_and_uses_ranked_search_without_hot(monkeypatch) -> None:
+async def test_prescription_search_resolves_codes_and_uses_ranked_search_without_hot(
+    monkeypatch,
+) -> None:
     retrieval = MagicMock()
-    retrieval.search = AsyncMock(return_value=[{"id": "a1", "audio_url": "https://cdn/a.mp3", "_score": 0.9, "sleep_stage_tags": [{"code": "unwind"}]}])
+    retrieval.search = AsyncMock(
+        return_value=[
+            {
+                "id": "a1",
+                "audio_url": "https://cdn/a.mp3",
+                "_score": 0.9,
+                "sleep_stage_tags": [{"code": "unwind"}],
+            }
+        ]
+    )
     service = _service(MagicMock(), hot=MagicMock())
     service._retrieval = retrieval
 
     class Cursor:
         def __init__(self, projection):
-            document = {
-                "code": "breathing_guidance", "type": "content_form", "name": "呼吸引导"
-            }
-            self.document = {
-                key: value for key, value in document.items() if projection.get(key)
-            }
+            document = {"code": "breathing_guidance", "type": "content_form", "name": "呼吸引导"}
+            self.document = {key: value for key, value in document.items() if projection.get(key)}
 
         def __aiter__(self):
             self.items = iter([self.document])
             return self
+
         async def __anext__(self):
             try:
                 return next(self.items)
@@ -905,15 +901,20 @@ async def test_prescription_search_resolves_codes_and_uses_ranked_search_without
     tags = MagicMock()
     tags.find.side_effect = lambda query, projection: Cursor(projection)
     monkeypatch.setattr(service, "_tags", lambda: tags)
-    result = await service.search_prescription_audio({
-        "query_text": "gentle breathing", "sleep_stage_tags": ["unwind"],
-        "content_tag_codes": ["breathing_guidance"], "content_tags": ["rain"],
-        "disliked_tags": ["thunder"], "top_k": 5,
-    })
+    result = await service.search_prescription_audio(
+        {
+            "query_text": "gentle breathing",
+            "sleep_stage_tags": ["unwind"],
+            "content_tag_codes": ["breathing_guidance"],
+            "content_tags": ["rain"],
+            "disliked_tags": ["thunder"],
+            "top_k": 5,
+        }
+    )
     assert result[0]["id"] == "a1"
     request = retrieval.search.await_args.args[0]
     assert request.sleep_stage_tags == ["unwind"]
-    assert request.content_tags == ["呼吸引导", "rain"]
+    assert request.content_tags == ["breathing_guidance", "rain"]
     assert request.disliked_tags == ["thunder"]
     service._hot.record_search.assert_not_called()
 
@@ -926,13 +927,21 @@ async def test_prescription_search_fails_closed_on_unknown_tag_code(monkeypatch)
     service._retrieval = retrieval
 
     class EmptyCursor:
-        def __aiter__(self): return self
-        async def __anext__(self): raise StopAsyncIteration
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise StopAsyncIteration
 
     tags = MagicMock()
     tags.find.return_value = EmptyCursor()
     monkeypatch.setattr(service, "_tags", lambda: tags)
-    assert await service.search_prescription_audio({"query_text": "rain", "content_tag_codes": ["missing_code"]}) == []
+    assert (
+        await service.search_prescription_audio(
+            {"query_text": "rain", "content_tag_codes": ["missing_code"]}
+        )
+        == []
+    )
     retrieval.search.assert_not_called()
 
 
@@ -945,10 +954,12 @@ async def test_prescription_search_fails_closed_on_ambiguous_tag_code(monkeypatc
 
     class Cursor:
         def __aiter__(self):
-            self.items = iter([
-                {"code": "shared", "type": "content_form", "name": "相同名称"},
-                {"code": "shared", "type": "mechanism", "name": "相同名称"},
-            ])
+            self.items = iter(
+                [
+                    {"code": "shared", "type": "content_form", "name": "相同名称"},
+                    {"code": "shared", "type": "mechanism", "name": "相同名称"},
+                ]
+            )
             return self
 
         async def __anext__(self):
@@ -961,13 +972,23 @@ async def test_prescription_search_fails_closed_on_ambiguous_tag_code(monkeypatc
     tags.find.return_value = Cursor()
     monkeypatch.setattr(service, "_tags", lambda: tags)
 
-    assert await service.search_prescription_audio({"query_text": "rain", "content_tag_codes": ["shared"]}) == []
+    assert (
+        await service.search_prescription_audio(
+            {"query_text": "rain", "content_tag_codes": ["shared"]}
+        )
+        == []
+    )
     retrieval.search.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_get_audio_orders_quiz_preference_by_created_at_then_rest() -> None:
-    older_natural = {**_RAIN, "_id": "old-rain", "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-12-01T00:00:00Z"}
+    older_natural = {
+        **_RAIN,
+        "_id": "old-rain",
+        "created_at": "2026-01-01T00:00:00Z",
+        "updated_at": "2026-12-01T00:00:00Z",
+    }
     newer_natural = {
         **_RAIN,
         "_id": "new-rain",
@@ -1046,7 +1067,12 @@ async def test_get_audio_orders_quiz_preference_by_created_at_then_rest() -> Non
 @pytest.mark.asyncio
 async def test_get_audio_same_created_at_keeps_catalog_order() -> None:
     first = {**_RAIN, "_id": "first", "created_at": "2026-01-01T00:00:00Z"}
-    second = {**_RAIN, "_id": "second", "audio_name": "同样新", "created_at": "2026-01-01T00:00:00Z"}
+    second = {
+        **_RAIN,
+        "_id": "second",
+        "audio_name": "同样新",
+        "created_at": "2026-01-01T00:00:00Z",
+    }
     svc = _service(_mongo_collection([first, second]))
 
     payload = await svc.get_audio(
@@ -1089,7 +1115,7 @@ async def test_get_audio_content_form_name_matches_level1_label() -> None:
         content_form_codes=["人声引导"],
     )
 
-    assert [item["id"] for item in payload["list"]] == ["voice", "alias", "rain"]
+    assert [item["id"] for item in payload["list"]] == ["alias", "voice", "rain"]
 
 
 @pytest.mark.asyncio
@@ -1099,7 +1125,7 @@ async def test_get_audio_dislike_text_moves_matching_tags_to_end() -> None:
         "audio_name": "风扇",
         "language": "zh",
         "created_at": "2026-07-01T00:00:00Z",
-        "content_form_tags": [{"tag_id": "s", "code": "steady", "name": "稳态背景音"}],
+        "content_form_tags": [{"tag_id": "s", "code": "steady_background", "name": "稳态背景音"}],
     }
     rain = {
         "_id": "rain",
@@ -1135,11 +1161,18 @@ async def test_get_audio_dislike_text_moves_matching_tags_to_end() -> None:
     es_search = MagicMock()
     es_search.list_content_tag_vectors = AsyncMock(
         return_value=[
-            {"id": "r", "label": "中雨/稳定雨声", "dimension": "content_form", "vector": [1.0, 0.0, 0.0]},
+            {
+                "id": "r",
+                "label": "中雨/稳定雨声",
+                "dimension": "content_form",
+                "vector": [1.0, 0.0, 0.0],
+            },
             {"id": "p", "label": "慢钢琴", "dimension": "content_form", "vector": [0.0, 1.0, 0.0]},
         ]
     )
-    svc = _service(_mongo_collection([other, rain, piano, steady]), es_search=es_search, encoder=encoder)
+    svc = _service(
+        _mongo_collection([other, rain, piano, steady]), es_search=es_search, encoder=encoder
+    )
 
     payload = await svc.get_audio(
         page=1,
@@ -1161,21 +1194,32 @@ async def test_get_audio_english_like_matches_en_name_and_dislike_matches_englis
         "audio_name": "海浪",
         "language": "zh",
         "created_at": "2026-08-01T00:00:00Z",
-        "content_form_tags": [{"tag_id": "w", "code": "wave", "name": "平稳海浪", "en_name": "Gentle Ocean Wave"}],
+        "content_form_tags": [
+            {
+                "tag_id": "w",
+                "code": "gentle_ocean_wave",
+                "name": "平稳海浪",
+                "en_name": "Gentle Ocean Wave",
+            }
+        ],
     }
     fire = {
         "_id": "fire",
         "audio_name": "壁炉",
         "language": "zh",
         "created_at": "2026-07-01T00:00:00Z",
-        "content_form_tags": [{"tag_id": "f", "code": "fireplace", "name": "篝火/壁炉", "en_name": "Fireplace"}],
+        "content_form_tags": [
+            {"tag_id": "f", "code": "fireplace", "name": "篝火/壁炉", "en_name": "Fireplace"}
+        ],
     }
     thunder = {
         "_id": "thunder",
         "audio_name": "雷声",
         "language": "zh",
         "created_at": "2026-06-01T00:00:00Z",
-        "content_form_tags": [{"tag_id": "t", "code": "thunder", "name": "雷声", "en_name": "Thunder"}],
+        "content_form_tags": [
+            {"tag_id": "t", "code": "thunder", "name": "雷声", "en_name": "Thunder"}
+        ],
     }
     insects = {
         "_id": "insects",
@@ -1183,7 +1227,12 @@ async def test_get_audio_english_like_matches_en_name_and_dislike_matches_englis
         "language": "zh",
         "created_at": "2026-05-01T00:00:00Z",
         "content_form_tags": [
-            {"tag_id": "i", "code": "crickets", "name": "蟋蟀/虫鸣", "en_name": "Crickets and Insects"},
+            {
+                "tag_id": "i",
+                "code": "crickets",
+                "name": "蟋蟀/虫鸣",
+                "en_name": "Crickets and Insects",
+            },
         ],
     }
     encoder_en = MagicMock()
@@ -1231,14 +1280,18 @@ async def test_get_audio_free_text_drops_scores_below_threshold() -> None:
         "audio_name": "壁炉",
         "language": "zh",
         "created_at": "2026-07-01T00:00:00Z",
-        "content_form_tags": [{"tag_id": "f", "code": "fireplace", "name": "篝火/壁炉", "en_name": "Fireplace"}],
+        "content_form_tags": [
+            {"tag_id": "f", "code": "fireplace", "name": "篝火/壁炉", "en_name": "Fireplace"}
+        ],
     }
     thunder = {
         "_id": "thunder",
         "audio_name": "雷声",
         "language": "zh",
         "created_at": "2026-06-01T00:00:00Z",
-        "content_form_tags": [{"tag_id": "t", "code": "thunder", "name": "雷声", "en_name": "Thunder"}],
+        "content_form_tags": [
+            {"tag_id": "t", "code": "thunder", "name": "雷声", "en_name": "Thunder"}
+        ],
     }
     encoder_en = MagicMock()
     encoder_en.is_loaded = True

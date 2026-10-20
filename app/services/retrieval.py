@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import math
 import re
 import time
@@ -20,6 +21,13 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 from loguru import logger
 
+from app.core.audio_tags import (
+    canonical_tag,
+    canonical_tags,
+    dictionary_records,
+    material_tag_codes,
+    tag_aliases,
+)
 from app.core.config import Settings
 from app.embedding.encoder import Encoder
 from app.es.search import EsSearch
@@ -38,38 +46,59 @@ AUTO_TAG_TOP_K = 5
 AUTO_TAG_SIM_THRESHOLD = 0.62
 AUTO_DISLIKE_SIM_THRESHOLD = 0.65
 WEAK_DISLIKE_PENALTY = 0.2
-VOICE_MARKER = "人声"
+VOICE_MARKER = "voice"
 NO_VOICE_CODE = "none"
 # 音工维名：几乎全库都有，进厌恶会自比对互杀；不参与自动/显式厌恶
-IGNORED_DISLIKE_LABELS = frozenset({"声音事件密度"})
+IGNORED_DISLIKE_LABELS = frozenset({"event_density"})
 MIN_AUTO_TAG_LABEL_LEN = 2  # 过滤「低」「无」等过短子串误匹配
-MAX_FALLBACK_TAG_LEN = 12  # 无词典映射时，超过此长度的自然语言句不参与硬剔除
-NEGATIVE_MARKERS = ("不要", "避免", "讨厌", "不喜欢", "别")
-MUTUALLY_EXCLUSIVE_CONTENT_TAGS = frozenset({"白噪音", "粉噪音", "棕噪音"})
-COLOR_NOISE_PARENT_TAG = "颜色噪音"
+NEGATIVE_MARKERS = (
+    "不喜欢",
+    "不想要",
+    "不要",
+    "避免",
+    "讨厌",
+    "别",
+    "不含",
+    "排除",
+    "do not like",
+    "don't like",
+    "do not want",
+    "don't want",
+    "do not include",
+    "don't include",
+    "free of",
+    "dislike",
+    "without",
+    "avoid",
+    "exclude",
+    "no",
+    "not",
+)
+MUTUALLY_EXCLUSIVE_CONTENT_TAGS = frozenset({"white_noise", "pink_noise", "brown_noise"})
+COLOR_NOISE_PARENT_TAG = "color_noise"
 # 颜色噪音别名 → 规范标签：归一后才能精确命中同色并触发兄弟色互斥；
 # 英文别名以小写存储，匹配时统一转小写。
 COLOR_NOISE_ALIASES: dict[str, str] = {
-    "白噪音": "白噪音",
-    "白噪": "白噪音",
-    "白噪声": "白噪音",
-    "白色噪音": "白噪音",
-    "white noise": "白噪音",
-    "粉噪音": "粉噪音",
-    "粉噪": "粉噪音",
-    "粉噪声": "粉噪音",
-    "粉红噪音": "粉噪音",
-    "粉红噪声": "粉噪音",
-    "粉色噪音": "粉噪音",
-    "pink noise": "粉噪音",
-    "棕噪音": "棕噪音",
-    "棕噪": "棕噪音",
-    "棕噪声": "棕噪音",
-    "棕色噪音": "棕噪音",
-    "褐噪音": "棕噪音",
-    "褐色噪音": "棕噪音",
-    "布朗噪音": "棕噪音",
-    "brown noise": "棕噪音",
+    "白噪音": "white_noise",
+    "白噪": "white_noise",
+    "白噪声": "white_noise",
+    "白色噪音": "white_noise",
+    "white noise": "white_noise",
+    "粉噪音": "pink_noise",
+    "粉噪": "pink_noise",
+    "粉噪声": "pink_noise",
+    "粉红噪音": "pink_noise",
+    "粉红噪声": "pink_noise",
+    "粉色噪音": "pink_noise",
+    "pink noise": "pink_noise",
+    "棕噪音": "brown_noise",
+    "棕噪": "brown_noise",
+    "棕噪声": "brown_noise",
+    "棕色噪音": "brown_noise",
+    "褐噪音": "brown_noise",
+    "褐色噪音": "brown_noise",
+    "布朗噪音": "brown_noise",
+    "brown noise": "brown_noise",
 }
 DictionaryVectors = dict[str, list[float]]
 TextVectorCache = OrderedDict[str, list[float]]
@@ -143,7 +172,7 @@ class VectorSimilaritySnapshot:
             raise ValueError("similarity snapshot row range is invalid")
         block = self.scores[row_offset:end, columns]
         return sum(
-            request_tag not in MUTUALLY_EXCLUSIVE_CONTENT_TAGS
+            canonical_tag(request_tag, strict=False) not in MUTUALLY_EXCLUSIVE_CONTENT_TAGS
             and bool(np.any(block[row] >= threshold))
             for row, request_tag in enumerate(request_tags)
         )
@@ -159,7 +188,7 @@ class VectorSimilaritySnapshot:
         rows = [
             row_offset + row
             for row, request_tag in enumerate(request_tags)
-            if request_tag not in MUTUALLY_EXCLUSIVE_CONTENT_TAGS
+            if canonical_tag(request_tag, strict=False) not in MUTUALLY_EXCLUSIVE_CONTENT_TAGS
         ]
         if not columns or not rows:
             return 0.0
@@ -309,7 +338,7 @@ class RetrievalService:
 
         parse_started = time.perf_counter()
         query_vector = await self._encode_one(query_text)
-        tag_vectors = await self._es_search.list_content_tag_vectors()
+        tag_vectors = await self._tag_dictionary()
         extracted = await self._extract_query_tags(query_text, query_vector, tag_vectors)
         explicit_content_tags = _normalize_color_noise_aliases(request.content_tags)
         content_tags = _unique_preserve_order([*explicit_content_tags, *extracted.content_tags])
@@ -506,7 +535,7 @@ class RetrievalService:
     async def warm_query_tag_vectors(self) -> None:
         """启动预热：内容词典 label → 文本向量 LRU，消除首请求 ONNX 冷编码。"""
         started = time.perf_counter()
-        tags = await self._es_search.list_content_tag_vectors()
+        tags = _canonical_dictionary(await self._es_search.list_content_tag_vectors())
         labels = _unique_preserve_order(
             [label for tag in tags if (label := str(tag.get("label", "")).strip())]
         )
@@ -585,17 +614,28 @@ class RetrievalService:
         list[list[float]],
     ]:
         """并行：词典向量预取 ∥ 厌恶归一 + 查询标签编码。"""
+        disliked = _usable_dislike_tags(canonical_tags(request.disliked_tags))
+        content = [tag for tag in canonical_tags(request.content_tags) if tag not in disliked]
+        # An exact-only decision does not need either vector service.
+        if not need_dictionary:
+            return {}, content, disliked, [], []
         dict_task = asyncio.create_task(
             self._prefetch_dictionary_vectors(candidates, required=need_dictionary)
         )
         vec_task = asyncio.create_task(self._encode_admission_query_vectors(request))
         try:
             dictionary_vectors, prepared = await asyncio.gather(dict_task, vec_task)
-        except BaseException:
+        except asyncio.CancelledError:
             dict_task.cancel()
             vec_task.cancel()
             await asyncio.gather(dict_task, vec_task, return_exceptions=True)
             raise
+        except Exception as exc:
+            dict_task.cancel()
+            vec_task.cancel()
+            await asyncio.gather(dict_task, vec_task, return_exceptions=True)
+            logger.warning("标签向量不可用，退回精确准入与硬拒绝：{}", type(exc).__name__)
+            return {}, content, disliked, [], []
         content_tags, disliked_tags, content_vectors, dislike_vectors = prepared
         return dictionary_vectors, content_tags, disliked_tags, content_vectors, dislike_vectors
 
@@ -604,9 +644,7 @@ class RetrievalService:
         request: SearchAudioRequest,
     ) -> tuple[list[str], list[str], list[list[float]], list[list[float]]]:
         """归一厌恶标签后编码内容/厌恶查询向量。"""
-        tag_vectors = (
-            await self._es_search.list_content_tag_vectors() if request.disliked_tags else []
-        )
+        tag_vectors = await self._tag_dictionary() if request.disliked_tags else []
         disliked_tags = _usable_dislike_tags(
             _normalize_to_dictionary_labels(
                 _normalize_color_noise_aliases(request.disliked_tags),
@@ -675,29 +713,61 @@ class RetrievalService:
         )
 
     async def _encode_one(self, text: str) -> list[float]:
-        return (await self._encode_texts([text]))[0]
+        return (await self._encode_texts([text], natural=True))[0]
 
-    async def _encode_texts(self, texts: list[str]) -> list[list[float]]:
+    async def _tag_dictionary(self) -> list[dict[str, Any]]:
+        try:
+            return _canonical_dictionary(await self._es_search.list_content_tag_vectors())
+        except Exception as exc:
+            logger.warning("标签向量词典读取失败，使用只读快照做词面匹配：{}", type(exc).__name__)
+            return _canonical_dictionary(dictionary_records())
+
+    async def _encode_texts(self, texts: list[str], *, natural: bool = False) -> list[list[float]]:
         """文本→向量，带进程内 LRU，命中则跳过 ONNX。"""
         if not texts:
             return []
         unique = _unique_preserve_order(texts)
-        missing = [text for text in unique if text not in self._text_vector_cache]
+        missing = [
+            text
+            for text in unique
+            if _vector_key(text, natural=natural) not in self._text_vector_cache
+        ]
+        resolved = {
+            text: self._get_text_vector(text, natural=natural)
+            for text in unique
+            if text not in missing
+        }
         if missing:
-            encoded = await self._encoder.encode(missing)
-            for text, vector in zip(missing, encoded, strict=True):
-                self._put_text_vector(text, vector)
-        return [self._get_text_vector(text) for text in texts]
+            # Codes are identifiers, not new embedding text. Reuse the reviewed
+            # dictionary vector so both locales use exactly the same semantic basis.
+            tags = [] if natural else await self._tag_dictionary()
+            by_code = {tag["label"]: tag.get("vector") for tag in tags if tag.get("vector")}
+            unresolved = []
+            for text in missing:
+                code = canonical_tag(text, strict=False)
+                if code in by_code:
+                    resolved[text] = by_code[code]
+                    self._put_text_vector(text, by_code[code], natural=natural)
+                else:
+                    unresolved.append(text)
+            if unresolved:
+                encoded = await self._encoder.encode(unresolved)
+                for text, vector in zip(unresolved, encoded, strict=True):
+                    resolved[text] = vector
+                    self._put_text_vector(text, vector, natural=natural)
+        return [resolved[text.strip()] for text in texts]
 
-    def _put_text_vector(self, text: str, vector: list[float]) -> None:
-        self._text_vector_cache[text] = vector
-        self._text_vector_cache.move_to_end(text)
+    def _put_text_vector(self, text: str, vector: list[float], *, natural: bool = False) -> None:
+        key = _vector_key(text, natural=natural)
+        self._text_vector_cache[key] = vector
+        self._text_vector_cache.move_to_end(key)
         while len(self._text_vector_cache) > self._text_vector_cache_max:
             self._text_vector_cache.popitem(last=False)
 
-    def _get_text_vector(self, text: str) -> list[float]:
-        vector = self._text_vector_cache[text]
-        self._text_vector_cache.move_to_end(text)
+    def _get_text_vector(self, text: str, *, natural: bool = False) -> list[float]:
+        key = _vector_key(text, natural=natural)
+        vector = self._text_vector_cache[key]
+        self._text_vector_cache.move_to_end(key)
         return vector
 
     async def _apply_content_admission(
@@ -871,6 +941,10 @@ class RetrievalService:
         )
         result: list[ScoredCandidate] = []
         for candidate in candidates:
+            if set(disliked_tags) & (
+                candidate.tags.content_labels() | material_tag_codes(candidate.source)
+            ):
+                continue
             if (
                 self._count_fuzzy_vector_matches(
                     candidate.tags,
@@ -929,6 +1003,10 @@ class RetrievalService:
         )
         ranked: list[ScoredCandidate] = []
         for candidate in merged.values():
+            if set(disliked_tags) & (
+                candidate.tags.content_labels() | material_tag_codes(candidate.source)
+            ):
+                continue
             penalty = self._dislike_penalty(
                 candidate.tags,
                 disliked_tags,
@@ -961,20 +1039,45 @@ class RetrievalService:
         query_vector: list[float],
         tag_vectors: list[dict[str, Any]],
     ) -> ExtractedQueryTags:
-        if not tag_vectors:
-            return ExtractedQueryTags(content_tags=[], disliked_tags=[])
+        tag_vectors = _canonical_dictionary(tag_vectors) or _canonical_dictionary(
+            dictionary_records()
+        )
 
         negative_fragments = _extract_negative_fragments(query_text)
         positive_text = _remove_negative_fragments(query_text)
+        if negative_fragments and not re.sub(
+            r"\b(?:i|we|please|really|would|like|want|any)\b|[\W_]+|我|请",
+            "",
+            positive_text,
+            flags=re.IGNORECASE,
+        ):
+            positive_text = ""
+        positive_vector = query_vector
+        if negative_fragments:
+            positive_vector = (
+                await self._encode_one(positive_text)
+                if positive_text.strip()
+                else [0.0] * len(query_vector)
+            )
         color_intents = _detect_color_noise_from_text(positive_text)
         exact_content_tags = _unique_preserve_order(
             [*color_intents, *_match_labels_from_text(positive_text, tag_vectors)]
         )
+        exact_by_fragment = [
+            _match_labels_from_text(fragment, tag_vectors) for fragment in negative_fragments
+        ]
+        unresolved_fragments = [
+            fragment
+            for fragment, exact in zip(negative_fragments, exact_by_fragment, strict=True)
+            if not exact
+        ]
         fragment_vectors = (
-            await self._encode_texts(negative_fragments) if negative_fragments else []
+            await self._encode_texts(unresolved_fragments, natural=True)
+            if unresolved_fragments
+            else []
         )
         vector_labels, similarity_scores = _tag_vector_similarity_scores(
-            [query_vector, *fragment_vectors],
+            [positive_vector, *fragment_vectors],
             tag_vectors,
         )
         content_tags = list(exact_content_tags)
@@ -982,7 +1085,7 @@ class RetrievalService:
             _similar_labels_from_scores(
                 similarity_scores[0] if similarity_scores.shape[0] else np.zeros(0),
                 vector_labels,
-                threshold=AUTO_TAG_SIM_THRESHOLD,
+                threshold=AUTO_TAG_SIM_THRESHOLD if positive_text.strip() else 2.0,
                 exclude=set(content_tags),
                 limit=AUTO_TAG_TOP_K - len(content_tags),
             )
@@ -992,7 +1095,9 @@ class RetrievalService:
             preferred_labels=exact_content_tags,
         )
 
-        exact_disliked_tags = _match_labels_from_text(" ".join(negative_fragments), tag_vectors)
+        exact_disliked_tags = _unique_preserve_order(
+            [tag for tags in exact_by_fragment for tag in tags]
+        )
         disliked_tags = list(exact_disliked_tags)
         if fragment_vectors:
             for row in range(1, len(fragment_vectors) + 1):
@@ -1013,10 +1118,10 @@ class RetrievalService:
         )
 
         return ExtractedQueryTags(
-            content_tags=_unique_preserve_order(content_tags)[:AUTO_TAG_TOP_K],
-            disliked_tags=_usable_dislike_tags(
-                _unique_preserve_order(disliked_tags)[:AUTO_TAG_TOP_K]
-            ),
+            content_tags=[
+                tag for tag in _unique_preserve_order(content_tags) if tag not in disliked_tags
+            ][:AUTO_TAG_TOP_K],
+            disliked_tags=_usable_dislike_tags(_unique_preserve_order(disliked_tags)),
         )
 
     def _dislike_penalty(
@@ -1205,11 +1310,11 @@ def _candidate_key(source: dict[str, Any]) -> str:
 
 
 def _tags_mention_voice(tags: list[str]) -> bool:
-    return any(VOICE_MARKER in tag for tag in tags)
+    return "voice" in canonical_tags(tags, strict=False)
 
 
 def _strip_voice_mention_tags(tags: list[str]) -> list[str]:
-    return [tag for tag in tags if VOICE_MARKER not in tag]
+    return [tag for tag in canonical_tags(tags, strict=False) if tag != "voice"]
 
 
 def _usable_dislike_tags(tags: list[str]) -> list[str]:
@@ -1219,11 +1324,14 @@ def _usable_dislike_tags(tags: list[str]) -> list[str]:
 
 def _voice_value_code(source: dict[str, Any]) -> str | None:
     """读取音工「人声*」条目的 value.code；找不到返回 None。"""
+    values: set[str] = set()
     for item in source.get("audio_engineering_tags") or []:
         if not isinstance(item, dict):
             continue
         name = str(item.get("name") or "")
-        if VOICE_MARKER not in name:
+        if item.get("code") not in {"voice", "voice_position"} and canonical_tag(
+            name, strict=False
+        ) not in {"voice", "voice_position"}:
             continue
         value = item.get("value")
         if not isinstance(value, dict):
@@ -1231,8 +1339,8 @@ def _voice_value_code(source: dict[str, Any]) -> str | None:
         code = value.get("code")
         if code is None:
             return None
-        return str(code)
-    return None
+        values.add(str(code))
+    return next(iter(values)) if len(values) == 1 else None
 
 
 def _apply_voice_code_filter(
@@ -1240,14 +1348,14 @@ def _apply_voice_code_filter(
     *,
     disliked_tags: list[str],
 ) -> list[ScoredCandidate]:
-    """dislike 含人声时只留 value.code=none（无人声）；缺字段不过滤。"""
+    """dislike 含人声时只留 value.code=none（无人声）；缺字段也不放行。"""
     if not _tags_mention_voice(disliked_tags):
         return candidates
 
     kept: list[ScoredCandidate] = []
     for candidate in candidates:
         code = _voice_value_code(candidate.source)
-        if code is None or code == NO_VOICE_CODE:
+        if code == NO_VOICE_CODE:
             kept.append(candidate)
     return kept
 
@@ -1280,7 +1388,7 @@ def _unique_preserve_order(values: list[str]) -> list[str]:
 def _canonicalize_color_noise_label(label: str) -> str:
     """颜色噪音别名归一到规范标签；非颜色噪音标签原样返回。"""
     cleaned = label.strip()
-    return COLOR_NOISE_ALIASES.get(cleaned.lower(), cleaned)
+    return canonical_tag(cleaned)
 
 
 def _normalize_color_noise_aliases(labels: list[str]) -> list[str]:
@@ -1294,8 +1402,8 @@ def _detect_color_noise_from_text(text: str) -> list[str]:
     lowered = text.lower()
     found: list[str] = []
     for alias, canonical in COLOR_NOISE_ALIASES.items():
-        if alias in lowered and canonical not in found:
-            found.append(canonical)
+        if alias in lowered and canonical_tag(canonical) not in found:
+            found.append(canonical_tag(canonical))
     return found
 
 
@@ -1308,7 +1416,9 @@ def _remove_mutually_exclusive_expansions(
     preferred = set(preferred_labels).intersection(MUTUALLY_EXCLUSIVE_CONTENT_TAGS)
     if not preferred:
         return labels
-    blocked = (MUTUALLY_EXCLUSIVE_CONTENT_TAGS - preferred) | {COLOR_NOISE_PARENT_TAG}
+    blocked = ((MUTUALLY_EXCLUSIVE_CONTENT_TAGS - preferred) | {COLOR_NOISE_PARENT_TAG}) - set(
+        preferred_labels
+    )
     return [label for label in labels if label not in blocked]
 
 
@@ -1325,14 +1435,41 @@ def _match_labels_from_text(text: str, tag_vectors: list[dict[str, Any]]) -> lis
     """子串匹配词典标签：最短长度限制 + 优先更长标签，避免「低」「无」误伤。"""
     if not text:
         return []
-    matched: list[tuple[int, str]] = []
-    for item in tag_vectors:
-        label = str(item["label"]).strip()
-        if len(label) < MIN_AUTO_TAG_LABEL_LEN or label not in text:
-            continue
-        matched.append((text.index(label), label))
-    matched.sort(key=lambda pair: (pair[0], -len(pair[1])))
-    return _prefer_longer_labels([label for _, label in matched])
+    matched: list[tuple[int, int, str]] = []
+    lowered = text.casefold()
+    for item in _canonical_dictionary(tag_vectors):
+        label = item["label"]
+        aliases = [item.get("display_name", ""), item.get("name_en", ""), label]
+        aliases.extend(
+            alias.replace("_", " ") for alias, code in tag_aliases().items() if code == label
+        )
+        for alias in aliases:
+            alias = alias.casefold()
+            if len(alias) < MIN_AUTO_TAG_LABEL_LEN:
+                continue
+            pattern = (
+                r"(?<![a-z0-9_])" + re.escape(alias) + r"(?![a-z0-9_])"
+                if alias.isascii()
+                else re.escape(alias)
+            )
+            matched.extend(
+                (match.start(), match.end(), label) for match in re.finditer(pattern, lowered)
+            )
+    # Remove only overlapping shorter mentions, never a separate explicit ban:
+    # "voice and voice_guidance" must preserve both constraints.
+    matched.sort(key=lambda item: (item[0], -(item[1] - item[0])))
+    return _unique_preserve_order(
+        [
+            label
+            for start, end, label in matched
+            if not any(
+                other_start <= start
+                and end <= other_end
+                and (other_start < start or end < other_end)
+                for other_start, other_end, _ in matched
+            )
+        ]
+    )
 
 
 def _prefer_longer_labels(labels: list[str]) -> list[str]:
@@ -1356,22 +1493,16 @@ def _normalize_to_dictionary_labels(
     if not raw_tags:
         return []
     if not tag_vectors:
-        return [
-            tag.strip()
-            for tag in raw_tags
-            if MIN_AUTO_TAG_LABEL_LEN <= len(tag.strip()) <= MAX_FALLBACK_TAG_LEN
-        ]
+        return canonical_tags(raw_tags)
 
-    dictionary = {
-        str(item["label"]).strip() for item in tag_vectors if str(item.get("label", "")).strip()
-    }
     normalized: list[str] = []
     for raw in raw_tags:
         tag = raw.strip()
         if not tag:
             continue
-        if tag in dictionary:
-            normalized.append(tag)
+        code = canonical_tag(tag, strict=False)
+        if code:
+            normalized.append(code)
             continue
         cleaned = _remove_negative_fragments(tag)
         found = _match_labels_from_text(tag, tag_vectors)
@@ -1448,20 +1579,70 @@ def _similar_labels_from_scores(
     return _prefer_longer_labels([label for _, label in scored])[:limit]
 
 
+def _negative_spans(query_text: str) -> list[tuple[int, int, str]]:
+    """Find bounded negative clauses, stopping at punctuation or a positive pivot."""
+    text = query_text.replace("’", "'")
+    markers = "|".join(
+        rf"(?<![a-z0-9]){re.escape(marker)}(?![a-z0-9])" if marker.isascii() else re.escape(marker)
+        for marker in sorted(NEGATIVE_MARKERS, key=len, reverse=True)
+    )
+    pattern = re.compile(markers, re.IGNORECASE)
+    stop = re.compile(
+        r"[。.;；!！?？\n]|(?:改用|改为|转为|使用|采用|选择|更喜欢)|\b(?:but|instead|prefer|want|with|use)\b",
+        re.IGNORECASE,
+    )
+    spans: list[tuple[int, int, str]] = []
+    for match in pattern.finditer(text):
+        if spans and match.start() < spans[-1][1]:
+            continue
+        if match.group().casefold() == "not" and re.match(
+            r"\s+only\b", text[match.end() :], re.IGNORECASE
+        ):
+            continue
+        tail = text[match.end() :]
+        boundary = stop.search(tail)
+        end = match.end() + (boundary.start() if boundary else len(tail))
+        fragment = text[match.end() : end].strip()
+        if fragment:
+            spans.append((match.start(), end, fragment))
+    for match in re.finditer(r"无(人声|语音|鸟鸣|鸟叫)", text):
+        if not any(start <= match.start() < end for start, end, _ in spans):
+            spans.append((match.start(), match.end(), match.group(1)))
+    return sorted(spans)
+
+
 def _extract_negative_fragments(query_text: str) -> list[str]:
-    fragments: list[str] = []
-    for marker in NEGATIVE_MARKERS:
-        pattern = rf"{re.escape(marker)}([^，,。.;；!！?？]{{1,12}})"
-        for match in re.finditer(pattern, query_text):
-            fragment = match.group(1).strip()
-            if fragment:
-                fragments.append(fragment)
-    return _unique_preserve_order(fragments)
+    return _unique_preserve_order([fragment for _, _, fragment in _negative_spans(query_text)])
 
 
 def _remove_negative_fragments(query_text: str) -> str:
     cleaned = query_text
-    for marker in NEGATIVE_MARKERS:
-        pattern = rf"{re.escape(marker)}[^，,。.;；!！?？]{{0,12}}"
-        cleaned = re.sub(pattern, " ", cleaned)
+    for start, end, _ in reversed(_negative_spans(query_text)):
+        cleaned = cleaned[:start] + " " + cleaned[end:]
     return cleaned
+
+
+def _canonical_dictionary(rows: Any) -> list[dict[str, Any]]:
+    if not isinstance(rows, list):
+        return []
+    result = []
+    for row in rows:
+        code = canonical_tag(row.get("code") or row.get("label"), strict=False)
+        if code:
+            result.append(
+                {
+                    **row,
+                    "label": code,
+                    "display_name": row.get("display_name")
+                    or row.get("name")
+                    or row.get("label", ""),
+                }
+            )
+    return result
+
+
+def _vector_key(text: str, *, natural: bool = False) -> str:
+    if natural:
+        return "text:" + hashlib.sha256(text.encode()).hexdigest()
+    code = tag_aliases().get(re.sub(r"[^a-z0-9\u3400-\u9fff]+", "_", text.casefold()).strip("_"))
+    return "tag:" + code if code else "tag_text:" + hashlib.sha256(text.encode()).hexdigest()

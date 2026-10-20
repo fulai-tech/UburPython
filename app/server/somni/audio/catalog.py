@@ -11,6 +11,7 @@ from typing import Any
 from loguru import logger
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorCollection
 
+from app.core.audio_tags import canonical_tags, material_tag_codes, reference_tag
 from app.core.bson_util import bson_to_jsonable
 from app.core.codes import HttpStatus
 from app.core.config import Settings
@@ -95,8 +96,13 @@ class AudioCatalogService:
         dislike_text: str = "",
     ) -> dict[str, Any]:
         text = query_text.strip()
-        code = normalize_tag_code(tag_code)
-        codes = _normalize_content_form_codes(content_form_codes)
+        try:
+            code = normalize_tag_code(tag_code)
+            codes = _normalize_content_form_codes(content_form_codes)
+        except ValueError as exc:
+            raise InvalidAudioQueryError(
+                "unknown_audio_tag: use reviewed English dictionary codes"
+            ) from exc
         pref = preference_text.strip()
         dislike = dislike_text.strip()
         # 搜索词走原检索，不套问卷偏好。分类筛选仍保留偏好排序。
@@ -123,9 +129,7 @@ class AudioCatalogService:
             docs = _order_preferred_then_rest(docs, preferred_ids)
         docs = _move_disliked_to_end(docs, await self._disliked_audio_ids(docs, dislike))
         payload = _paginate_docs(docs, page, page_size, fetch_all, self._settings)
-        payload["list"] = [
-            _to_audio_list_item(item, language=language) for item in payload["list"]
-        ]
+        payload["list"] = [_to_audio_list_item(item, language=language) for item in payload["list"]]
         self._schedule_hot(
             query_text,
             language,
@@ -141,11 +145,11 @@ class AudioCatalogService:
         codes: set[str],
         preference_text: str,
     ) -> set[str]:
-        """勾选按标签名精确命中；自由输入分词后对标签名向量，合并为优先展示的音频。"""
+        """勾选按英文标签 code 精确命中；自由输入保留自然语言向量召回。"""
         preferred = {
             str(doc.get("id") or "")
             for doc in docs
-            if any(_has_content_form_name(doc, name) for name in codes)
+            if any(_has_content_form_code(doc, name) for name in codes)
         }
         preferred.discard("")
         if not preference_text:
@@ -176,7 +180,9 @@ class AudioCatalogService:
         threshold = self._settings.get_audio_root_tag_sim_threshold
         matched: set[str] = set()
         if han_words:
-            matched.update(await self._tag_ids_for_words(tags, han_words, self._encoder, "vector", threshold))
+            matched.update(
+                await self._tag_ids_for_words(tags, han_words, self._encoder, "vector", threshold)
+            )
         if en_words:
             await self._fill_english_name_vectors(tags)
             matched.update(
@@ -199,7 +205,9 @@ class AudioCatalogService:
         threshold: float,
     ) -> set[str]:
         if encoder is None or not encoder.is_loaded:
-            logger.warning("自由输入未做{}向量：编码器未就绪", "英文" if vector_field != "vector" else "中文")
+            logger.warning(
+                "自由输入未做{}向量：编码器未就绪", "英文" if vector_field != "vector" else "中文"
+            )
             return set()
         matched: set[str] = set()
         for word in words:
@@ -245,11 +253,29 @@ class AudioCatalogService:
             raise AppError(message="检索服务未就绪", status_code=HttpStatus.SERVICE_UNAVAILABLE)
         from app.schemas.audio import SearchAudioRequest
 
-        codes = list(dict.fromkeys(str(item).strip() for item in task.get("content_tag_codes") or [] if str(item).strip()))
+        try:
+            machine_tags = {
+                field: canonical_tags(task.get(field) or [])
+                for field in (
+                    "content_tag_codes",
+                    "content_tags",
+                    "sleep_stage_tags",
+                    "disliked_tags",
+                )
+            }
+        except ValueError as exc:
+            raise InvalidAudioQueryError(
+                "unknown_audio_tag: use reviewed English dictionary codes"
+            ) from exc
+        codes = machine_tags["content_tag_codes"]
         resolved: dict[str, str] = {}
         if codes:
             cursor = self._tags().find(
-                {"code": {"$in": codes}, "type": {"$in": list(CONTENT_TAG_TYPES)}, "status": _TAG_ENABLED},
+                {
+                    "code": {"$in": codes},
+                    "type": {"$in": list(CONTENT_TAG_TYPES)},
+                    "status": _TAG_ENABLED,
+                },
                 {"code": 1, "type": 1, "name": 1},
             )
             matches: dict[str, set[tuple[str, str]]] = {code: set() for code in codes}
@@ -265,23 +291,20 @@ class AudioCatalogService:
             resolved = {code: next(iter(matches[code]))[1] for code in codes}
         request = SearchAudioRequest(
             query_text=str(task.get("query_text") or ""),
-            sleep_stage_tags=list(task.get("sleep_stage_tags") or []),
-            content_tags=[*resolved.values(), *(str(x) for x in task.get("content_tags") or [])],
+            sleep_stage_tags=machine_tags["sleep_stage_tags"],
+            content_tags=canonical_tags([*resolved.keys(), *machine_tags["content_tags"]]),
             content_tag_codes=codes,
-            disliked_tags=list(task.get("disliked_tags") or []),
+            disliked_tags=machine_tags["disliked_tags"],
             top_k=max(1, min(int(task.get("top_k") or 5), 20)),
         )
         materials = await self._retrieval.search(request)
-        stages = {str(item).strip().casefold() for item in request.sleep_stage_tags if str(item).strip()}
+        stages = set(request.sleep_stage_tags)
         if not stages:
             return []
         return [
-            item for item in materials
-            if stages.intersection({
-                str(value).strip().casefold()
-                for tag in item.get("sleep_stage_tags", []) if isinstance(tag, dict)
-                for value in (tag.get("code"), tag.get("name")) if value
-            })
+            item
+            for item in materials
+            if stages & material_tag_codes({"sleep_stage_tags": item.get("sleep_stage_tags", [])})
         ]
 
     async def get_hot(
@@ -441,7 +464,6 @@ class AudioCatalogService:
             ids=matched_ids,
             codes={id_to_code[i] for i in matched_ids if i in id_to_code},
         )
-
 
     def _tags(self) -> AsyncIOMotorCollection:
         return self._db()[self._settings.somni_mongo_tag_dictionary_collection]
@@ -647,7 +669,7 @@ def _is_root_content_form_dict(tag: dict[str, Any]) -> bool:
 
 
 def _normalize_content_form_codes(codes: list[str] | None) -> set[str]:
-    """问卷传入的是标签名，只做去空白和大小写折叠。"""
+    """问卷旧展示别名及新 code 使用同一英文标签身份。"""
     return {normalize_tag_code(str(code)) for code in (codes or []) if str(code).strip()}
 
 
@@ -739,22 +761,8 @@ def _has_content_form_code(doc: dict[str, Any], tag_code: str) -> bool:
     for item in doc.get("content_form_tags") or []:
         if not isinstance(item, dict):
             continue
-        if str(item.get("code") or "").strip().casefold() == needle:
+        if reference_tag(item) == needle:
             return True
-    return False
-
-
-def _has_content_form_name(doc: dict[str, Any], tag_name: str) -> bool:
-    """问卷偏好按标签名整段匹配。中文对 name，英文对音频上的 en_name。"""
-    needle = tag_name.strip().casefold()
-    if not needle:
-        return False
-    for item in doc.get("content_form_tags") or []:
-        if not isinstance(item, dict):
-            continue
-        for key in ("name", "name_en", "en_name"):
-            if str(item.get(key) or "").strip().casefold() == needle:
-                return True
     return False
 
 

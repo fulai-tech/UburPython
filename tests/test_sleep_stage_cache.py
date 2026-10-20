@@ -61,11 +61,11 @@ def _doc(name: str, url: str, stages: list[str]) -> dict[str, Any]:
 
 
 def test_key_builders() -> None:
-    assert SLEEP_STAGE_INDEX_KEY_PREFIX == "sleep_stage_v2_index:"
-    assert SLEEP_STAGE_DOC_KEY_PREFIX == "sleep_stage_v2_doc:"
-    assert build_sleep_stage_index_key("放松") == f"{SLEEP_STAGE_INDEX_KEY_PREFIX}放松"
+    assert SLEEP_STAGE_INDEX_KEY_PREFIX == "sleep_stage_v3_index:"
+    assert SLEEP_STAGE_DOC_KEY_PREFIX == "sleep_stage_v3_doc:"
+    assert build_sleep_stage_index_key("放松") == f"{SLEEP_STAGE_INDEX_KEY_PREFIX}unwind"
     assert build_sleep_stage_doc_key("https://cdn/a.mp3").startswith(SLEEP_STAGE_DOC_KEY_PREFIX)
-    assert SLEEP_STAGES == ("放松", "入睡", "守护", "唤醒")
+    assert SLEEP_STAGES == ("unwind", "soothe", "guard", "wake")
 
 
 def test_merge_urls_preserve_order() -> None:
@@ -181,7 +181,7 @@ async def test_get_or_load_only_populates_missing_stage() -> None:
 
     got = await cache.get_or_load(["放松", "唤醒"], loader)
 
-    assert calls == ["唤醒"]
+    assert calls == ["wake"]
     assert [doc["audio_url"] for doc in got] == [
         "https://cdn/relax.mp3",
         "https://cdn/wake.mp3",
@@ -200,7 +200,7 @@ async def test_get_or_load_coalesces_concurrent_stage_misses() -> None:
 
     async def loader(stage: str) -> list[dict[str, Any]]:
         nonlocal calls
-        assert stage == "唤醒"
+        assert stage == "wake"
         calls += 1
         started.set()
         await release.wait()
@@ -304,8 +304,25 @@ async def test_clear_all_removes_legacy_indexes_docs_and_candidate_keys() -> Non
 async def test_clear_all_removes_stale_awake_stage_index() -> None:
     redis = _FakeRedis()
     cache = SleepStageCandidateCache(redis, ttl_sec=60)
-    await cache.set_stage("清醒", [_doc("旧清醒", "https://cdn/awake.mp3", ["清醒"])])
+    await redis.set("sleep_stage_v3_index:清醒", json.dumps(["https://cdn/awake.mp3"]), ex=60)
 
     await cache.clear_all()
 
-    assert await redis.get(build_sleep_stage_index_key("清醒")) is None
+    assert await redis.get("sleep_stage_v3_index:清醒") is None
+
+
+@pytest.mark.asyncio
+async def test_v3_does_not_reuse_legacy_chinese_v2_cache_and_clears_it():
+    redis = _FakeRedis()
+    cache = SleepStageCandidateCache(redis, ttl_sec=60)
+    url = "https://cdn/legacy-v2.mp3"
+    import hashlib
+
+    old_index = "sleep_stage_v2_index:入睡"
+    old_doc = "sleep_stage_v2_doc:" + hashlib.sha256(url.encode()).hexdigest()
+    await redis.set(old_index, json.dumps([url]), ex=60)
+    await redis.set(old_doc, json.dumps(_doc("旧素材", url, ["入睡"])), ex=60)
+    assert await cache.get(["soothe"]) is None
+    await cache.clear_all()
+    assert await redis.get(old_index) is None
+    assert await redis.get(old_doc) is None

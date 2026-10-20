@@ -11,6 +11,7 @@ from typing import Any, Literal
 
 from loguru import logger
 
+from app.core.audio_tags import canonical_tag
 from app.core.codes import HttpStatus
 from app.core.config import Settings
 from app.core.exceptions import AppError
@@ -26,8 +27,8 @@ def normalize_keyword(text: str) -> str:
 
 
 def normalize_tag_code(code: str) -> str:
-    """标签 code 归一：trim + casefold。"""
-    return code.strip().casefold()
+    """审计过的展示别名归一为英文 code；热点记账不使用中文标签身份。"""
+    return canonical_tag(code)
 
 
 def parse_hot_kind(raw: str | None) -> HotKind:
