@@ -12,6 +12,7 @@ from typing import Any
 from elasticsearch import AsyncElasticsearch, NotFoundError
 from loguru import logger
 
+from app.core.audio_tags import canonical_tag, canonical_tags, reference_tag
 from app.core.config import Settings
 from app.es.index_mappings import (
     build_somni_audio_materials_mapping,
@@ -40,7 +41,7 @@ SEARCH_CANDIDATE_SOURCE_INCLUDES = (
 
 def _tag_item_from_dict(item: dict[str, Any]) -> TagItem | None:
     tag_id = str(item.get("tag_id", "")).strip()
-    label = str(item.get("name", "")).strip()
+    label = reference_tag(item) or canonical_tag(item.get("name"), strict=False)
     if not tag_id or not label:
         return None
     return TagItem(vector_id=tag_id, label=label)
@@ -115,9 +116,7 @@ class EsSearch:
         self._client = client
         self._settings = settings
         self._audio_index = audio_index or settings.es_audio_index
-        self._tag_dictionary_index = (
-            tag_dictionary_index or settings.es_tag_vectors_index
-        )
+        self._tag_dictionary_index = tag_dictionary_index or settings.es_tag_vectors_index
         self._content_tag_vectors_cache: list[dict[str, Any]] | None = None
         self._content_tag_vectors_lock = asyncio.Lock()
         # 按 tag_id 缓存 name_vector，避免每请求 mget（内容准入模糊路径）
@@ -244,9 +243,7 @@ class EsSearch:
                 self._dictionary_vectors_cache.update(fetched)
                 cached.update(fetched)
 
-        return {
-            tag_id: cached[tag_id] for tag_id in unique_tag_ids if tag_id in cached
-        }
+        return {tag_id: cached[tag_id] for tag_id in unique_tag_ids if tag_id in cached}
 
     async def _mget_dictionary_vectors(self, tag_ids: list[str]) -> dict[str, list[float]]:
         """分批 mget 标签词典 name_vector（仅未命中缓存的 id）。"""
@@ -340,7 +337,8 @@ class EsSearch:
             tags.append(
                 {
                     "id": hit.get("_id", ""),
-                    "label": label,
+                    "label": canonical_tag(source.get("code") or label),
+                    "display_name": label,
                     "name_en": str(source.get("name_en") or ""),
                     "code": str(source.get("code") or ""),
                     "dimension": source.get("type", ""),
@@ -458,5 +456,10 @@ class EsSearch:
 
 
 def _sleep_stage_filter(sleep_stage_tags: list[str]) -> dict[str, Any]:
-    """扁平 sleep_stage_names 上的 terms 过滤（任一阶段命中即可）。"""
-    return {"terms": {"sleep_stage_names": sleep_stage_tags}}
+    """按既有 nested sleep_stage_tags.code 过滤，任一英文阶段命中即可。"""
+    return {
+        "nested": {
+            "path": "sleep_stage_tags",
+            "query": {"terms": {"sleep_stage_tags.code": canonical_tags(sleep_stage_tags)}},
+        }
+    }

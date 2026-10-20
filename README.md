@@ -375,3 +375,12 @@ daily兼容没有generation链接的旧当前方案，通过用户/日期/版本
 ### 画像关联不完整的默认读取
 
 未指定画像快照 ID 时，按原日期与 revision 排序，在现有两个候选的查询预算内选择第一组短期画像与长期画像哈希精确关联且长期状态有效的记录。跳过较新不完整关联时返回 `newer_profile_link_incomplete`；不会将较新的短期正文与较旧长期正文拼接。显式 ID 继续精确读取，关联缺失返回 partial，不替换其他快照。哈希重算仍跳过，UID、schema、有效状态和关联检查保留。保存方仍须原子保存新的长期记录和引用它的短期记录；本次读取兼容不修复数据库。
+
+
+### 2026-10-20 音频标签 code 与缓存兼容
+
+检索入口的 `sleep_stage_tags`、`content_tags`、`disliked_tags` 以及处方 RPC 的 `content_tag_codes` 统一归一为英文 dictionary code，独立于 UI language。比如 `soothe` / `breathing_guidance` / `steady_light_rain`。自然语言 `query_text` 和素材展示名称保留原语言。结构化素材优先 code；旧 name 通过 `app/core/audio_tag_aliases.json` 的已审计别名读取，未知中文标签返回参数错误，新增英文 code 可前向兼容。别名资产与 DeepHealth conf/somni/audio_tag_aliases.json 同步，来源为 2026-10-20 Somni 字典只读审计。不可把 `voice`（泛人声）与 `voice_guidance`（引导内容）合并；拒绝泛人声只接受工程 value.code=none，缺失信息不放行。
+
+阶段 ES 读取使用现有 nested `sleep_stage_tags.code`，无需新增索引字段。标签向量使用字典现有向量，进程缓存采用英文 code；自然句使用文本摘要 key。Redis 阶段缓存升级为 `sleep_stage_v3_index:<unwind|soothe|guard|wake>`、`sleep_stage_v3_doc:<hash>`；检索结果缓存升级 `audio_search_v3+`。启动正常预热与按需加载都使用英文阶段 key，旧 namespace 不被新版本读取；已有清理/预热入口能清理旧版本，部署回退后旧版本可自行加载。此次没有执行远端清理、重建、DB/ES 写入或部署；上线须与 DeepHealth 出站参数配套验证，允许新 namespace 冷启动。
+
+`GetAudio.tag_code`、问卷 `content_form_codes` 和热点标签记账也使用相同英文 code；已审计中英文别名先归一，再按素材 code 匹配。展示名称改变不改变选中分类，同 code 的多条素材仍按原排序规则排列。自由输入 preference_text/dislike_text 继续作为自然语言处理。

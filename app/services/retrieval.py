@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import math
 import re
 import time
@@ -20,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 from loguru import logger
 
+from app.core.audio_tags import canonical_tag, canonical_tags, material_tag_codes, tag_aliases
 from app.core.config import Settings
 from app.embedding.encoder import Encoder
 from app.es.search import EsSearch
@@ -38,15 +40,15 @@ AUTO_TAG_TOP_K = 5
 AUTO_TAG_SIM_THRESHOLD = 0.62
 AUTO_DISLIKE_SIM_THRESHOLD = 0.65
 WEAK_DISLIKE_PENALTY = 0.2
-VOICE_MARKER = "人声"
+VOICE_MARKER = "voice"
 NO_VOICE_CODE = "none"
 # 音工维名：几乎全库都有，进厌恶会自比对互杀；不参与自动/显式厌恶
-IGNORED_DISLIKE_LABELS = frozenset({"声音事件密度"})
+IGNORED_DISLIKE_LABELS = frozenset({"event_density"})
 MIN_AUTO_TAG_LABEL_LEN = 2  # 过滤「低」「无」等过短子串误匹配
 MAX_FALLBACK_TAG_LEN = 12  # 无词典映射时，超过此长度的自然语言句不参与硬剔除
 NEGATIVE_MARKERS = ("不要", "避免", "讨厌", "不喜欢", "别")
-MUTUALLY_EXCLUSIVE_CONTENT_TAGS = frozenset({"白噪音", "粉噪音", "棕噪音"})
-COLOR_NOISE_PARENT_TAG = "颜色噪音"
+MUTUALLY_EXCLUSIVE_CONTENT_TAGS = frozenset({"white_noise", "pink_noise", "brown_noise"})
+COLOR_NOISE_PARENT_TAG = "color_noise"
 # 颜色噪音别名 → 规范标签：归一后才能精确命中同色并触发兄弟色互斥；
 # 英文别名以小写存储，匹配时统一转小写。
 COLOR_NOISE_ALIASES: dict[str, str] = {
@@ -143,7 +145,7 @@ class VectorSimilaritySnapshot:
             raise ValueError("similarity snapshot row range is invalid")
         block = self.scores[row_offset:end, columns]
         return sum(
-            request_tag not in MUTUALLY_EXCLUSIVE_CONTENT_TAGS
+            canonical_tag(request_tag, strict=False) not in MUTUALLY_EXCLUSIVE_CONTENT_TAGS
             and bool(np.any(block[row] >= threshold))
             for row, request_tag in enumerate(request_tags)
         )
@@ -159,7 +161,7 @@ class VectorSimilaritySnapshot:
         rows = [
             row_offset + row
             for row, request_tag in enumerate(request_tags)
-            if request_tag not in MUTUALLY_EXCLUSIVE_CONTENT_TAGS
+            if canonical_tag(request_tag, strict=False) not in MUTUALLY_EXCLUSIVE_CONTENT_TAGS
         ]
         if not columns or not rows:
             return 0.0
@@ -309,7 +311,7 @@ class RetrievalService:
 
         parse_started = time.perf_counter()
         query_vector = await self._encode_one(query_text)
-        tag_vectors = await self._es_search.list_content_tag_vectors()
+        tag_vectors = _canonical_dictionary(await self._es_search.list_content_tag_vectors())
         extracted = await self._extract_query_tags(query_text, query_vector, tag_vectors)
         explicit_content_tags = _normalize_color_noise_aliases(request.content_tags)
         content_tags = _unique_preserve_order([*explicit_content_tags, *extracted.content_tags])
@@ -506,7 +508,7 @@ class RetrievalService:
     async def warm_query_tag_vectors(self) -> None:
         """启动预热：内容词典 label → 文本向量 LRU，消除首请求 ONNX 冷编码。"""
         started = time.perf_counter()
-        tags = await self._es_search.list_content_tag_vectors()
+        tags = _canonical_dictionary(await self._es_search.list_content_tag_vectors())
         labels = _unique_preserve_order(
             [label for tag in tags if (label := str(tag.get("label", "")).strip())]
         )
@@ -605,7 +607,9 @@ class RetrievalService:
     ) -> tuple[list[str], list[str], list[list[float]], list[list[float]]]:
         """归一厌恶标签后编码内容/厌恶查询向量。"""
         tag_vectors = (
-            await self._es_search.list_content_tag_vectors() if request.disliked_tags else []
+            _canonical_dictionary(await self._es_search.list_content_tag_vectors())
+            if request.disliked_tags
+            else []
         )
         disliked_tags = _usable_dislike_tags(
             _normalize_to_dictionary_labels(
@@ -682,22 +686,36 @@ class RetrievalService:
         if not texts:
             return []
         unique = _unique_preserve_order(texts)
-        missing = [text for text in unique if text not in self._text_vector_cache]
+        missing = [text for text in unique if _vector_key(text) not in self._text_vector_cache]
         if missing:
-            encoded = await self._encoder.encode(missing)
-            for text, vector in zip(missing, encoded, strict=True):
-                self._put_text_vector(text, vector)
+            # Codes are identifiers, not new embedding text. Reuse the reviewed
+            # dictionary vector so both locales use exactly the same semantic basis.
+            tags = _canonical_dictionary(await self._es_search.list_content_tag_vectors())
+            by_code = {tag["label"]: tag.get("vector") for tag in tags if tag.get("vector")}
+            unresolved = []
+            for text in missing:
+                code = canonical_tag(text, strict=False)
+                if code in by_code:
+                    self._put_text_vector(text, by_code[code])
+                else:
+                    unresolved.append(text)
+            if unresolved:
+                encoded = await self._encoder.encode(unresolved)
+                for text, vector in zip(unresolved, encoded, strict=True):
+                    self._put_text_vector(text, vector)
         return [self._get_text_vector(text) for text in texts]
 
     def _put_text_vector(self, text: str, vector: list[float]) -> None:
-        self._text_vector_cache[text] = vector
-        self._text_vector_cache.move_to_end(text)
+        key = _vector_key(text)
+        self._text_vector_cache[key] = vector
+        self._text_vector_cache.move_to_end(key)
         while len(self._text_vector_cache) > self._text_vector_cache_max:
             self._text_vector_cache.popitem(last=False)
 
     def _get_text_vector(self, text: str) -> list[float]:
-        vector = self._text_vector_cache[text]
-        self._text_vector_cache.move_to_end(text)
+        key = _vector_key(text)
+        vector = self._text_vector_cache[key]
+        self._text_vector_cache.move_to_end(key)
         return vector
 
     async def _apply_content_admission(
@@ -871,6 +889,10 @@ class RetrievalService:
         )
         result: list[ScoredCandidate] = []
         for candidate in candidates:
+            if set(disliked_tags) & (
+                candidate.tags.content_labels() | material_tag_codes(candidate.source)
+            ):
+                continue
             if (
                 self._count_fuzzy_vector_matches(
                     candidate.tags,
@@ -929,6 +951,10 @@ class RetrievalService:
         )
         ranked: list[ScoredCandidate] = []
         for candidate in merged.values():
+            if set(disliked_tags) & (
+                candidate.tags.content_labels() | material_tag_codes(candidate.source)
+            ):
+                continue
             penalty = self._dislike_penalty(
                 candidate.tags,
                 disliked_tags,
@@ -1205,11 +1231,11 @@ def _candidate_key(source: dict[str, Any]) -> str:
 
 
 def _tags_mention_voice(tags: list[str]) -> bool:
-    return any(VOICE_MARKER in tag for tag in tags)
+    return "voice" in canonical_tags(tags, strict=False)
 
 
 def _strip_voice_mention_tags(tags: list[str]) -> list[str]:
-    return [tag for tag in tags if VOICE_MARKER not in tag]
+    return [tag for tag in canonical_tags(tags, strict=False) if tag != "voice"]
 
 
 def _usable_dislike_tags(tags: list[str]) -> list[str]:
@@ -1223,7 +1249,9 @@ def _voice_value_code(source: dict[str, Any]) -> str | None:
         if not isinstance(item, dict):
             continue
         name = str(item.get("name") or "")
-        if VOICE_MARKER not in name:
+        if item.get("code") not in {"voice", "voice_position"} and canonical_tag(
+            name, strict=False
+        ) not in {"voice", "voice_position"}:
             continue
         value = item.get("value")
         if not isinstance(value, dict):
@@ -1240,14 +1268,14 @@ def _apply_voice_code_filter(
     *,
     disliked_tags: list[str],
 ) -> list[ScoredCandidate]:
-    """dislike 含人声时只留 value.code=none（无人声）；缺字段不过滤。"""
+    """dislike 含人声时只留 value.code=none（无人声）；缺字段也不放行。"""
     if not _tags_mention_voice(disliked_tags):
         return candidates
 
     kept: list[ScoredCandidate] = []
     for candidate in candidates:
         code = _voice_value_code(candidate.source)
-        if code is None or code == NO_VOICE_CODE:
+        if code == NO_VOICE_CODE:
             kept.append(candidate)
     return kept
 
@@ -1280,7 +1308,7 @@ def _unique_preserve_order(values: list[str]) -> list[str]:
 def _canonicalize_color_noise_label(label: str) -> str:
     """颜色噪音别名归一到规范标签；非颜色噪音标签原样返回。"""
     cleaned = label.strip()
-    return COLOR_NOISE_ALIASES.get(cleaned.lower(), cleaned)
+    return canonical_tag(cleaned)
 
 
 def _normalize_color_noise_aliases(labels: list[str]) -> list[str]:
@@ -1294,8 +1322,8 @@ def _detect_color_noise_from_text(text: str) -> list[str]:
     lowered = text.lower()
     found: list[str] = []
     for alias, canonical in COLOR_NOISE_ALIASES.items():
-        if alias in lowered and canonical not in found:
-            found.append(canonical)
+        if alias in lowered and canonical_tag(canonical) not in found:
+            found.append(canonical_tag(canonical))
     return found
 
 
@@ -1326,11 +1354,25 @@ def _match_labels_from_text(text: str, tag_vectors: list[dict[str, Any]]) -> lis
     if not text:
         return []
     matched: list[tuple[int, str]] = []
-    for item in tag_vectors:
-        label = str(item["label"]).strip()
-        if len(label) < MIN_AUTO_TAG_LABEL_LEN or label not in text:
-            continue
-        matched.append((text.index(label), label))
+    lowered = text.casefold()
+    for item in _canonical_dictionary(tag_vectors):
+        label = item["label"]
+        aliases = [item.get("display_name", ""), item.get("name_en", ""), label]
+        aliases.extend(
+            alias.replace("_", " ") for alias, code in tag_aliases().items() if code == label
+        )
+        for alias in aliases:
+            alias = alias.casefold()
+            if len(alias) < MIN_AUTO_TAG_LABEL_LEN:
+                continue
+            match = (
+                re.search(r"(?<![a-z0-9])" + re.escape(alias) + r"(?![a-z0-9])", lowered)
+                if alias.isascii()
+                else re.search(re.escape(alias), lowered)
+            )
+            if match:
+                matched.append((match.start(), label))
+                break
     matched.sort(key=lambda pair: (pair[0], -len(pair[1])))
     return _prefer_longer_labels([label for _, label in matched])
 
@@ -1356,22 +1398,16 @@ def _normalize_to_dictionary_labels(
     if not raw_tags:
         return []
     if not tag_vectors:
-        return [
-            tag.strip()
-            for tag in raw_tags
-            if MIN_AUTO_TAG_LABEL_LEN <= len(tag.strip()) <= MAX_FALLBACK_TAG_LEN
-        ]
+        return canonical_tags(raw_tags)
 
-    dictionary = {
-        str(item["label"]).strip() for item in tag_vectors if str(item.get("label", "")).strip()
-    }
     normalized: list[str] = []
     for raw in raw_tags:
         tag = raw.strip()
         if not tag:
             continue
-        if tag in dictionary:
-            normalized.append(tag)
+        code = canonical_tag(tag, strict=False)
+        if code:
+            normalized.append(code)
             continue
         cleaned = _remove_negative_fragments(tag)
         found = _match_labels_from_text(tag, tag_vectors)
@@ -1465,3 +1501,25 @@ def _remove_negative_fragments(query_text: str) -> str:
         pattern = rf"{re.escape(marker)}[^，,。.;；!！?？]{{0,12}}"
         cleaned = re.sub(pattern, " ", cleaned)
     return cleaned
+
+
+def _canonical_dictionary(rows: Any) -> list[dict[str, Any]]:
+    if not isinstance(rows, list):
+        return []
+    result = []
+    for row in rows:
+        code = canonical_tag(row.get("code") or row.get("label"), strict=False)
+        if code:
+            result.append(
+                {
+                    **row,
+                    "label": code,
+                    "display_name": row.get("display_name") or row.get("label", ""),
+                }
+            )
+    return result
+
+
+def _vector_key(text: str) -> str:
+    code = tag_aliases().get(re.sub(r"[^a-z0-9\u3400-\u9fff]+", "_", text.casefold()).strip("_"))
+    return code or "text:" + hashlib.sha256(text.encode()).hexdigest()

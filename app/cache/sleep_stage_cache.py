@@ -1,6 +1,6 @@
 """按睡眠阶段拆分的候选文档 Redis 缓存。
 
-文档全局只存一份（sleep_stage_v2_doc:*），各阶段仅存 audio_url 索引；
+文档全局只存一份（sleep_stage_v3_doc:*），各阶段仅存 audio_url 索引；
 多阶段查询合并索引后 MGET 文档，按 audio_url 去重。
 """
 
@@ -14,12 +14,13 @@ from typing import Any, Protocol
 
 from loguru import logger
 
+from app.core.audio_tags import canonical_tag, canonical_tags
 from app.core.config import Settings
 
-SLEEP_STAGES = ("放松", "入睡", "守护", "唤醒")
+SLEEP_STAGES = ("unwind", "soothe", "guard", "wake")
 _CACHE_CLEANUP_STAGES = (*SLEEP_STAGES, "清醒")
-SLEEP_STAGE_INDEX_KEY_PREFIX = "sleep_stage_v2_index:"
-SLEEP_STAGE_DOC_KEY_PREFIX = "sleep_stage_v2_doc:"
+SLEEP_STAGE_INDEX_KEY_PREFIX = "sleep_stage_v3_index:"
+SLEEP_STAGE_DOC_KEY_PREFIX = "sleep_stage_v3_doc:"
 # 兼容旧测试/调用名
 SLEEP_STAGE_CANDIDATE_KEY_PREFIX = SLEEP_STAGE_INDEX_KEY_PREFIX
 _LEGACY_SLEEP_STAGE_INDEX_KEY_PREFIX = "sleep_stage_index:"
@@ -41,7 +42,7 @@ class RedisLike(Protocol):
 
 
 def build_sleep_stage_index_key(stage: str) -> str:
-    return f"{SLEEP_STAGE_INDEX_KEY_PREFIX}{stage}"
+    return f"{SLEEP_STAGE_INDEX_KEY_PREFIX}{canonical_tag(stage)}"
 
 
 def build_sleep_stage_cache_key(stage: str) -> str:
@@ -214,8 +215,19 @@ class SleepStageCandidateCache:
                 urls.update(str(item) for item in items if item)
 
         legacy_urls: set[str] = set()
+        legacy_v2_indexes = [
+            f"sleep_stage_v2_index:{stage}"
+            for stage in (*SLEEP_STAGES, "放松", "入睡", "守护", "唤醒", "清醒")
+        ]
+        for key in legacy_v2_indexes:
+            raw = await self._redis.get(key)
+            if raw is not None:
+                items = json.loads(raw)
+                if isinstance(items, list):
+                    legacy_urls.update(str(item) for item in items if item)
         legacy_index_keys = [
-            f"{_LEGACY_SLEEP_STAGE_INDEX_KEY_PREFIX}{stage}" for stage in _CACHE_CLEANUP_STAGES
+            f"{_LEGACY_SLEEP_STAGE_INDEX_KEY_PREFIX}{stage}"
+            for stage in (*_CACHE_CLEANUP_STAGES, "放松", "入睡", "守护", "唤醒", "清醒")
         ]
         for key in legacy_index_keys:
             raw = await self._redis.get(key)
@@ -228,12 +240,18 @@ class SleepStageCandidateCache:
         doc_keys = [build_sleep_stage_doc_key(url) for url in urls]
         legacy_doc_keys = [_build_legacy_sleep_stage_doc_key(url) for url in legacy_urls]
         legacy_candidate_keys = [
-            f"{_LEGACY_SLEEP_STAGE_CANDIDATE_KEY_PREFIX}{stage}" for stage in _CACHE_CLEANUP_STAGES
+            f"{_LEGACY_SLEEP_STAGE_CANDIDATE_KEY_PREFIX}{stage}"
+            for stage in (*_CACHE_CLEANUP_STAGES, "放松", "入睡", "守护", "唤醒", "清醒")
         ]
         to_delete = [
             *index_keys,
             *doc_keys,
             *legacy_index_keys,
+            *legacy_v2_indexes,
+            *[
+                "sleep_stage_v2_doc:" + hashlib.sha256(url.encode()).hexdigest()
+                for url in legacy_urls
+            ],
             *legacy_doc_keys,
             *legacy_candidate_keys,
         ]
@@ -256,15 +274,7 @@ def _build_legacy_sleep_stage_doc_key(audio_url: str) -> str:
 
 
 def _normalize_stages(stages: list[str]) -> list[str]:
-    seen: set[str] = set()
-    result: list[str] = []
-    for stage in stages:
-        name = stage.strip()
-        if not name or name in seen:
-            continue
-        seen.add(name)
-        result.append(name)
-    return result
+    return canonical_tags(stages)
 
 
 async def create_sleep_stage_candidate_cache(
