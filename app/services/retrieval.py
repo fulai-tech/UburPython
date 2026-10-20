@@ -22,10 +22,12 @@ import numpy as np
 from loguru import logger
 
 from app.core.audio_tags import (
+    audio_tag_contract_version,
     canonical_tag,
     canonical_tags,
     dictionary_records,
     material_tag_codes,
+    resolve_audio_preferences,
     tag_aliases,
 )
 from app.core.config import Settings
@@ -123,6 +125,7 @@ class ScoredCandidate:
 class ExtractedQueryTags:
     content_tags: list[str]
     disliked_tags: list[str]
+    unresolved_dislike: bool = False
 
 
 @dataclass(frozen=True)
@@ -340,6 +343,9 @@ class RetrievalService:
         query_vector = await self._encode_one(query_text)
         tag_vectors = await self._tag_dictionary()
         extracted = await self._extract_query_tags(query_text, query_vector, tag_vectors)
+        if extracted.unresolved_dislike:
+            logger.warning("Audio query exclusion is unresolved; candidate retrieval skipped")
+            return []
         explicit_content_tags = _normalize_color_noise_aliases(request.content_tags)
         content_tags = _unique_preserve_order([*explicit_content_tags, *extracted.content_tags])
         content_tags = _remove_mutually_exclusive_expansions(
@@ -928,37 +934,14 @@ class RetrievalService:
         similarity_snapshot: VectorSimilaritySnapshot | None = None,
         similarity_row_offset: int = 0,
     ) -> list[ScoredCandidate]:
-        """步骤 3 前半：厌恶标签向量 vs 文档内容标签向量，余弦 ≥ SIM_THRESHOLD 则剔除。"""
-        if not disliked_tags:
-            return candidates
-
-        dislike_vectors = (
-            await self._encode_texts(disliked_tags) if dislike_vectors is None else dislike_vectors
-        )
-        similarity_snapshot = similarity_snapshot or VectorSimilaritySnapshot.build(
-            dislike_vectors,
-            dictionary_vectors,
-        )
-        result: list[ScoredCandidate] = []
-        for candidate in candidates:
-            if set(disliked_tags) & (
-                candidate.tags.content_labels() | material_tag_codes(candidate.source)
-            ):
-                continue
-            if (
-                self._count_fuzzy_vector_matches(
-                    candidate.tags,
-                    disliked_tags,
-                    dislike_vectors,
-                    dictionary_vectors,
-                    similarity_snapshot=similarity_snapshot,
-                    similarity_row_offset=similarity_row_offset,
-                )
-                > 0
-            ):
-                continue
-            result.append(candidate)
-        return result
+        """Hard exclusions use reviewed codes; vector similarity is only a soft penalty."""
+        excluded = set(disliked_tags)
+        return [
+            candidate
+            for candidate in candidates
+            if not excluded
+            & (candidate.tags.content_labels() | material_tag_codes(candidate.source))
+        ]
 
     @staticmethod
     def _apply_coarse_rank(candidates: list[ScoredCandidate]) -> list[ScoredCandidate]:
@@ -1044,6 +1027,7 @@ class RetrievalService:
         )
 
         negative_fragments = _extract_negative_fragments(query_text)
+        negative_resolution = resolve_audio_preferences(disliked=negative_fragments)
         positive_text = _remove_negative_fragments(query_text)
         if negative_fragments and not re.sub(
             r"\b(?:i|we|please|really|would|like|want|any)\b|[\W_]+|我|请",
@@ -1066,16 +1050,8 @@ class RetrievalService:
         exact_by_fragment = [
             _match_labels_from_text(fragment, tag_vectors) for fragment in negative_fragments
         ]
-        unresolved_fragments = [
-            fragment
-            for fragment, exact in zip(negative_fragments, exact_by_fragment, strict=True)
-            if not exact
-        ]
-        fragment_vectors = (
-            await self._encode_texts(unresolved_fragments, natural=True)
-            if unresolved_fragments
-            else []
-        )
+        # Never infer a hard exclusion from an embedding similarity alone.
+        fragment_vectors: list[list[float]] = []
         vector_labels, similarity_scores = _tag_vector_similarity_scores(
             [positive_vector, *fragment_vectors],
             tag_vectors,
@@ -1098,7 +1074,11 @@ class RetrievalService:
         exact_disliked_tags = _unique_preserve_order(
             [tag for tags in exact_by_fragment for tag in tags]
         )
-        disliked_tags = list(exact_disliked_tags)
+        disliked_tags = (
+            negative_resolution["disliked_codes"]
+            if not negative_resolution["unresolved_disliked"]
+            else list(exact_disliked_tags)
+        )
         if fragment_vectors:
             for row in range(1, len(fragment_vectors) + 1):
                 disliked_tags.extend(
@@ -1122,6 +1102,7 @@ class RetrievalService:
                 tag for tag in _unique_preserve_order(content_tags) if tag not in disliked_tags
             ][:AUTO_TAG_TOP_K],
             disliked_tags=_usable_dislike_tags(_unique_preserve_order(disliked_tags)),
+            unresolved_dislike=bool(negative_resolution["unresolved_disliked"]),
         )
 
     def _dislike_penalty(
@@ -1148,8 +1129,6 @@ class RetrievalService:
             similarity_snapshot=similarity_snapshot,
             similarity_row_offset=similarity_row_offset,
         )
-        if max_similarity >= self._settings.strong_dislike_sim_threshold:
-            return 1.0
         if max_similarity >= AUTO_DISLIKE_SIM_THRESHOLD:
             return WEAK_DISLIKE_PENALTY
         return 0.0
@@ -1645,4 +1624,9 @@ def _vector_key(text: str, *, natural: bool = False) -> str:
     if natural:
         return "text:" + hashlib.sha256(text.encode()).hexdigest()
     code = tag_aliases().get(re.sub(r"[^a-z0-9\u3400-\u9fff]+", "_", text.casefold()).strip("_"))
-    return "tag:" + code if code else "tag_text:" + hashlib.sha256(text.encode()).hexdigest()
+    revision = audio_tag_contract_version()
+    return (
+        "tag:" + revision + ":" + code
+        if code
+        else "tag_text:" + revision + ":" + hashlib.sha256(text.encode()).hexdigest()
+    )

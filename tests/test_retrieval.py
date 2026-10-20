@@ -508,8 +508,8 @@ async def test_search_skips_content_admission_when_no_content_tags() -> None:
 
 
 @pytest.mark.asyncio
-async def test_search_removes_candidate_when_disliked_vector_matches() -> None:
-    """厌恶标签向量与文档内容标签向量余弦 ≥ 阈值时剔除候选。"""
+async def test_search_keeps_different_codes_even_when_dislike_vectors_match() -> None:
+    """不同标准类别不因向量相似而被硬剔除。"""
     unit_vec = [1.0] + [0.0] * (_VECTOR_DIM - 1)
     orthogonal_vec = [0.0, 1.0] + [0.0] * (_VECTOR_DIM - 2)
     service, es_search, encoder = _build_service()
@@ -532,14 +532,14 @@ async def test_search_removes_candidate_when_disliked_vector_matches() -> None:
     request = SearchAudioRequest(
         sleep_stage_tags=["unwind"],
         content_tags=["steady_light_rain", "white_noise"],
-        disliked_tags=["noisy"],
+        disliked_tags=["heavy_rain"],
         top_k=10,
     )
 
     results = await service.search(request)
 
-    assert [r["audio_name"] for r in results] == ["保留"]
-    encoder.encode.assert_awaited_once_with(["steady_light_rain", "white_noise", "noisy"])
+    assert {r["audio_name"] for r in results} == {"保留", "剔除"}
+    encoder.encode.assert_awaited_once_with(["steady_light_rain", "white_noise", "heavy_rain"])
     es_search.get_dictionary_vectors.assert_awaited_once()
     assert set(es_search.get_dictionary_vectors.await_args.args[0]) == {
         "cf_steady_light_rain",
@@ -568,7 +568,7 @@ async def test_search_keeps_candidate_when_disliked_vector_below_threshold() -> 
     request = SearchAudioRequest(
         sleep_stage_tags=["unwind"],
         content_tags=["white_noise"],
-        disliked_tags=["noisy"],
+        disliked_tags=["heavy_rain"],
         top_k=10,
     )
 
@@ -679,7 +679,7 @@ async def test_coarse_rank_runs_after_dislike_filter() -> None:
     request = SearchAudioRequest(
         sleep_stage_tags=["unwind"],
         content_tags=["steady_light_rain", "forest"],
-        disliked_tags=["noisy"],
+        disliked_tags=["forest"],
         top_k=10,
     )
 
@@ -889,7 +889,7 @@ async def test_text_query_recall_preserves_original_exception() -> None:
 
 
 @pytest.mark.asyncio
-async def test_text_query_extracts_positive_and_negative_tags() -> None:
+async def test_unresolved_query_exclusion_does_not_retrieve_approximate_materials() -> None:
     unit_rain = _unit(0)
     unit_noise = _unit(1)
     service, es_search, encoder = _build_service(
@@ -927,12 +927,13 @@ async def test_text_query_extracts_positive_and_negative_tags() -> None:
 
     results = await service.search(request)
 
-    assert [r["audio_name"] for r in results] == ["保留雨声"]
+    assert results == []
     merged_calls = [call.args[0] for call in encoder.encode.await_args_list]
     assert ["睡前轻柔雨声，不要嘈杂"] in merged_calls
     assert ["嘈杂"] not in merged_calls
     assert ["睡前轻柔雨声，"] in merged_calls
-    es_search.get_dictionary_vectors.assert_awaited_once()
+    es_search.get_dictionary_vectors.assert_not_awaited()
+    es_search.list_all_audio_candidates.assert_not_awaited()
 
 
 @pytest.mark.parametrize(
@@ -1204,8 +1205,8 @@ async def test_warm_query_tag_vectors_skips_when_dictionary_empty() -> None:
     encoder.encode.assert_not_awaited()
 
 
-def test_dislike_penalty_respects_strong_threshold_from_settings() -> None:
-    """厌恶硬剔除阈值读 Settings.strong_dislike_sim_threshold，而非写死常量。"""
+def test_vector_dislike_stays_soft_regardless_of_legacy_strong_threshold() -> None:
+    """向量相似仅作软惩罚，不能绕过标准标签成为硬剔除。"""
     sim = 0.81
     dislike_vec = _unit(0)
     tag_vec = [0.0] * _VECTOR_DIM
@@ -1231,7 +1232,7 @@ def test_dislike_penalty_respects_strong_threshold_from_settings() -> None:
         dislike_vectors=[dislike_vec],
         dictionary_vectors=dictionary,
     )
-    assert hard_penalty == 1.0
+    assert hard_penalty == 0.2
 
 
 def test_tags_mention_voice_detects_substring() -> None:
@@ -1304,7 +1305,7 @@ def test_voice_code_filter_skips_when_dislike_has_no_voice() -> None:
     ]
     kept = _apply_voice_code_filter(
         candidates,
-        disliked_tags=["noisy"],
+        disliked_tags=["heavy_rain"],
     )
     assert [c.source["audio_name"] for c in kept] == ["无人声", "有人声"]
 

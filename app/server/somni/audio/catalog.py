@@ -4,20 +4,33 @@ from __future__ import annotations
 
 import asyncio
 import math
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from time import monotonic
 from typing import Any
 
+from bson import ObjectId
 from loguru import logger
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorCollection
 
-from app.core.audio_tags import canonical_tags, material_tag_codes, reference_tag
+from app.core.audio_tags import (
+    canonical_disliked_tags,
+    canonical_tags,
+    material_is_excluded,
+    material_tag_codes,
+    reference_tag,
+    resolve_audio_preferences,
+    validated_audio_tags,
+)
 from app.core.bson_util import bson_to_jsonable
 from app.core.codes import HttpStatus
 from app.core.config import Settings
 from app.core.exceptions import AppError, EncoderNotReadyError
 from app.embedding.encoder import Encoder
 from app.es.search import CONTENT_TAG_TYPES, EsSearch
+from app.schemas.search_material import project_search_material
 from app.server.somni.audio.hot import HotTracker, normalize_tag_code
 from app.server.somni.audio.segment import segment_dislike_text, segment_dislike_text_en
 
@@ -29,6 +42,21 @@ _CONTENT_FORM = "content_form"
 class _MatchedContentTags:
     ids: set[str]
     codes: set[str]
+
+
+_material_snapshot: ContextVar[dict[str, dict[str, Any] | None] | None] = ContextVar(
+    "prescription_material_snapshot", default=None
+)
+
+
+@contextmanager
+def prescription_material_scope() -> Iterator[None]:
+    """One authoritative Mongo read per distinct material within a batch RPC."""
+    token = _material_snapshot.set({})
+    try:
+        yield
+    finally:
+        _material_snapshot.reset(token)
 
 
 class InvalidAudioQueryError(AppError):
@@ -255,7 +283,20 @@ class AudioCatalogService:
 
         try:
             machine_tags = {
-                field: canonical_tags(task.get(field) or [])
+                field: (
+                    canonical_disliked_tags(task.get(field) or [])
+                    if field == "disliked_tags"
+                    else _prescription_content_tags(task.get(field) or [])
+                    if field == "content_tags"
+                    else validated_audio_tags(
+                        task.get(field) or [],
+                        allowed_types=(
+                            frozenset({"sleep_stage"})
+                            if field == "sleep_stage_tags"
+                            else frozenset({"content_form", "mechanism", "audio_engineering"})
+                        ),
+                    )
+                )
                 for field in (
                     "content_tag_codes",
                     "content_tags",
@@ -297,7 +338,15 @@ class AudioCatalogService:
             disliked_tags=machine_tags["disliked_tags"],
             top_k=max(1, min(int(task.get("top_k") or 5), 20)),
         )
+        requested_top_k = request.top_k
+        request.top_k = min(60, requested_top_k * 3)
         materials = await self._retrieval.search(request)
+        materials = await self._verify_prescription_materials(materials)
+        materials = [
+            material
+            for material in materials
+            if not material_is_excluded(material, request.disliked_tags)
+        ]
         stages = set(request.sleep_stage_tags)
         if not stages:
             return []
@@ -305,7 +354,69 @@ class AudioCatalogService:
             item
             for item in materials
             if stages & material_tag_codes({"sleep_stage_tags": item.get("sleep_stage_tags", [])})
-        ]
+        ][:requested_top_k]
+
+    async def _verify_prescription_materials(
+        self, candidates: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Mongo presence/status and safety metadata are authoritative over ES and caches."""
+        identifiers = {str(item.get("_id") or item.get("id") or "") for item in candidates}
+        identifiers.discard("")
+        if not identifiers:
+            return []
+        current = _material_snapshot.get()
+        if current is None:
+            current = {}
+        missing = identifiers - current.keys()
+        if missing:
+            ids: list[Any] = list(missing)
+            ids.extend(ObjectId(value) for value in missing if ObjectId.is_valid(value))
+            fields = (
+                "_id",
+                "status",
+                "audio_name",
+                "description",
+                "audio_url",
+                "cover_url",
+                "sleep_stage_tags",
+                "content_form_tags",
+                "mechanism_tags",
+                "audio_engineering_tags",
+                "medical_risk_tags",
+                "evidence_level_tags",
+            )
+            cursor = self._materials().find(
+                {"_id": {"$in": ids}, "status": True}, {key: 1 for key in fields}
+            )
+            fetched = {
+                str(row["_id"]): project_search_material(bson_to_jsonable(row))
+                async for row in cursor
+            }
+            current.update({identifier: fetched.get(identifier) for identifier in missing})
+        verified = []
+        keys = (
+            "sleep_stage_tags",
+            "content_form_tags",
+            "audio_engineering_tags",
+            "medical_risk_tags",
+            "mechanism_tags",
+        )
+        for candidate in candidates:
+            identifier = str(candidate.get("_id") or candidate.get("id") or "")
+            source = current.get(identifier)
+            if source is None or source.get("status") is not True or not source.get("audio_url"):
+                continue
+            projected = project_search_material({**candidate, "_id": identifier})
+            if any(projected[key] != source[key] for key in keys):
+                # Changed eligibility needs fresh indexing and ranking.
+                continue
+            verified.append(
+                {
+                    **source,
+                    **{key: candidate[key] for key in ("_score", "score") if key in candidate},
+                }
+            )
+        return verified
 
     async def get_hot(
         self,
@@ -506,6 +617,13 @@ _AUDIO_LIST_PROJECTION = {
     "created_at": 1,
     "create_time": 1,
 }
+
+
+def _prescription_content_tags(values: list[str]) -> list[str]:
+    resolved = resolve_audio_preferences(preferred=values)
+    if resolved["unresolved_preferred"] or resolved["sound_disabled"]:
+        raise ValueError("unresolved_audio_preference")
+    return resolved["preferred_codes"]
 
 
 def _root_tag_query() -> dict[str, Any]:

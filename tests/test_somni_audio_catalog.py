@@ -883,6 +883,12 @@ async def test_prescription_search_resolves_codes_and_uses_ranked_search_without
     service = _service(MagicMock(), hot=MagicMock())
     service._retrieval = retrieval
 
+    materials = MagicMock()
+    materials.find.return_value = _Cursor(
+        [{**retrieval.search.return_value[0], "_id": "a1", "status": True}]
+    )
+    monkeypatch.setattr(service, "_materials", lambda: materials)
+
     class Cursor:
         def __init__(self, projection):
             document = {"code": "breathing_guidance", "type": "content_form", "name": "呼吸引导"}
@@ -906,16 +912,16 @@ async def test_prescription_search_resolves_codes_and_uses_ranked_search_without
             "query_text": "gentle breathing",
             "sleep_stage_tags": ["unwind"],
             "content_tag_codes": ["breathing_guidance"],
-            "content_tags": ["rain"],
-            "disliked_tags": ["thunder"],
+            "content_tags": ["stream"],
+            "disliked_tags": ["heavy_rain"],
             "top_k": 5,
         }
     )
-    assert result[0]["id"] == "a1"
+    assert result[0]["_id"] == "a1"
     request = retrieval.search.await_args.args[0]
     assert request.sleep_stage_tags == ["unwind"]
-    assert request.content_tags == ["breathing_guidance", "rain"]
-    assert request.disliked_tags == ["thunder"]
+    assert request.content_tags == ["breathing_guidance", "stream"]
+    assert request.disliked_tags == ["heavy_rain"]
     service._hot.record_search.assert_not_called()
 
 
@@ -936,12 +942,12 @@ async def test_prescription_search_fails_closed_on_unknown_tag_code(monkeypatch)
     tags = MagicMock()
     tags.find.return_value = EmptyCursor()
     monkeypatch.setattr(service, "_tags", lambda: tags)
-    assert (
+    from app.server.somni.audio.catalog import InvalidAudioQueryError
+
+    with pytest.raises(InvalidAudioQueryError):
         await service.search_prescription_audio(
             {"query_text": "rain", "content_tag_codes": ["missing_code"]}
         )
-        == []
-    )
     retrieval.search.assert_not_called()
 
 
@@ -956,8 +962,16 @@ async def test_prescription_search_fails_closed_on_ambiguous_tag_code(monkeypatc
         def __aiter__(self):
             self.items = iter(
                 [
-                    {"code": "shared", "type": "content_form", "name": "相同名称"},
-                    {"code": "shared", "type": "mechanism", "name": "相同名称"},
+                    {
+                        "code": "auditory_rhythm_stimulation",
+                        "type": "content_form",
+                        "name": "相同名称",
+                    },
+                    {
+                        "code": "auditory_rhythm_stimulation",
+                        "type": "mechanism",
+                        "name": "相同名称",
+                    },
                 ]
             )
             return self
@@ -974,7 +988,7 @@ async def test_prescription_search_fails_closed_on_ambiguous_tag_code(monkeypatc
 
     assert (
         await service.search_prescription_audio(
-            {"query_text": "rain", "content_tag_codes": ["shared"]}
+            {"query_text": "rain", "content_tag_codes": ["auditory_rhythm_stimulation"]}
         )
         == []
     )

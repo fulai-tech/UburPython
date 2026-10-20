@@ -7,9 +7,14 @@
 from enum import StrEnum
 from typing import Any, Self
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
-from app.core.audio_tags import canonical_tags
+from app.core.audio_tags import (
+    canonical_disliked_tags,
+    canonical_tags,
+    resolve_audio_preferences,
+    validated_audio_tags,
+)
 from app.core.tags import (
     DIMENSION_FIELDS,
     dimensions_from_flat_tags,
@@ -192,12 +197,24 @@ class SearchAudioRequest(BaseModel):
         "sleep_stage_tags", "content_tags", "content_tag_codes", "disliked_tags", mode="before"
     )
     @classmethod
-    def normalize_machine_tags(cls, values: Any) -> list[str]:
+    def normalize_machine_tags(cls, values: Any, info: ValidationInfo) -> list[str]:
         if not isinstance(values, (list, tuple)) or not all(
             isinstance(value, str) for value in values
         ):
             raise ValueError("audio tags must be an array of strings")
-        return canonical_tags(values)
+        if info.field_name == "disliked_tags":
+            return canonical_disliked_tags(values)
+        if info.field_name == "content_tags":
+            resolved = resolve_audio_preferences(preferred=values)
+            if resolved["unresolved_preferred"] or resolved["sound_disabled"]:
+                raise ValueError("unresolved_audio_preference")
+            return resolved["preferred_codes"]
+        allowed = (
+            frozenset({"sleep_stage"})
+            if info.field_name == "sleep_stage_tags"
+            else frozenset({"content_form", "mechanism", "audio_engineering"})
+        )
+        return validated_audio_tags(values, allowed_types=allowed)
 
 
 class SearchAudioData(BaseModel):

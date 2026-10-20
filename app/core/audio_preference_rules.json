@@ -1,0 +1,63 @@
+{
+  "version": "audio_preference_rules_v1",
+  "groups": [
+    {
+      "aliases": [
+        "雨声",
+        "雨音",
+        "rain",
+        "rain sounds",
+        "rain sound",
+        "rainfall"
+      ],
+      "codes": [
+        "steady_light_rain",
+        "steady_rain",
+        "heavy_rain",
+        "surface_rain",
+        "scene_rain",
+        "rainforest_light_rain",
+        "storm_ambience"
+      ],
+      "rationale": "Broad rain exclusion conservatively covers the combined thunderstorm/strong-storm category."
+    },
+    {
+      "aliases": [
+        "鸟鸣",
+        "鸟叫",
+        "birdsong",
+        "bird sounds"
+      ],
+      "codes": [
+        "bird_calls",
+        "dawn_chorus"
+      ]
+    },
+    {
+      "aliases": [
+        "颜色噪音",
+        "颜色噪声",
+        "有色噪声",
+        "colored noise",
+        "coloured noise"
+      ],
+      "codes": [
+        "color_noise"
+      ]
+    }
+  ],
+  "silence_answers": [
+    "安静无声",
+    "不播放声音",
+    "不使用声音",
+    "silence",
+    "no sound",
+    "sound off"
+  ],
+  "no_preference_answers": [
+    "无偏好",
+    "没有偏好",
+    "no preference",
+    "none"
+  ]
+}

@@ -14,7 +14,7 @@ from typing import Any, Protocol
 
 from loguru import logger
 
-from app.core.audio_tags import canonical_tag, canonical_tags
+from app.core.audio_tags import audio_tag_contract_version, canonical_tag, canonical_tags
 from app.core.config import Settings
 
 SLEEP_STAGES = ("unwind", "soothe", "guard", "wake")
@@ -42,7 +42,7 @@ class RedisLike(Protocol):
 
 
 def build_sleep_stage_index_key(stage: str) -> str:
-    return f"{SLEEP_STAGE_INDEX_KEY_PREFIX}{canonical_tag(stage)}"
+    return f"{SLEEP_STAGE_INDEX_KEY_PREFIX}{audio_tag_contract_version()}:{canonical_tag(stage)}"
 
 
 def build_sleep_stage_cache_key(stage: str) -> str:

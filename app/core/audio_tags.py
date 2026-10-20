@@ -140,3 +140,238 @@ def material_tag_codes(material: Mapping[str, Any]) -> set[str]:
     ):
         add(material.get(field))
     return result
+
+
+# Questionnaire answer semantics, deliberately separate from dictionary aliases:
+# "无" is a valid engineering value but means no exclusion in a dislike field.
+_NO_DISLIKE_ANSWERS = frozenset(
+    {
+        "无",
+        "没有",
+        "无厌恶",
+        "没有不喜欢的声音",
+        "无不喜欢的声音",
+        "none",
+        "no dislikes",
+        "no_dislikes",
+        "no preference",
+        "nothing",
+    }
+)
+
+
+def is_no_dislike_answer(value: Any) -> bool:
+    """Recognize an exact questionnaire no-exclusion answer, without substring guesses."""
+    return (
+        isinstance(value, str)
+        and unicodedata.normalize("NFKC", value).strip().casefold() in _NO_DISLIKE_ANSWERS
+    )
+
+
+def canonical_disliked_tags(values: Sequence[Any], *, strict: bool = True) -> list[str]:
+    """Normalize real exclusions without turning a no-dislike answer into a tag."""
+    resolved = resolve_audio_preferences(disliked=values)
+    if strict and resolved["unresolved_disliked"]:
+        raise ValueError("unresolved_audio_dislike: sound must be disabled")
+    return resolved["disliked_codes"]
+
+
+_PREFERENCE_TYPES = frozenset({"content_form", "mechanism", "audio_engineering"})
+_CONTENT_TYPES = frozenset({"content_form", "mechanism"})
+
+
+@lru_cache(maxsize=1)
+def _preference_rules() -> dict[str, Any]:
+    rules = json.loads((Path(__file__).with_name("audio_preference_rules.json")).read_text())
+    validate_audio_tag_contract(dictionary_records(), rules)
+    return rules
+
+
+@lru_cache(maxsize=1)
+def audio_tag_contract_version() -> str:
+    """Bind caches and preference evidence to the exact dictionary and mapping."""
+    import hashlib
+
+    payload = {"dictionary": dictionary_records(), "rules": _preference_rules(), "resolver": 1}
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()
+    ).hexdigest()
+
+
+def validated_audio_tags(
+    values: Sequence[Any], *, allowed_types: frozenset[str] | None = None
+) -> list[str]:
+    """Reject invented, disabled or wrong-dimension machine tags before retrieval."""
+    known: dict[str, list[dict[str, Any]]] = {}
+    for row in dictionary_records():
+        if row.get("status") == "启用":
+            known.setdefault(row["code"], []).append(row)
+    codes = canonical_tags(values)
+    for code in codes:
+        matches = [
+            row
+            for row in known.get(code, [])
+            if allowed_types is None or row["type"] in allowed_types
+        ]
+        if not matches or any(
+            row["type"] == "audio_engineering"
+            and row.get("parent_tag_id")
+            and len({x.get("parent_tag_id") for x in matches}) > 1
+            for row in matches
+        ):
+            raise ValueError("unknown_audio_tag: code must be enabled and dimension unambiguous")
+    return codes
+
+
+def _descendant_codes(codes: Sequence[str]) -> list[str]:
+    rows = dictionary_records()
+    children: dict[str, list[str]] = {}
+    for row in rows:
+        if row.get("status") == "启用" and row.get("type") == "content_form":
+            children.setdefault(str(row.get("parent_tag_id") or ""), []).append(row["code"])
+    by_code = {
+        row["code"]: str(row.get("id") or "") for row in rows if row.get("type") == "content_form"
+    }
+    expanded = set(codes)
+    pending = list(codes)
+    while pending:
+        code = pending.pop()
+        for child in children.get(by_code.get(code, ""), []) if by_code.get(code) else []:
+            if child not in expanded:
+                expanded.add(child)
+                pending.append(child)
+    return sorted(expanded)
+
+
+def _preference_term_codes(value: str, *, dislike: bool) -> list[str]:
+    text = unicodedata.normalize("NFKC", value).strip()
+    # Strip only an anchored preference clause; unmatched prose remains unresolved.
+    text = re.sub(
+        r"^(?:(?:我)?(?:不喜欢|讨厌|不要|避免)|(?:i\s+)?(?:dislike|hate|avoid|without|no)\s+)\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    for group in _preference_rules()["groups"]:
+        if _key(text) in {_key(alias) for alias in group["aliases"]}:
+            return list(group["codes"])
+    try:
+        return validated_audio_tags(
+            [text], allowed_types=_PREFERENCE_TYPES if dislike else _CONTENT_TYPES
+        )
+    except ValueError:
+        return []
+
+
+def resolve_audio_preferences(
+    *, preferred: Sequence[Any] = (), disliked: Sequence[Any] = (), blocked: Sequence[Any] = ()
+) -> dict[str, Any]:
+    """Resolve user language once; an unresolved explicit exclusion closes sound."""
+    rules = _preference_rules()
+    result: dict[str, Any] = {
+        "preferred_codes": [],
+        "disliked_codes": [],
+        "unresolved_preferred": [],
+        "unresolved_disliked": [],
+        "sound_disabled": False,
+        "version": audio_tag_contract_version(),
+    }
+    for dislike, values in ((False, preferred), (True, [*disliked, *blocked])):
+        for value in values:
+            if not isinstance(value, str) or not value.strip():
+                result["unresolved_disliked" if dislike else "unresolved_preferred"].append(
+                    str(value)
+                )
+                continue
+            if dislike and is_no_dislike_answer(value):
+                continue
+            if not dislike and _key(value) in {_key(x) for x in rules["silence_answers"]}:
+                result["sound_disabled"] = True
+                continue
+            if not dislike and _key(value) in {_key(x) for x in rules["no_preference_answers"]}:
+                continue
+            parts = re.split(r"[,，、;；]|\s+and\s+|和|以及", value, flags=re.IGNORECASE)
+            for part in parts:
+                if not part.strip():
+                    continue
+                codes = _preference_term_codes(part, dislike=dislike)
+                key = "disliked_codes" if dislike else "preferred_codes"
+                if codes:
+                    result[key].extend(_descendant_codes(codes))
+                else:
+                    result["unresolved_disliked" if dislike else "unresolved_preferred"].append(
+                        part.strip()
+                    )
+    for key in ("preferred_codes", "disliked_codes", "unresolved_preferred", "unresolved_disliked"):
+        result[key] = sorted(set(result[key]))
+    result["preferred_codes"] = sorted(
+        set(result["preferred_codes"]) - set(result["disliked_codes"])
+    )
+    result["sound_disabled"] = result["sound_disabled"] or bool(result["unresolved_disliked"])
+    return result
+
+
+def preference_audio_tags(values: Sequence[Any], *, dislike: bool = False) -> list[str]:
+    """Translate a legacy preference list without guessing unrecognized constraints."""
+    resolved = resolve_audio_preferences(**{"disliked" if dislike else "preferred": values})
+    if dislike and resolved["unresolved_disliked"]:
+        raise ValueError("unresolved_audio_dislike: sound must be disabled")
+    return resolved["disliked_codes" if dislike else "preferred_codes"]
+
+
+def validate_audio_tag_contract(
+    records: Sequence[Mapping[str, Any]], rules: Mapping[str, Any]
+) -> None:
+    """Reject drift, ambiguous aliases and broken hierarchy before using an asset."""
+    by_code = {row["code"]: row for row in records}
+    identities = {
+        (row["type"], str(row.get("parent_tag_id") or ""), row["code"]) for row in records
+    }
+    if len(identities) != len(records):
+        raise ValueError("duplicate_audio_tag_identity")
+    ids = {str(row.get("id") or ""): row for row in records if row.get("id")}
+    for row in records:
+        parent = str(row.get("parent_tag_id") or "")
+        visited = {str(row.get("id") or "")}
+        while parent:
+            if parent not in ids or parent in visited:
+                raise ValueError("invalid_audio_tag_parent")
+            visited.add(parent)
+            parent_row = ids[parent]
+            if parent_row["type"] != row["type"]:
+                raise ValueError("invalid_audio_tag_parent_type")
+            parent = str(parent_row.get("parent_tag_id") or "")
+    aliases: dict[str, set[str]] = {}
+    official = build_dictionary_aliases(records)
+    for group in rules["groups"]:
+        codes = set(group["codes"])
+        if not codes or any(
+            code not in by_code
+            or by_code[code].get("status") != "启用"
+            or by_code[code]["type"] not in _CONTENT_TYPES
+            for code in codes
+        ):
+            raise ValueError("invalid_audio_preference_group")
+        for alias in group["aliases"]:
+            key = _key(alias)
+            if (key in aliases and aliases[key] != codes) or (
+                key in official and official[key] not in codes
+            ):
+                raise ValueError("ambiguous_audio_preference_alias")
+            aliases[key] = codes
+
+
+def material_is_excluded(material: Mapping[str, Any], disliked: Sequence[Any]) -> bool:
+    """Recheck fresh material metadata after retrieval/cache lookup, including voice values."""
+    excluded = set(canonical_disliked_tags(disliked))
+    if (excluded - {"voice"}) & material_tag_codes(material):
+        return True
+    if "voice" in excluded:
+        values = []
+        for row in material.get("audio_engineering_tags") or []:
+            if isinstance(row, Mapping) and reference_tag(row) in {"voice", "voice_position"}:
+                value = row.get("value")
+                values.append(value.get("code") if isinstance(value, Mapping) else None)
+        if not values or any(value != "none" for value in values):
+            return True
+    return False

@@ -9,11 +9,12 @@ from typing import Any, Protocol
 
 from loguru import logger
 
+from app.core.audio_tags import audio_tag_contract_version
 from app.core.config import Settings
 from app.schemas.audio import SearchAudioRequest
 
-AUDIO_SEARCH_KEY_PREFIX = "audio_search_v4+"
-AUDIO_SEARCH_LRU_INDEX_KEY = "audio_search_v4:_lru_index"
+AUDIO_SEARCH_KEY_PREFIX = "audio_search_v5+"
+AUDIO_SEARCH_LRU_INDEX_KEY = "audio_search_v5:_lru_index"
 _LRU_INDEX_KEY = AUDIO_SEARCH_LRU_INDEX_KEY  # 兼容旧测试名
 _WEEK_SECONDS = 7 * 24 * 60 * 60
 
@@ -37,9 +38,13 @@ class RedisLike(Protocol):
 
 
 def build_audio_search_cache_key(query: SearchAudioRequest) -> str:
-    """key = sha256(audio_search_v4+{稳定序列化单条 query})。"""
+    """key = sha256(audio_search_v5+{稳定序列化单条 query})。"""
+    normalized = query.model_dump(mode="json")
+    for field in ("sleep_stage_tags", "content_tags", "content_tag_codes", "disliked_tags"):
+        normalized[field] = sorted(set(normalized[field]))
+    normalized["tag_contract_version"] = audio_tag_contract_version()
     body = json.dumps(
-        query.model_dump(mode="json"),
+        normalized,
         sort_keys=True,
         ensure_ascii=False,
         separators=(",", ":"),
