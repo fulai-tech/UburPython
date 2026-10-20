@@ -96,3 +96,41 @@ async def test_changed_eligibility_cannot_be_reused_from_stale_cache():
     service._materials = lambda: collection
     cached = project_search_material({**row, "content_form_tags": [{"code": "steady_light_rain"}]})
     assert await service._verify_prescription_materials([cached]) == []
+
+
+async def test_parallel_authority_reads_share_one_snapshot_and_do_not_cross_requests():
+    import asyncio
+
+    from app.server.somni.audio.catalog import prescription_material_scope
+
+    row = {"_id": "shared", "status": True, "audio_url": "https://example.test/current.mp3"}
+    candidate = project_search_material(row)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class SlowCursor:
+        def __aiter__(self):
+            return self.read()
+
+        async def read(self):
+            entered.set()
+            await release.wait()
+            yield row
+
+    collection = MagicMock()
+    collection.find.side_effect = lambda *args: SlowCursor()
+    service = AudioCatalogService(None, Settings())
+    service._materials = lambda: collection
+    with prescription_material_scope():
+        pending = [
+            asyncio.create_task(service._verify_prescription_materials([candidate]))
+            for _ in range(4)
+        ]
+        await asyncio.wait_for(entered.wait(), 1)
+        release.set()
+        result = await asyncio.gather(*pending)
+        assert all(result)
+        assert collection.find.call_count == 1
+    with prescription_material_scope():
+        await service._verify_prescription_materials([candidate])
+    assert collection.find.call_count == 2

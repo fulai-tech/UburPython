@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any
 
 from google.protobuf.json_format import ParseDict
@@ -21,6 +22,7 @@ if TYPE_CHECKING:
 class AudioRpc(uburnode_somni_pb2_grpc.AudioServiceServicer):
     def __init__(self, service: AudioCatalogService | None) -> None:
         self._service = service
+        self._prescription_slots = asyncio.Semaphore(8)
 
     async def GetAudio(self, request, context):
         service = await self._require(context)
@@ -56,18 +58,22 @@ class AudioRpc(uburnode_somni_pb2_grpc.AudioServiceServicer):
         if any(not task_id for task_id in ids) or len(set(ids)) != len(ids):
             await abort_invalid(context, "task_id 必须非空且唯一")
 
+        # Reject an invalid tail before starting work for any earlier task.
+        for task in request.tasks:
+            if (
+                task.top_k < 1
+                or task.top_k > 20
+                or len(task.query_text) > 1000
+                or not task.sleep_stage_tags
+            ):
+                await abort_invalid(context, "invalid prescription search task")
+
         async def _do():
-            response = uburnode_somni_pb2.SearchPrescriptionAudioRes()
-            with prescription_material_scope():
-                for task in request.tasks:
-                    if (
-                        task.top_k < 1
-                        or task.top_k > 20
-                        or len(task.query_text) > 1000
-                        or not task.sleep_stage_tags
-                    ):
-                        raise ValueError("invalid prescription search task")
-                    candidates = await service.search_prescription_audio(
+            batch_slots = asyncio.Semaphore(4)
+
+            async def search(task):
+                async with batch_slots, self._prescription_slots:
+                    return await service.search_prescription_audio(
                         {
                             "query_text": task.query_text,
                             "sleep_stage_tags": list(task.sleep_stage_tags),
@@ -77,10 +83,23 @@ class AudioRpc(uburnode_somni_pb2_grpc.AudioServiceServicer):
                             "top_k": task.top_k,
                         }
                     )
+
+            with prescription_material_scope():
+                pending = [asyncio.create_task(search(task)) for task in request.tasks]
+                try:
+                    # gather preserves input order even when later searches finish first.
+                    batches = await asyncio.gather(*pending)
+                finally:
+                    # Includes caller deadline/cancellation and dependency failures.
+                    for child in pending:
+                        if not child.done():
+                            child.cancel()
+                    await asyncio.gather(*pending, return_exceptions=True)
+                response = uburnode_somni_pb2.SearchPrescriptionAudioRes()
+                for task, candidates in zip(request.tasks, batches, strict=True):
                     result = response.results.add(task_id=task.task_id)
                     for rank, candidate in enumerate(candidates, start=1):
-                        structured = {**candidate, "retrieval_rank": rank}
-                        struct = ParseDict(structured, Struct())
+                        struct = ParseDict({**candidate, "retrieval_rank": rank}, Struct())
                         result.candidates.add().CopyFrom(struct)
             return response
 

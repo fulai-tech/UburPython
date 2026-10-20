@@ -7,7 +7,7 @@ import math
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from time import monotonic
 from typing import Any
 
@@ -44,7 +44,13 @@ class _MatchedContentTags:
     codes: set[str]
 
 
-_material_snapshot: ContextVar[dict[str, dict[str, Any] | None] | None] = ContextVar(
+@dataclass
+class _MaterialSnapshot:
+    materials: dict[str, dict[str, Any] | None] = field(default_factory=dict)
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+
+_material_snapshot: ContextVar[_MaterialSnapshot | None] = ContextVar(
     "prescription_material_snapshot", default=None
 )
 
@@ -52,7 +58,7 @@ _material_snapshot: ContextVar[dict[str, dict[str, Any] | None] | None] = Contex
 @contextmanager
 def prescription_material_scope() -> Iterator[None]:
     """One authoritative Mongo read per distinct material within a batch RPC."""
-    token = _material_snapshot.set({})
+    token = _material_snapshot.set(_MaterialSnapshot())
     try:
         yield
     finally:
@@ -360,13 +366,18 @@ class AudioCatalogService:
         self, candidates: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
         """Mongo presence/status and safety metadata are authoritative over ES and caches."""
+        snapshot = _material_snapshot.get() or _MaterialSnapshot()
+        async with snapshot.lock:
+            return await self._verify_prescription_materials_locked(candidates, snapshot.materials)
+
+    async def _verify_prescription_materials_locked(
+        self, candidates: list[dict[str, Any]], current: dict[str, dict[str, Any] | None]
+    ) -> list[dict[str, Any]]:
+        """Only serialize authoritative cache fill, leaving retrieval itself parallel."""
         identifiers = {str(item.get("_id") or item.get("id") or "") for item in candidates}
         identifiers.discard("")
         if not identifiers:
             return []
-        current = _material_snapshot.get()
-        if current is None:
-            current = {}
         missing = identifiers - current.keys()
         if missing:
             ids: list[Any] = list(missing)

@@ -412,3 +412,18 @@ python scripts/somni_preference_fixture_import.py /path/to/fixture_package --rem
 SearchPrescriptionAudio及SearchAudioRequest在检索前完成兼容归一化和存在/类型校验，英文格式不是合法性证明。未知明确厌恶报错，query中未解析否定返回空候选；不以向量猜测硬禁忌。标准标签决定硬排除；向量只作软惩罚和召回/排序。Mongo刷新素材后再次检查厌恶与人声value，不能因ES/缓存旧标签绕过。query继续使用中文原文，不翻译已有embedding。结果缓存audio_search_v5+，标签排序去重并绑定字典/映射摘要；阶段索引及标签向量缓存绑定相同摘要。更改配置后需同步产物和重启，不支持请求中隐式热更新。
 
 维护源为本仓解析器和配置，使用 `PYTHONPATH=. python scripts/export_audio_tag_contract.py --mirror-root <DeepHealth根目录>` 校验共享产物；`--write`同步配置与解析器；`--refresh --write --env-file <operator profile>`从Mongo只读重导出。工具不写数据库、不重建embedding，输出不含连接凭据。原GetAudioTag仍返回顶层类别，未改变Proto或DB schema。部署前需对两个仓库配套验证。
+
+
+### Prescription audio batch concurrency
+
+`SearchPrescriptionAudio` validates the complete batch (1–64 tasks) before retrieval,
+executes up to four tasks concurrently per request, and shares eight retrieval slots
+across concurrent batches on the same `AudioRpc` instance. Existing retrieval-service
+limits remain in effect. Results retain input task order and candidate rank. On failure
+or caller cancellation all child tasks are cancelled and awaited before exit.
+Authoritative Mongo material snapshots are request-scoped, with cache fills protected
+by an async lock; safety/status filtering and query semantics are unchanged.
+The paired DeepHealth client uses a 45-second deadline for each audio batch with no
+automatic whole-batch retry; lightweight profile reads retain their separate policy.
+This is a per-batch bound, not a whole-plan latency guarantee. Natural-language queries
+remain Chinese; structured tags remain English dictionary codes for either UI language.
