@@ -388,15 +388,27 @@ python scripts/somni_preference_fixture_import.py /path/to/fixture_package --rem
 
 ### 2026-10-20 音频标签 code 与缓存兼容
 
-检索入口的 `sleep_stage_tags`、`content_tags`、`disliked_tags` 以及处方 RPC 的 `content_tag_codes` 统一归一为英文 dictionary code，独立于 UI language。比如 `soothe` / `breathing_guidance` / `steady_light_rain`。自然语言 `query_text` 和素材展示名称保留原语言。结构化素材优先 code；旧 name 通过 `app/core/audio_tag_aliases.json` 的已审计别名读取，未知中文标签返回参数错误，新增英文 code 可前向兼容。别名资产与 DeepHealth conf/somni/audio_tag_aliases.json 同步，来源为 2026-10-20 Somni 字典只读审计。不可把 `voice`（泛人声）与 `voice_guidance`（引导内容）合并；拒绝泛人声只接受工程 value.code=none，缺失信息不放行。
+检索入口的 `sleep_stage_tags`、`content_tags`、`disliked_tags` 以及处方 RPC 的 `content_tag_codes` 统一归一为英文 dictionary code，独立于 UI language。比如 `soothe` / `breathing_guidance` / `steady_light_rain`。自然语言 `query_text` 和素材展示名称保留原语言。结构化素材优先 code；旧 name 通过 `app/core/audio_tag_aliases.json` 的已审计别名读取，未识别的明确排除返回参数错误，机器请求中的英文 code 也必须已存在、启用且类型合适。素材历史记录的code优先读取与机器请求校验分开处理。别名资产与 DeepHealth conf/somni/audio_tag_aliases.json 同步，来源为 2026-10-20 Somni 字典只读审计。不可把 `voice`（泛人声）与 `voice_guidance`（引导内容）合并；拒绝泛人声只接受工程 value.code=none，缺失信息不放行。
 
-阶段 ES 读取使用现有 nested `sleep_stage_tags.code`，无需新增索引字段。标签向量使用字典现有向量，进程缓存采用英文 code；自然句使用文本摘要 key。Redis 阶段缓存升级为 `sleep_stage_v3_index:<unwind|soothe|guard|wake>`、`sleep_stage_v3_doc:<hash>`；检索结果缓存升级 `audio_search_v4+`，LRU 使用独立 `audio_search_v4:_lru_index`。启动正常预热与按需加载都使用英文阶段 key，旧 namespace 不被新版本读取；正常启动预热只更新当前 v3 阶段缓存；显式管理 clear_all 才清理旧阶段 namespace，滚动发布时保留旧版本缓存。此次没有执行远端清理、重建、DB/ES 写入或部署；上线须与 DeepHealth 出站参数配套验证，允许新 namespace 冷启动。
+阶段 ES 读取使用现有 nested `sleep_stage_tags.code`，无需新增索引字段。标签向量使用字典现有向量，进程缓存采用英文 code；自然句使用文本摘要 key。Redis 阶段缓存升级为 `sleep_stage_v3_index:<字典映射摘要>:<unwind|soothe|guard|wake>`、`sleep_stage_v3_doc:<hash>`；检索结果缓存升级 `audio_search_v5+`，LRU 使用独立 `audio_search_v5:_lru_index`。启动正常预热与按需加载都使用英文阶段 key，旧 namespace 不被新版本读取；正常启动预热只更新当前 v3 阶段缓存；显式管理 clear_all 才清理旧阶段 namespace，滚动发布时保留旧版本缓存。此次没有执行远端清理、重建、DB/ES 写入或部署；上线须与 DeepHealth 出站参数配套验证，允许新 namespace 冷启动。
 
 `GetAudio.tag_code`、问卷 `content_form_codes` 和热点标签记账也使用相同英文 code；已审计中英文别名先归一，再按素材 code 匹配。展示名称改变不改变选中分类，同 code 的多条素材仍按原排序规则排列。自由输入 preference_text/dislike_text 继续作为自然语言处理。
 
 
-别名来源加固：资产携带此前同日只读审计的170条 somni_audio_tag_dictionary 快照，aliases 只从 code/name/name_en 唯一映射派生，加载时核验。不再手写 rain→steady_light_rain、piano→slow_piano 或 silence/gentle_alarm_music 这类缩窄/不存在的映射。“风声”有两个 code，调用方必须明确 wind 或 wind_ambience；结构化“雨声”不等同“均匀小雨”，自由描述请用 query_text。U/S/G/W-S* 是独立阶段协议别名。此次尝试重新读取 Mongo 超时，使用既有同日审计快照；后续词典变化须重新导出并同步 DeepHealth，快照不保证实时更新。
+别名来源与偏好映射分开维护：aliases仅由真实词典字段派生；rain等广义偏好按下文规则映射为多个现有code，不缩窄成单一小雨标签；piano不自动缩窄成slow_piano。当前字典已重新从Mongo只读导出，168条运行时记录加2条显式隔离测试记录，均有来源证据。U/S/G/W-S*仍是独立阶段协议别名。具体更新与跨仓校验方式见下文“检索前的音频标签对齐”。
 
 拒绝条件支持中文和英文子句，例如 不要人声 / no voice / without vocals / do not include voice。明确拒绝片段从正向扩展文本中移除，精确拒绝不参与模糊扩展且不受自动 TOP_K=5 截断。向量服务不可用时退回精确准入和硬拒绝；无向量的精确路径无需编码器。自然句与标签向量缓存分开。重复/冲突/缺失的 voice.value.code 不能证明无人声，仅唯一 none 可通过；显式空白/符号拒绝项返回参数错误。颜色噪音内部标签和拒绝标签统一为英文 code。
 
 0.62/0.65 是自动正向/负向标签的相似度阈值，0.2 是弱厌恶扣分，并非语言转换规则；本次不调数值。人工明确标签由 code 精确匹配，英文自由句的模糊质量需要真实双语标注集单独评估，不能用离线替身结果声称向量召回质量达标。
+
+
+2026-10-20 素材一致性加固：SearchPrescriptionAudio在ES/缓存排序后，对候选批量读取Mongo现有somni_audio_materials，按真实_id与status=true确认。缺失/停用项不返回；阶段、内容、工程、机制或风险标签与排序时不一致的候选必须重新同步/排序，不沿用旧准入。仅URL更新且标签一致时用Mongo最新URL与展示/标签元数据返回，保持原排序分数/顺序；适度超取候选后再截断请求数量，Mongo不可用时失败关闭。每次请求均验证，旧缓存不能绕过；不改DB/ES、不自动迁移或重建。disliked_tags里的无/none/no dislikes是无厌恶答复，不转换成工程none拒绝项，其他工程none归一化不变。
+
+
+### 检索前的音频标签对齐（2026-10-20）
+
+`somni_audio_tag_dictionary`是合法code来源。`app/core/audio_tag_aliases.json`保留type/id/parent/status；170条源记录中纯数字测试阶段213/1321显式隔离，168条用于运行时。字典本身的别名只从code/name/name_en派生；`audio_preference_rules.json`独立维护审核的日常表达与广义集合，目标必须存在且启用。雨声/rain sounds覆盖现有雨类及含雷雨的storm_ambience，后者保守额外排除强风暴；不排除整个natural_sound。父级内容标签展开为启用后代，喜欢为OR，厌恶命中任一即排除。无厌恶答复与工程none值分开；不明确工程维度的重复取值不作声音类别。
+
+SearchPrescriptionAudio及SearchAudioRequest在检索前完成兼容归一化和存在/类型校验，英文格式不是合法性证明。未知明确厌恶报错，query中未解析否定返回空候选；不以向量猜测硬禁忌。标准标签决定硬排除；向量只作软惩罚和召回/排序。Mongo刷新素材后再次检查厌恶与人声value，不能因ES/缓存旧标签绕过。query继续使用中文原文，不翻译已有embedding。结果缓存audio_search_v5+，标签排序去重并绑定字典/映射摘要；阶段索引及标签向量缓存绑定相同摘要。更改配置后需同步产物和重启，不支持请求中隐式热更新。
+
+维护源为本仓解析器和配置，使用 `PYTHONPATH=. python scripts/export_audio_tag_contract.py --mirror-root <DeepHealth根目录>` 校验共享产物；`--write`同步配置与解析器；`--refresh --write --env-file <operator profile>`从Mongo只读重导出。工具不写数据库、不重建embedding，输出不含连接凭据。原GetAudioTag仍返回顶层类别，未改变Proto或DB schema。部署前需对两个仓库配套验证。

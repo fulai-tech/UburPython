@@ -63,7 +63,12 @@ def _doc(name: str, url: str, stages: list[str]) -> dict[str, Any]:
 def test_key_builders() -> None:
     assert SLEEP_STAGE_INDEX_KEY_PREFIX == "sleep_stage_v3_index:"
     assert SLEEP_STAGE_DOC_KEY_PREFIX == "sleep_stage_v3_doc:"
-    assert build_sleep_stage_index_key("放松") == f"{SLEEP_STAGE_INDEX_KEY_PREFIX}unwind"
+    from app.core.audio_tags import audio_tag_contract_version
+
+    assert (
+        build_sleep_stage_index_key("放松")
+        == f"{SLEEP_STAGE_INDEX_KEY_PREFIX}{audio_tag_contract_version()}:unwind"
+    )
     assert build_sleep_stage_doc_key("https://cdn/a.mp3").startswith(SLEEP_STAGE_DOC_KEY_PREFIX)
     assert SLEEP_STAGES == ("unwind", "soothe", "guard", "wake")
 

@@ -186,7 +186,7 @@ def test_alias_asset_is_derived_from_dictionary_fields():
 
     rows = dictionary_records()
     assert tag_aliases() == build_dictionary_aliases(rows)
-    assert len(rows) == 170
+    assert len(rows) == 168  # Numeric test-stage codes 213/1321 are explicitly quarantined.
     for row in rows:
         assert canonical_tag(row["code"]) == row["code"]
     assert "风声" not in tag_aliases()
@@ -197,8 +197,8 @@ def test_alias_asset_is_derived_from_dictionary_fields():
 async def test_result_cache_version_has_its_own_lru_namespace():
     from app.cache.audio_search_cache import AUDIO_SEARCH_KEY_PREFIX, AUDIO_SEARCH_LRU_INDEX_KEY
 
-    assert AUDIO_SEARCH_KEY_PREFIX == "audio_search_v4+"
-    assert AUDIO_SEARCH_LRU_INDEX_KEY == "audio_search_v4:_lru_index"
+    assert AUDIO_SEARCH_KEY_PREFIX == "audio_search_v5+"
+    assert AUDIO_SEARCH_LRU_INDEX_KEY == "audio_search_v5:_lru_index"
 
 
 @pytest.mark.parametrize(
@@ -227,7 +227,9 @@ async def test_explicit_parent_and_child_rejections_both_survive():
     service, _, _ = _service()
     rows = [{"code": "voice"}, {"code": "voice_guidance"}]
     result = await service._extract_query_tags("no voice and voice_guidance", [1.0, 0.0], rows)
-    assert set(result.disliked_tags) == {"voice", "voice_guidance"}
+    assert {"voice", "voice_guidance", "breathing_guidance", "wake_voice"} <= set(
+        result.disliked_tags
+    )
 
 
 async def test_explicit_color_parent_rejection_is_not_removed_by_child():
