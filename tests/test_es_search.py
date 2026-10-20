@@ -151,7 +151,8 @@ async def test_warm_dictionary_vectors_cache_seeds_from_content_tags() -> None:
                     {
                         "_id": "t1",
                         "_source": {
-                            "name": "雨声",
+                            "code": "steady_light_rain",
+                            "name": "均匀小雨",
                             "name_vector": [0.1, 0.2],
                             "type": "content_form",
                             "status": "启用",
@@ -181,7 +182,8 @@ async def test_list_content_tag_vectors_uses_process_cache() -> None:
                     {
                         "_id": "t1",
                         "_source": {
-                            "name": "雨声",
+                            "code": "steady_light_rain",
+                            "name": "均匀小雨",
                             "name_vector": [0.1],
                             "type": "content_form",
                             "status": "启用",

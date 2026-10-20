@@ -304,11 +304,11 @@ async def test_clear_all_removes_legacy_indexes_docs_and_candidate_keys() -> Non
 async def test_clear_all_removes_stale_awake_stage_index() -> None:
     redis = _FakeRedis()
     cache = SleepStageCandidateCache(redis, ttl_sec=60)
-    await cache.set_stage("清醒", [_doc("旧清醒", "https://cdn/awake.mp3", ["清醒"])])
+    await redis.set("sleep_stage_v3_index:清醒", json.dumps(["https://cdn/awake.mp3"]), ex=60)
 
     await cache.clear_all()
 
-    assert await redis.get(build_sleep_stage_index_key("清醒")) is None
+    assert await redis.get("sleep_stage_v3_index:清醒") is None
 
 
 @pytest.mark.asyncio

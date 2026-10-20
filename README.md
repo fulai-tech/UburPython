@@ -390,6 +390,13 @@ python scripts/somni_preference_fixture_import.py /path/to/fixture_package --rem
 
 检索入口的 `sleep_stage_tags`、`content_tags`、`disliked_tags` 以及处方 RPC 的 `content_tag_codes` 统一归一为英文 dictionary code，独立于 UI language。比如 `soothe` / `breathing_guidance` / `steady_light_rain`。自然语言 `query_text` 和素材展示名称保留原语言。结构化素材优先 code；旧 name 通过 `app/core/audio_tag_aliases.json` 的已审计别名读取，未知中文标签返回参数错误，新增英文 code 可前向兼容。别名资产与 DeepHealth conf/somni/audio_tag_aliases.json 同步，来源为 2026-10-20 Somni 字典只读审计。不可把 `voice`（泛人声）与 `voice_guidance`（引导内容）合并；拒绝泛人声只接受工程 value.code=none，缺失信息不放行。
 
-阶段 ES 读取使用现有 nested `sleep_stage_tags.code`，无需新增索引字段。标签向量使用字典现有向量，进程缓存采用英文 code；自然句使用文本摘要 key。Redis 阶段缓存升级为 `sleep_stage_v3_index:<unwind|soothe|guard|wake>`、`sleep_stage_v3_doc:<hash>`；检索结果缓存升级 `audio_search_v3+`。启动正常预热与按需加载都使用英文阶段 key，旧 namespace 不被新版本读取；已有清理/预热入口能清理旧版本，部署回退后旧版本可自行加载。此次没有执行远端清理、重建、DB/ES 写入或部署；上线须与 DeepHealth 出站参数配套验证，允许新 namespace 冷启动。
+阶段 ES 读取使用现有 nested `sleep_stage_tags.code`，无需新增索引字段。标签向量使用字典现有向量，进程缓存采用英文 code；自然句使用文本摘要 key。Redis 阶段缓存升级为 `sleep_stage_v3_index:<unwind|soothe|guard|wake>`、`sleep_stage_v3_doc:<hash>`；检索结果缓存升级 `audio_search_v4+`，LRU 使用独立 `audio_search_v4:_lru_index`。启动正常预热与按需加载都使用英文阶段 key，旧 namespace 不被新版本读取；正常启动预热只更新当前 v3 阶段缓存；显式管理 clear_all 才清理旧阶段 namespace，滚动发布时保留旧版本缓存。此次没有执行远端清理、重建、DB/ES 写入或部署；上线须与 DeepHealth 出站参数配套验证，允许新 namespace 冷启动。
 
 `GetAudio.tag_code`、问卷 `content_form_codes` 和热点标签记账也使用相同英文 code；已审计中英文别名先归一，再按素材 code 匹配。展示名称改变不改变选中分类，同 code 的多条素材仍按原排序规则排列。自由输入 preference_text/dislike_text 继续作为自然语言处理。
+
+
+别名来源加固：资产携带此前同日只读审计的170条 somni_audio_tag_dictionary 快照，aliases 只从 code/name/name_en 唯一映射派生，加载时核验。不再手写 rain→steady_light_rain、piano→slow_piano 或 silence/gentle_alarm_music 这类缩窄/不存在的映射。“风声”有两个 code，调用方必须明确 wind 或 wind_ambience；结构化“雨声”不等同“均匀小雨”，自由描述请用 query_text。U/S/G/W-S* 是独立阶段协议别名。此次尝试重新读取 Mongo 超时，使用既有同日审计快照；后续词典变化须重新导出并同步 DeepHealth，快照不保证实时更新。
+
+拒绝条件支持中文和英文子句，例如 不要人声 / no voice / without vocals / do not include voice。明确拒绝片段从正向扩展文本中移除，精确拒绝不参与模糊扩展且不受自动 TOP_K=5 截断。向量服务不可用时退回精确准入和硬拒绝；无向量的精确路径无需编码器。自然句与标签向量缓存分开。重复/冲突/缺失的 voice.value.code 不能证明无人声，仅唯一 none 可通过；显式空白/符号拒绝项返回参数错误。颜色噪音内部标签和拒绝标签统一为英文 code。
+
+0.62/0.65 是自动正向/负向标签的相似度阈值，0.2 是弱厌恶扣分，并非语言转换规则；本次不调数值。人工明确标签由 code 精确匹配，英文自由句的模糊质量需要真实双语标注集单独评估，不能用离线替身结果声称向量召回质量达标。

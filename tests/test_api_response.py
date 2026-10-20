@@ -39,7 +39,7 @@ def test_search_returns_http_200_envelope() -> None:
             "/api/audio/search",
             json={
                 "sleep_stage_tags": ["guard"],
-                "content_tags": ["雨声"],
+                "content_tags": ["均匀小雨"],
                 "top_k": 5,
             },
         )

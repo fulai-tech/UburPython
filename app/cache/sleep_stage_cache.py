@@ -18,7 +18,7 @@ from app.core.audio_tags import canonical_tag, canonical_tags
 from app.core.config import Settings
 
 SLEEP_STAGES = ("unwind", "soothe", "guard", "wake")
-_CACHE_CLEANUP_STAGES = (*SLEEP_STAGES, "清醒")
+_CACHE_CLEANUP_STAGES = SLEEP_STAGES
 SLEEP_STAGE_INDEX_KEY_PREFIX = "sleep_stage_v3_index:"
 SLEEP_STAGE_DOC_KEY_PREFIX = "sleep_stage_v3_doc:"
 # 兼容旧测试/调用名
@@ -192,7 +192,7 @@ class SleepStageCandidateCache:
     async def warm(self, loader: StageLoader) -> None:
         """清空后按四个阶段从数据源重建索引与文档。"""
         async with self._mutation_lock:
-            await self._clear_all_unlocked()
+            await self._clear_all_unlocked(include_legacy=False)
             for stage in SLEEP_STAGES:
                 docs = await loader(stage)
                 await self.set_stage(stage, docs)
@@ -203,9 +203,11 @@ class SleepStageCandidateCache:
         async with self._mutation_lock:
             await self._clear_all_unlocked()
 
-    async def _clear_all_unlocked(self) -> None:
+    async def _clear_all_unlocked(self, *, include_legacy: bool = True) -> None:
         urls: set[str] = set()
         index_keys = [build_sleep_stage_index_key(stage) for stage in _CACHE_CLEANUP_STAGES]
+        if include_legacy:
+            index_keys.append(f"{SLEEP_STAGE_INDEX_KEY_PREFIX}清醒")
         for key in index_keys:
             raw = await self._redis.get(key)
             if raw is None:
@@ -213,6 +215,10 @@ class SleepStageCandidateCache:
             items = json.loads(raw)
             if isinstance(items, list):
                 urls.update(str(item) for item in items if item)
+
+        if not include_legacy:
+            await self._redis.delete(*index_keys, *[build_sleep_stage_doc_key(url) for url in urls])
+            return
 
         legacy_urls: set[str] = set()
         legacy_v2_indexes = [

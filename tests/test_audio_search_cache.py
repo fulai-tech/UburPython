@@ -112,7 +112,7 @@ def test_build_cache_key_is_sha_of_prefix_plus_body() -> None:
         ensure_ascii=False,
         separators=(",", ":"),
     )
-    assert AUDIO_SEARCH_KEY_PREFIX == "audio_search_v3+"
+    assert AUDIO_SEARCH_KEY_PREFIX == "audio_search_v4+"
     expected = hashlib.sha256(f"{AUDIO_SEARCH_KEY_PREFIX}{body}".encode()).hexdigest()
     assert build_audio_search_cache_key(request) == expected
 

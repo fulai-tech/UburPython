@@ -318,7 +318,7 @@ async def test_search_admits_on_exact_content_intersection() -> None:
     results = await service.search(request)
 
     assert [r["audio_name"] for r in results] == ["雨声A", "雨声B"]
-    encoder.encode.assert_awaited_once_with(["steady_light_rain", "forest"])
+    encoder.encode.assert_not_awaited()
     es_search.get_dictionary_vectors.assert_not_called()
 
 
@@ -930,7 +930,8 @@ async def test_text_query_extracts_positive_and_negative_tags() -> None:
     assert [r["audio_name"] for r in results] == ["保留雨声"]
     merged_calls = [call.args[0] for call in encoder.encode.await_args_list]
     assert ["睡前轻柔雨声，不要嘈杂"] in merged_calls
-    assert ["嘈杂"] in merged_calls
+    assert ["嘈杂"] not in merged_calls
+    assert ["睡前轻柔雨声，"] in merged_calls
     es_search.get_dictionary_vectors.assert_awaited_once()
 
 
@@ -1077,7 +1078,7 @@ def test_match_labels_skips_short_and_prefers_longer() -> None:
         {"label": "low_dynamic", "display_name": "低动态"},
         {"label": "steady_light_rain"},
     ]
-    matched = _match_labels_from_text("低动态无歌词雨声", tags)
+    matched = _match_labels_from_text("低动态无歌词均匀小雨", tags)
     assert "l" not in matched
     assert "n" not in matched
     assert "low_dynamic" in matched

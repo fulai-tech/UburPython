@@ -1,6 +1,1209 @@
 {
-  "version": "somni_audio_tag_codes.v1",
-  "source": "Reviewed read-only somni_audio_tag_dictionary code/name/name_en snapshot, 2026-10-20; plus explicit legacy aliases.",
+  "version": "somni_audio_tag_codes.v2",
+  "source": {
+    "collection": "somni_audio_tag_dictionary",
+    "read_date": "2026-10-20",
+    "fields": [
+      "code",
+      "name",
+      "name_en",
+      "type",
+      "status"
+    ],
+    "note": "Previously verified read-only 170-row snapshot; no handwritten semantic aliases. Re-read unavailable during hardening."
+  },
+  "dictionary": [
+    {
+      "type": "audio_engineering",
+      "code": "animal",
+      "status": "启用",
+      "name": "动物声",
+      "name_en": "Animal sounds"
+    },
+    {
+      "type": "audio_engineering",
+      "code": "conditional",
+      "status": "启用",
+      "name": "条件可循环",
+      "name_en": "Conditional"
+    },
+    {
+      "type": "audio_engineering",
+      "code": "extremely_slow",
+      "status": "启用",
+      "name": "极慢",
+      "name_en": "Extremely Slow"
+    },
+    {
+      "type": "audio_engineering",
+      "code": "false",
+      "status": "启用",
+      "name": "不可循环",
+      "name_en": "False"
+    },
+    {
+      "type": "audio_engineering",
+      "code": "fast",
+      "status": "启用",
+      "name": "快",
+      "name_en": "Fast"
+    },
+    {
+      "type": "audio_engineering",
+      "code": "high",
+      "status": "启用",
+      "name": "高",
+      "name_en": "High"
+    },
+    {
+      "type": "audio_engineering",
+      "code": "high",
+      "status": "启用",
+      "name": "高",
+      "name_en": "High"
+    },
+    {
+      "type": "audio_engineering",
+      "code": "instrument",
+      "status": "启用",
+      "name": "乐器声",
+      "name_en": "Sounds of musical instruments"
+    },
+    {
+      "type": "audio_engineering",
+      "code": "loopable",
+      "status": "启用",
+      "name": "是否可循环",
+      "name_en": "Loopable"
+    },
+    {
+      "type": "audio_engineering",
+      "code": "low",
+      "status": "启用",
+      "name": "低",
+      "name_en": "Low"
+    },
+    {
+      "type": "audio_engineering",
+      "code": "low",
+      "status": "启用",
+      "name": "低",
+      "name_en": "Low"
+    },
+    {
+      "type": "audio_engineering",
+      "code": "mechanical",
+      "status": "启用",
+      "name": "机械或设备声",
+      "name_en": "Sound of machinery or equipment"
+    },
+    {
+      "type": "audio_engineering",
+      "code": "medium",
+      "status": "启用",
+      "name": "中",
+      "name_en": "Medium"
+    },
+    {
+      "type": "audio_engineering",
+      "code": "middle",
+      "status": "启用",
+      "name": "中",
+      "name_en": "Middle"
+    },
+    {
+      "type": "audio_engineering",
+      "code": "middle",
+      "status": "启用",
+      "name": "中",
+      "name_en": "Middle"
+    },
+    {
+      "type": "audio_engineering",
+      "code": "no_beat",
+      "status": "启用",
+      "name": "无明确节拍",
+      "name_en": "No clear beat"
+    },
+    {
+      "type": "audio_engineering",
+      "code": "none",
+      "status": "启用",
+      "name": "无",
+      "name_en": "None"
+    },
+    {
+      "type": "audio_engineering",
+      "code": "other",
+      "status": "启用",
+      "name": "其他",
+      "name_en": "Other"
+    },
+    {
+      "type": "audio_engineering",
+      "code": "relatively_fast",
+      "status": "启用",
+      "name": "中快",
+      "name_en": "Relatively Fast"
+    },
+    {
+      "type": "audio_engineering",
+      "code": "semantic_load",
+      "status": "启用",
+      "name": "语义负荷",
+      "name_en": "Semantic Load"
+    },
+    {
+      "type": "audio_engineering",
+      "code": "slow",
+      "status": "启用",
+      "name": "慢",
+      "name_en": "Slow"
+    },
+    {
+      "type": "audio_engineering",
+      "code": "slow",
+      "status": "启用",
+      "name": "慢",
+      "name_en": "Slow"
+    },
+    {
+      "type": "audio_engineering",
+      "code": "sound_source_type",
+      "status": "启用",
+      "name": "声源类型",
+      "name_en": "Sound Source Type"
+    },
+    {
+      "type": "audio_engineering",
+      "code": "speech_rates",
+      "status": "启用",
+      "name": "语速",
+      "name_en": "Speech Rate"
+    },
+    {
+      "type": "audio_engineering",
+      "code": "startle_risk",
+      "status": "启用",
+      "name": "惊跳风险",
+      "name_en": "Startle Risk"
+    },
+    {
+      "type": "audio_engineering",
+      "code": "synthetic",
+      "status": "启用",
+      "name": "合成音",
+      "name_en": "Synthetic sound"
+    },
+    {
+      "type": "audio_engineering",
+      "code": "tempo_level",
+      "status": "启用",
+      "name": "节奏速度",
+      "name_en": "Tempo and Speed"
+    },
+    {
+      "type": "audio_engineering",
+      "code": "true",
+      "status": "启用",
+      "name": "可无缝循环",
+      "name_en": "True"
+    },
+    {
+      "type": "audio_engineering",
+      "code": "voice",
+      "status": "启用",
+      "name": "人声",
+      "name_en": "Vocals"
+    },
+    {
+      "type": "audio_engineering",
+      "code": "water",
+      "status": "启用",
+      "name": "水声",
+      "name_en": "Sound Of Water"
+    },
+    {
+      "type": "audio_engineering",
+      "code": "wind",
+      "status": "启用",
+      "name": "风声",
+      "name_en": "The Sound of the Wind"
+    },
+    {
+      "type": "content_form",
+      "code": "acceptance_commitment_therapy",
+      "status": "启用",
+      "name": "接纳与承诺疗法",
+      "name_en": "Acceptance and Commitment Therapy (ACT)"
+    },
+    {
+      "type": "content_form",
+      "code": "air_conditioner",
+      "status": "启用",
+      "name": "空调运行声",
+      "name_en": "Air Conditioner Hum"
+    },
+    {
+      "type": "content_form",
+      "code": "alpha_relaxation",
+      "status": "启用",
+      "name": "Alpha波",
+      "name_en": "Alpha"
+    },
+    {
+      "type": "content_form",
+      "code": "ambient_music",
+      "status": "启用",
+      "name": "环境音乐",
+      "name_en": "Ambient Music"
+    },
+    {
+      "type": "content_form",
+      "code": "appliance_background",
+      "status": "启用",
+      "name": "室内设备组合底噪",
+      "name_en": "Indoor Appliance Ambience"
+    },
+    {
+      "type": "content_form",
+      "code": "asmr_whisper",
+      "status": "启用",
+      "name": "ASMR/耳语",
+      "name_en": "ASMR / Whispering"
+    },
+    {
+      "type": "content_form",
+      "code": "auditory_rhythm_stimulation",
+      "status": "启用",
+      "name": "听觉节律刺激",
+      "name_en": "Auditory Rhythmic Stimulation"
+    },
+    {
+      "type": "content_form",
+      "code": "autogenic_training",
+      "status": "启用",
+      "name": "自律训练",
+      "name_en": "Autogenic Training"
+    },
+    {
+      "type": "content_form",
+      "code": "bath_filling",
+      "status": "启用",
+      "name": "浴缸注水声",
+      "name_en": "Bath Filling"
+    },
+    {
+      "type": "content_form",
+      "code": "bats",
+      "status": "启用",
+      "name": "蝙蝠",
+      "name_en": "Bats"
+    },
+    {
+      "type": "content_form",
+      "code": "bedtime_routine_cue",
+      "status": "启用",
+      "name": "睡前仪式提示",
+      "name_en": "Bedtime Routine Cues"
+    },
+    {
+      "type": "content_form",
+      "code": "bird_calls",
+      "status": "启用",
+      "name": "鸟类叫声",
+      "name_en": "Bird Calls"
+    },
+    {
+      "type": "content_form",
+      "code": "boat_water",
+      "status": "启用",
+      "name": "船上水声",
+      "name_en": "Water Sounds on a Boat"
+    },
+    {
+      "type": "content_form",
+      "code": "body_scan",
+      "status": "启用",
+      "name": "身体扫描",
+      "name_en": "Body Scan"
+    },
+    {
+      "type": "content_form",
+      "code": "breathing_guidance",
+      "status": "启用",
+      "name": "呼吸引导",
+      "name_en": "Breathing Guidance"
+    },
+    {
+      "type": "content_form",
+      "code": "brown_noise",
+      "status": "启用",
+      "name": "棕噪音",
+      "name_en": "Brown Noise"
+    },
+    {
+      "type": "content_form",
+      "code": "bubbling_magma",
+      "status": "启用",
+      "name": "翻滚的岩浆",
+      "name_en": "Bubbling Magma"
+    },
+    {
+      "type": "content_form",
+      "code": "canal",
+      "status": "启用",
+      "name": "运河",
+      "name_en": "Canal"
+    },
+    {
+      "type": "content_form",
+      "code": "cat_purring",
+      "status": "启用",
+      "name": "猫咪呼噜声",
+      "name_en": "Cat Purring"
+    },
+    {
+      "type": "content_form",
+      "code": "cave_ambience",
+      "status": "启用",
+      "name": "洞穴/空间环境声",
+      "name_en": "Cave / Spacious Ambience"
+    },
+    {
+      "type": "content_form",
+      "code": "chicken_calls",
+      "status": "启用",
+      "name": "鸡鸣/鸡群声",
+      "name_en": "Rooster / Chicken Calls"
+    },
+    {
+      "type": "content_form",
+      "code": "clock_tick",
+      "status": "启用",
+      "name": "规律机械声",
+      "name_en": "Clock Ticking / Rhythmic Mechanical Sound"
+    },
+    {
+      "type": "content_form",
+      "code": "color_noise",
+      "status": "启用",
+      "name": "噪音",
+      "name_en": "Colored Noise"
+    },
+    {
+      "type": "content_form",
+      "code": "companion_presence_guidance",
+      "status": "启用",
+      "name": "陪伴式语言引导",
+      "name_en": "Companion Presence Guidance"
+    },
+    {
+      "type": "content_form",
+      "code": "cows",
+      "status": "启用",
+      "name": "奶牛",
+      "name_en": "Cow Sounds"
+    },
+    {
+      "type": "content_form",
+      "code": "crickets_insects",
+      "status": "启用",
+      "name": "蟋蟀/虫鸣",
+      "name_en": "Crickets / Insect Chirping"
+    },
+    {
+      "type": "content_form",
+      "code": "dawn_chorus",
+      "status": "启用",
+      "name": "晨间鸟鸣合唱",
+      "name_en": "Dawn Bird Chorus"
+    },
+    {
+      "type": "content_form",
+      "code": "deep_slow_river",
+      "status": "启用",
+      "name": "深缓河流",
+      "name_en": "Deep Slow River"
+    },
+    {
+      "type": "content_form",
+      "code": "dishwasher",
+      "status": "启用",
+      "name": "洗碗机",
+      "name_en": "Dishwasher"
+    },
+    {
+      "type": "content_form",
+      "code": "dolphins",
+      "status": "启用",
+      "name": "海豚",
+      "name_en": "Dolphin Calls"
+    },
+    {
+      "type": "content_form",
+      "code": "drone_pad",
+      "status": "启用",
+      "name": "Drone/Pad 铺底",
+      "name_en": "Drone / Pad Background"
+    },
+    {
+      "type": "content_form",
+      "code": "ducks",
+      "status": "启用",
+      "name": "鸭子",
+      "name_en": "Duck Calls"
+    },
+    {
+      "type": "content_form",
+      "code": "fireplace",
+      "status": "启用",
+      "name": "篝火/壁炉",
+      "name_en": "Campfire / Fireplace"
+    },
+    {
+      "type": "content_form",
+      "code": "footsteps",
+      "status": "启用",
+      "name": "步行/脚步声",
+      "name_en": "Walking / Footsteps"
+    },
+    {
+      "type": "content_form",
+      "code": "forest",
+      "status": "启用",
+      "name": "森林环境声",
+      "name_en": "Forest Ambience"
+    },
+    {
+      "type": "content_form",
+      "code": "fountain",
+      "status": "启用",
+      "name": "喷泉声",
+      "name_en": "Fountain"
+    },
+    {
+      "type": "content_form",
+      "code": "frogs",
+      "status": "启用",
+      "name": "青蛙/蛙鸣",
+      "name_en": "Frogs / Croaking"
+    },
+    {
+      "type": "content_form",
+      "code": "gentle_ocean_wave",
+      "status": "启用",
+      "name": "平稳海浪",
+      "name_en": "Gentle Ocean Wave"
+    },
+    {
+      "type": "content_form",
+      "code": "gentle_wake_music",
+      "status": "启用",
+      "name": "温和唤醒音乐",
+      "name_en": "Gentle Wake-Up Music"
+    },
+    {
+      "type": "content_form",
+      "code": "gratitude_reflection",
+      "status": "启用",
+      "name": "感恩反思引导",
+      "name_en": "Guided Gratitude Reflection"
+    },
+    {
+      "type": "content_form",
+      "code": "guided_imagery",
+      "status": "启用",
+      "name": "低情节意象放松",
+      "name_en": "Low-Plot Guided Imagery"
+    },
+    {
+      "type": "content_form",
+      "code": "handpan_music",
+      "status": "启用",
+      "name": "手碟音乐",
+      "name_en": "Handpan Music"
+    },
+    {
+      "type": "content_form",
+      "code": "harp_music",
+      "status": "启用",
+      "name": "竖琴音乐",
+      "name_en": "Harp Music"
+    },
+    {
+      "type": "content_form",
+      "code": "heavy_rain",
+      "status": "启用",
+      "name": "大雨",
+      "name_en": "Heavy Rain"
+    },
+    {
+      "type": "content_form",
+      "code": "horses_trotting",
+      "status": "启用",
+      "name": "马蹄小跑声",
+      "name_en": "Trotting Horse Hoofbeats"
+    },
+    {
+      "type": "content_form",
+      "code": "hot_tub",
+      "status": "启用",
+      "name": "热水浴缸",
+      "name_en": "Hot Tub"
+    },
+    {
+      "type": "content_form",
+      "code": "humidifier",
+      "status": "启用",
+      "name": "加湿器声",
+      "name_en": "Humidifier Sound"
+    },
+    {
+      "type": "content_form",
+      "code": "hypnotic_sleep_suggestion",
+      "status": "启用",
+      "name": "睡眠暗示",
+      "name_en": "Sleep Suggestion / Self-Hypnosis Guidance"
+    },
+    {
+      "type": "content_form",
+      "code": "imagery_distraction",
+      "status": "启用",
+      "name": "意象分心法",
+      "name_en": "Imagery Distraction"
+    },
+    {
+      "type": "content_form",
+      "code": "imagery_rehearsal_therapy",
+      "status": "启用",
+      "name": "意象预演疗法",
+      "name_en": "Imagery Rehearsal Therapy (IRT)"
+    },
+    {
+      "type": "content_form",
+      "code": "immersed",
+      "status": "启用",
+      "name": "沉浸水中",
+      "name_en": "Underwater Ambience"
+    },
+    {
+      "type": "content_form",
+      "code": "insect_calls",
+      "status": "启用",
+      "name": "虫鸣/蜂鸣",
+      "name_en": "Insect Calls / Buzzing"
+    },
+    {
+      "type": "content_form",
+      "code": "instrumental_light_music",
+      "status": "启用",
+      "name": "无歌词轻音乐",
+      "name_en": "Light Instrumental Music"
+    },
+    {
+      "type": "content_form",
+      "code": "lake_water",
+      "status": "启用",
+      "name": "湖水/轻水波",
+      "name_en": "Lake Water / Gentle Ripples"
+    },
+    {
+      "type": "content_form",
+      "code": "loving_kindness_meditation",
+      "status": "启用",
+      "name": "慈心冥想",
+      "name_en": "Loving-Kindness Meditation"
+    },
+    {
+      "type": "content_form",
+      "code": "low_bpm_instrumental",
+      "status": "启用",
+      "name": "低 BPM 器乐",
+      "name_en": "Low-BPM Instrumental Music"
+    },
+    {
+      "type": "content_form",
+      "code": "low_plot_sleep_story",
+      "status": "启用",
+      "name": "睡前故事-低情节",
+      "name_en": "Low-Plot Bedtime Story"
+    },
+    {
+      "type": "content_form",
+      "code": "lullaby_style",
+      "status": "启用",
+      "name": "摇篮曲风格音乐",
+      "name_en": "Lullaby-Style Music"
+    },
+    {
+      "type": "content_form",
+      "code": "lyrical_song",
+      "status": "启用",
+      "name": "有歌词歌曲",
+      "name_en": "Songs with Lyrics"
+    },
+    {
+      "type": "content_form",
+      "code": "mechanical_airflow",
+      "status": "启用",
+      "name": "设备送风声",
+      "name_en": "Mechanical Airflow"
+    },
+    {
+      "type": "content_form",
+      "code": "meditative_music",
+      "status": "启用",
+      "name": "冥想音乐",
+      "name_en": "Meditative Music"
+    },
+    {
+      "type": "content_form",
+      "code": "melting_snow",
+      "status": "启用",
+      "name": "融雪",
+      "name_en": "Melting Snow"
+    },
+    {
+      "type": "content_form",
+      "code": "mindfulness_meditation",
+      "status": "启用",
+      "name": "正念冥想",
+      "name_en": "Mindfulness Meditation"
+    },
+    {
+      "type": "content_form",
+      "code": "mindfulness_sleep",
+      "status": "启用",
+      "name": "正念睡前引导",
+      "name_en": "Bedtime Mindfulness Guidance"
+    },
+    {
+      "type": "content_form",
+      "code": "morning_orientation",
+      "status": "启用",
+      "name": "晨间定向语音",
+      "name_en": "Morning Orientation Guidance"
+    },
+    {
+      "type": "content_form",
+      "code": "morning_stretch_guidance",
+      "status": "启用",
+      "name": "晨间拉伸引导",
+      "name_en": "Morning Stretch Guidance"
+    },
+    {
+      "type": "content_form",
+      "code": "music",
+      "status": "启用",
+      "name": "音乐",
+      "name_en": "Music"
+    },
+    {
+      "type": "content_form",
+      "code": "natural_sound",
+      "status": "启用",
+      "name": "自然声",
+      "name_en": "Natural Sound"
+    },
+    {
+      "type": "content_form",
+      "code": "nature_music_mix",
+      "status": "启用",
+      "name": "自然声音乐混合",
+      "name_en": "Nature Sounds and Music Mix"
+    },
+    {
+      "type": "content_form",
+      "code": "night_awakening_guidance",
+      "status": "启用",
+      "name": "夜间醒后再入睡引导",
+      "name_en": "Return-to-Sleep Guidance after Night Awakening"
+    },
+    {
+      "type": "content_form",
+      "code": "nightmare_awakening_guidance",
+      "status": "启用",
+      "name": "噩梦性呼吸引导",
+      "name_en": "Post-Nightmare Breathing and Reassurance"
+    },
+    {
+      "type": "content_form",
+      "code": "non_lexical_vocal",
+      "status": "启用",
+      "name": "非语义人声",
+      "name_en": "Humming / Non-Lexical Vocals"
+    },
+    {
+      "type": "content_form",
+      "code": "ocean_wave_ambience",
+      "status": "启用",
+      "name": "海洋/海浪声",
+      "name_en": "Ocean / Wave Ambience"
+    },
+    {
+      "type": "content_form",
+      "code": "paradoxical_intention",
+      "status": "启用",
+      "name": "矛盾意象疗法",
+      "name_en": "Paradoxical Intention"
+    },
+    {
+      "type": "content_form",
+      "code": "pine_canopy_breeze",
+      "status": "启用",
+      "name": "松林树冠风声",
+      "name_en": "Pine Canopy Breeze"
+    },
+    {
+      "type": "content_form",
+      "code": "pink_noise",
+      "status": "启用",
+      "name": "粉噪音",
+      "name_en": "Pink Noise"
+    },
+    {
+      "type": "content_form",
+      "code": "postponement",
+      "status": "启用",
+      "name": "放下念头",
+      "name_en": "Letting Go of Thoughts"
+    },
+    {
+      "type": "content_form",
+      "code": "progressive_muscle_relaxation",
+      "status": "启用",
+      "name": "渐进性肌肉放松",
+      "name_en": "Progressive Muscle Relaxation"
+    },
+    {
+      "type": "content_form",
+      "code": "rainforest_light_rain",
+      "status": "启用",
+      "name": "雨林细雨底景",
+      "name_en": "Rainforest Light Rain Ambience"
+    },
+    {
+      "type": "content_form",
+      "code": "room_tone",
+      "status": "启用",
+      "name": "房间底噪",
+      "name_en": "Room Tone"
+    },
+    {
+      "type": "content_form",
+      "code": "scene_rain",
+      "status": "启用",
+      "name": "场景雨声",
+      "name_en": "Rain in Different Settings"
+    },
+    {
+      "type": "content_form",
+      "code": "sheep_walking",
+      "status": "启用",
+      "name": "羊群行走",
+      "name_en": "Sheep Walking"
+    },
+    {
+      "type": "content_form",
+      "code": "shore_water",
+      "status": "启用",
+      "name": "岸边水波声",
+      "name_en": "Shoreline Ripples"
+    },
+    {
+      "type": "content_form",
+      "code": "shower",
+      "status": "启用",
+      "name": "淋浴",
+      "name_en": "Shower"
+    },
+    {
+      "type": "content_form",
+      "code": "singing_bowl",
+      "status": "启用",
+      "name": "颂钵音乐",
+      "name_en": "Singing Bowl Music"
+    },
+    {
+      "type": "content_form",
+      "code": "sleep_education",
+      "status": "启用",
+      "name": "睡眠教育",
+      "name_en": "Sleep Education"
+    },
+    {
+      "type": "content_form",
+      "code": "sleep_music",
+      "status": "启用",
+      "name": "助眠音乐",
+      "name_en": "Sleep Music"
+    },
+    {
+      "type": "content_form",
+      "code": "slow_piano",
+      "status": "启用",
+      "name": "慢钢琴",
+      "name_en": "Slow Piano"
+    },
+    {
+      "type": "content_form",
+      "code": "snow_ambience",
+      "status": "启用",
+      "name": "雪声/安静雪景",
+      "name_en": "Snow / Quiet Winter Ambience"
+    },
+    {
+      "type": "content_form",
+      "code": "soft_strings",
+      "status": "启用",
+      "name": "轻柔弦乐",
+      "name_en": "Soft Strings"
+    },
+    {
+      "type": "content_form",
+      "code": "solfeggio_frequency",
+      "status": "启用",
+      "name": "特定频率疗愈音乐",
+      "name_en": "Specific-Frequency Healing-Style Music"
+    },
+    {
+      "type": "content_form",
+      "code": "sprinkler",
+      "status": "启用",
+      "name": "洒水器",
+      "name_en": "Sprinkler"
+    },
+    {
+      "type": "content_form",
+      "code": "steady_background",
+      "status": "启用",
+      "name": "稳态背景音",
+      "name_en": "Steady Background Sound"
+    },
+    {
+      "type": "content_form",
+      "code": "steady_light_rain",
+      "status": "启用",
+      "name": "均匀小雨",
+      "name_en": "Steady Light Rain"
+    },
+    {
+      "type": "content_form",
+      "code": "steady_rain",
+      "status": "启用",
+      "name": "中雨/稳定雨声",
+      "name_en": "Moderate / Steady Rain"
+    },
+    {
+      "type": "content_form",
+      "code": "storm_ambience",
+      "status": "启用",
+      "name": "雷雨/强风暴声",
+      "name_en": "Thunderstorm / Strong Storm Ambience"
+    },
+    {
+      "type": "content_form",
+      "code": "stream",
+      "status": "启用",
+      "name": "溪流",
+      "name_en": "Stream"
+    },
+    {
+      "type": "content_form",
+      "code": "surface_rain",
+      "status": "启用",
+      "name": "物体表面雨声",
+      "name_en": "Rain on Surfaces"
+    },
+    {
+      "type": "content_form",
+      "code": "theta_sleep",
+      "status": "启用",
+      "name": "Theta波",
+      "name_en": "Theta"
+    },
+    {
+      "type": "content_form",
+      "code": "voice_guidance",
+      "status": "启用",
+      "name": "人声引导",
+      "name_en": "Voice Guidance"
+    },
+    {
+      "type": "content_form",
+      "code": "wake_voice",
+      "status": "启用",
+      "name": "温和语音唤醒",
+      "name_en": "Gentle Voice Wake-Up"
+    },
+    {
+      "type": "content_form",
+      "code": "water_dripping",
+      "status": "启用",
+      "name": "滴水声",
+      "name_en": "Water Dripping"
+    },
+    {
+      "type": "content_form",
+      "code": "waterfall",
+      "status": "启用",
+      "name": "瀑布/大水流",
+      "name_en": "Waterfall / Rushing Water"
+    },
+    {
+      "type": "content_form",
+      "code": "whale",
+      "status": "启用",
+      "name": "鲸鱼",
+      "name_en": "Whale Calls"
+    },
+    {
+      "type": "content_form",
+      "code": "white_noise",
+      "status": "启用",
+      "name": "白噪音",
+      "name_en": "White Noise"
+    },
+    {
+      "type": "content_form",
+      "code": "wind_ambience",
+      "status": "启用",
+      "name": "风声",
+      "name_en": "Wind Ambience"
+    },
+    {
+      "type": "content_form",
+      "code": "wolf",
+      "status": "启用",
+      "name": "狼",
+      "name_en": "Wolf Calls"
+    },
+    {
+      "type": "content_form",
+      "code": "wuxing_healing_music",
+      "status": "启用",
+      "name": "五音疗愈",
+      "name_en": "Five-Element / Five-Tone Healing-Style Music"
+    },
+    {
+      "type": "content_form",
+      "code": "zen_ambient_music",
+      "status": "启用",
+      "name": "禅音氛围",
+      "name_en": "Zen Ambience"
+    },
+    {
+      "type": "evidence_level",
+      "code": "A",
+      "status": "启用",
+      "name": "指南级 / 临床标准级",
+      "name_en": "Guideline / Clinical Standard Level"
+    },
+    {
+      "type": "evidence_level",
+      "code": "B",
+      "status": "启用",
+      "name": "中等证据",
+      "name_en": "Moderate Evidence"
+    },
+    {
+      "type": "evidence_level",
+      "code": "C",
+      "status": "启用",
+      "name": "初步证据 / 结果混合",
+      "name_en": "Preliminary Evidence / Mixed Results"
+    },
+    {
+      "type": "evidence_level",
+      "code": "D",
+      "status": "启用",
+      "name": "体验型 / 偏好型",
+      "name_en": "Experience / Preference Based"
+    },
+    {
+      "type": "evidence_level",
+      "code": "R",
+      "status": "启用",
+      "name": "研究型 / 设备依赖型",
+      "name_en": "Research / Device Dependent"
+    },
+    {
+      "type": "evidence_level",
+      "code": "X",
+      "status": "启用",
+      "name": "不允许 / 高风险宣称",
+      "name_en": "Not Allowed / High-risk Claim"
+    },
+    {
+      "type": "mechanism",
+      "code": "attention_anchoring",
+      "status": "启用",
+      "name": "注意力锚定",
+      "name_en": "Attention Anchoring"
+    },
+    {
+      "type": "mechanism",
+      "code": "auditory_rhythm_stimulation",
+      "status": "启用",
+      "name": "听觉节律刺激",
+      "name_en": "Auditory Rhythm Stimulation"
+    },
+    {
+      "type": "mechanism",
+      "code": "breathing_pacing",
+      "status": "启用",
+      "name": "呼吸节律引导",
+      "name_en": "Breathing Pacing"
+    },
+    {
+      "type": "mechanism",
+      "code": "cognitive_deactivation",
+      "status": "启用",
+      "name": "减少认知活跃",
+      "name_en": "Cognitive Deactivation"
+    },
+    {
+      "type": "mechanism",
+      "code": "down_regulation",
+      "status": "启用",
+      "name": "降低身心唤醒",
+      "name_en": "Down Regulation"
+    },
+    {
+      "type": "mechanism",
+      "code": "environment_stabilization",
+      "status": "启用",
+      "name": "稳定睡眠声环境",
+      "name_en": "Environment Stabilization"
+    },
+    {
+      "type": "mechanism",
+      "code": "gradual_arousal",
+      "status": "启用",
+      "name": "渐进唤醒",
+      "name_en": "Gradual Arousal"
+    },
+    {
+      "type": "mechanism",
+      "code": "noise_masking",
+      "status": "启用",
+      "name": "声音遮蔽",
+      "name_en": "Noise Masking"
+    },
+    {
+      "type": "mechanism",
+      "code": "sleep_routine_cue",
+      "status": "启用",
+      "name": "睡眠仪式提示",
+      "name_en": "Sleep Routine Cue"
+    },
+    {
+      "type": "mechanism",
+      "code": "sleep_to_wake_transition",
+      "status": "启用",
+      "name": "睡眠到清醒过渡",
+      "name_en": "Sleep to Wake Transition"
+    },
+    {
+      "type": "medical_risk",
+      "code": "auditory_sensitivity_caution",
+      "status": "启用",
+      "name": "听觉敏感用户需谨慎",
+      "name_en": "Auditory Sensitivity Caution"
+    },
+    {
+      "type": "medical_risk",
+      "code": "chronic_insomnia_caution",
+      "status": "启用",
+      "name": "慢性失眠用户需谨慎",
+      "name_en": "Chronic Insomnia Caution"
+    },
+    {
+      "type": "medical_risk",
+      "code": "epilepsy_history_caution",
+      "status": "启用",
+      "name": "癫痫史用户需谨慎",
+      "name_en": "Epilepsy History Caution"
+    },
+    {
+      "type": "medical_risk",
+      "code": "high_startle_risk",
+      "status": "启用",
+      "name": "高惊吓风险",
+      "name_en": "High Startle Risk"
+    },
+    {
+      "type": "medical_risk",
+      "code": "overnight_playback_caution",
+      "status": "启用",
+      "name": "整夜播放需谨慎",
+      "name_en": "Overnight Playback Caution"
+    },
+    {
+      "type": "medical_risk",
+      "code": "rhythm_stimulation_caution",
+      "status": "启用",
+      "name": "节律刺激需谨慎",
+      "name_en": "Rhythm Stimulation Caution"
+    },
+    {
+      "type": "medical_risk",
+      "code": "suspected_sleep_apnea_caution",
+      "status": "启用",
+      "name": "疑似睡眠呼吸暂停需谨慎",
+      "name_en": "Suspected Sleep Apnea Caution"
+    },
+    {
+      "type": "sleep_stage",
+      "code": "1321",
+      "name": "123321",
+      "name_en": "1321",
+      "status": "启用"
+    },
+    {
+      "type": "sleep_stage",
+      "code": "213",
+      "name": "123",
+      "name_en": "213",
+      "status": "启用"
+    },
+    {
+      "type": "sleep_stage",
+      "code": "guard",
+      "status": "启用",
+      "name": "守护",
+      "name_en": "Guard"
+    },
+    {
+      "type": "sleep_stage",
+      "code": "selftest_1784079752423",
+      "name": "自测勿用",
+      "name_en": "SelfTest",
+      "status": "启用"
+    },
+    {
+      "type": "sleep_stage",
+      "code": "soothe",
+      "status": "启用",
+      "name": "入睡",
+      "name_en": "Soothe"
+    },
+    {
+      "type": "sleep_stage",
+      "code": "unwind",
+      "status": "启用",
+      "name": "放松",
+      "name_en": "Unwind"
+    },
+    {
+      "type": "sleep_stage",
+      "code": "wake",
+      "status": "启用",
+      "name": "唤醒",
+      "name_en": "Wake"
+    }
+  ],
   "aliases": {
     "123": "213",
     "123321": "1321",
@@ -18,7 +1221,6 @@
     "animal": "animal",
     "animal_sounds": "animal",
     "appliance_background": "appliance_background",
-    "asmr": "asmr_whisper",
     "asmr_whisper": "asmr_whisper",
     "asmr_whispering": "asmr_whisper",
     "asmr_耳语": "asmr_whisper",
@@ -34,11 +1236,8 @@
     "bedtime_routine_cue": "bedtime_routine_cue",
     "bedtime_routine_cues": "bedtime_routine_cue",
     "bird_calls": "bird_calls",
-    "birdsong": "bird_calls",
     "boat_water": "boat_water",
     "body_scan": "body_scan",
-    "body_scanning": "body_scan",
-    "breathing": "breathing_guidance",
     "breathing_guidance": "breathing_guidance",
     "breathing_pacing": "breathing_pacing",
     "brown_noise": "brown_noise",
@@ -89,7 +1288,6 @@
     "fountain": "fountain",
     "frogs": "frogs",
     "frogs_croaking": "frogs",
-    "g": "guard",
     "gentle_ocean_wave": "gentle_ocean_wave",
     "gentle_voice_wake_up": "wake_voice",
     "gentle_wake_music": "gentle_wake_music",
@@ -107,7 +1305,6 @@
     "high_startle_risk": "high_startle_risk",
     "horses_trotting": "horses_trotting",
     "hot_tub": "hot_tub",
-    "human_voice": "voice",
     "humidifier": "humidifier",
     "humidifier_sound": "humidifier",
     "humming_non_lexical_vocals": "non_lexical_vocal",
@@ -130,7 +1327,6 @@
     "low": "low",
     "low_bpm_instrumental": "low_bpm_instrumental",
     "low_bpm_instrumental_music": "low_bpm_instrumental",
-    "low_bpm_music": "low_bpm_instrumental",
     "low_plot_bedtime_story": "low_plot_sleep_story",
     "low_plot_guided_imagery": "guided_imagery",
     "low_plot_sleep_story": "low_plot_sleep_story",
@@ -163,23 +1359,18 @@
     "none": "none",
     "not_allowed_high_risk_claim": "X",
     "ocean_wave_ambience": "ocean_wave_ambience",
-    "ocean_waves": "gentle_ocean_wave",
     "other": "other",
     "overnight_playback_caution": "overnight_playback_caution",
     "paradoxical_intention": "paradoxical_intention",
-    "piano": "slow_piano",
     "pine_canopy_breeze": "pine_canopy_breeze",
     "pink_noise": "pink_noise",
-    "pmr": "progressive_muscle_relaxation",
     "post_nightmare_breathing_and_reassurance": "nightmare_awakening_guidance",
     "postponement": "postponement",
     "preliminary_evidence_mixed_results": "C",
     "progressive_muscle_relaxation": "progressive_muscle_relaxation",
     "r": "R",
-    "rain": "steady_light_rain",
     "rain_in_different_settings": "scene_rain",
     "rain_on_surfaces": "surface_rain",
-    "rain_sound": "steady_light_rain",
     "rainforest_light_rain": "rainforest_light_rain",
     "rainforest_light_rain_ambience": "rainforest_light_rain",
     "relatively_fast": "relatively_fast",
@@ -188,7 +1379,6 @@
     "rhythm_stimulation_caution": "rhythm_stimulation_caution",
     "room_tone": "room_tone",
     "rooster_chicken_calls": "chicken_calls",
-    "s": "soothe",
     "scene_rain": "scene_rain",
     "selftest": "selftest_1784079752423",
     "selftest_1784079752423": "selftest_1784079752423",
@@ -219,7 +1409,6 @@
     "specific_frequency_healing_style_music": "solfeggio_frequency",
     "speech_rate": "speech_rates",
     "speech_rates": "speech_rates",
-    "spoken_voice": "voice",
     "sprinkler": "sprinkler",
     "startle_risk": "startle_risk",
     "steady_background": "steady_background",
@@ -241,16 +1430,11 @@
     "thunderstorm_strong_storm_ambience": "storm_ambience",
     "trotting_horse_hoofbeats": "horses_trotting",
     "true": "true",
-    "u": "unwind",
     "underwater_ambience": "immersed",
     "unwind": "unwind",
     "vocals": "voice",
     "voice": "voice",
     "voice_guidance": "voice_guidance",
-    "w": "wake",
-    "w_s1": "wake",
-    "w_s2": "wake",
-    "w_s3": "wake",
     "wake": "wake",
     "wake_voice": "wake_voice",
     "walking_footsteps": "footsteps",
@@ -283,10 +1467,8 @@
     "低_bpm_器乐": "low_bpm_instrumental",
     "低情节意象放松": "guided_imagery",
     "体验型_偏好型": "D",
-    "入眠": "soothe",
     "入睡": "soothe",
     "其他": "other",
-    "冥想": "mindfulness_meditation",
     "冥想音乐": "meditative_music",
     "减少认知活跃": "cognitive_deactivation",
     "初步证据_结果混合": "C",
@@ -299,7 +1481,6 @@
     "听觉节律刺激": "auditory_rhythm_stimulation",
     "呼吸引导": "breathing_guidance",
     "呼吸节律引导": "breathing_pacing",
-    "呼吸训练": "breathing_guidance",
     "唤醒": "wake",
     "喷泉声": "fountain",
     "噩梦性呼吸引导": "nightmare_awakening_guidance",
@@ -308,15 +1489,12 @@
     "均匀小雨": "steady_light_rain",
     "声源类型": "sound_source_type",
     "声音遮蔽": "noise_masking",
-    "夜醒": "guard",
     "夜间醒后再入睡引导": "night_awakening_guidance",
     "大雨": "heavy_rain",
     "奶牛": "cows",
     "守护": "guard",
     "室内设备组合底噪": "appliance_background",
-    "小雨声": "steady_light_rain",
     "岸边水波声": "shore_water",
-    "布朗噪音": "brown_noise",
     "平稳海浪": "gentle_ocean_wave",
     "快": "fast",
     "惊跳风险": "startle_risk",
@@ -338,7 +1516,6 @@
     "无": "none",
     "无明确节拍": "no_beat",
     "无歌词轻音乐": "instrumental_light_music",
-    "无歌词音乐": "instrumental_light_music",
     "是否可循环": "loopable",
     "晨间定向语音": "morning_orientation",
     "晨间拉伸引导": "morning_stretch_guidance",
@@ -348,11 +1525,7 @@
     "条件可循环": "conditional",
     "松林树冠风声": "pine_canopy_breeze",
     "极慢": "extremely_slow",
-    "棕噪": "brown_noise",
-    "棕噪声": "brown_noise",
     "棕噪音": "brown_noise",
-    "棕色噪音": "brown_noise",
-    "森林": "forest",
     "森林环境声": "forest",
     "正念冥想": "mindfulness_meditation",
     "正念睡前引导": "mindfulness_sleep",
@@ -365,18 +1538,13 @@
     "洞穴_空间环境声": "cave_ambience",
     "浴缸注水声": "bath_filling",
     "海洋_海浪声": "ocean_wave_ambience",
-    "海浪": "gentle_ocean_wave",
     "海豚": "dolphins",
     "淋浴": "shower",
     "深缓河流": "deep_slow_river",
-    "清醒": "wake",
-    "渐强唤醒音乐": "gentle_wake_music",
     "渐进唤醒": "gradual_arousal",
-    "渐进式肌肉放松": "progressive_muscle_relaxation",
     "渐进性肌肉放松": "progressive_muscle_relaxation",
     "温和唤醒音乐": "gentle_wake_music",
     "温和语音唤醒": "wake_voice",
-    "温和闹铃音乐": "gentle_alarm_music",
     "湖水_轻水波": "lake_water",
     "溪流": "stream",
     "滴水声": "water_dripping",
@@ -389,11 +1557,7 @@
     "环境音乐": "ambient_music",
     "疑似睡眠呼吸暂停需谨慎": "suspected_sleep_apnea_caution",
     "癫痫史用户需谨慎": "epilepsy_history_caution",
-    "白噪": "white_noise",
-    "白噪声": "white_noise",
     "白噪音": "white_noise",
-    "白色噪音": "white_noise",
-    "睡前": "unwind",
     "睡前仪式提示": "bedtime_routine_cue",
     "睡前故事_低情节": "low_plot_sleep_story",
     "睡眠仪式提示": "sleep_routine_cue",
@@ -408,16 +1572,9 @@
     "空调运行声": "air_conditioner",
     "竖琴音乐": "harp_music",
     "篝火_壁炉": "fireplace",
-    "粉噪": "pink_noise",
-    "粉噪声": "pink_noise",
     "粉噪音": "pink_noise",
-    "粉红噪声": "pink_noise",
-    "粉红噪音": "pink_noise",
-    "粉色噪音": "pink_noise",
-    "纯音乐": "instrumental_light_music",
     "羊群行走": "sheep_walking",
     "翻滚的岩浆": "bubbling_magma",
-    "耳语": "asmr_whisper",
     "自律训练": "autogenic_training",
     "自测勿用": "selftest_1784079752423",
     "自然声": "natural_sound",
@@ -429,22 +1586,15 @@
     "蝙蝠": "bats",
     "融雪": "melting_snow",
     "蟋蟀_虫鸣": "crickets_insects",
-    "褐噪音": "brown_noise",
-    "褐色噪音": "brown_noise",
     "规律机械声": "clock_tick",
     "设备送风声": "mechanical_airflow",
     "语义负荷": "semantic_load",
-    "语言引导": "voice_guidance",
     "语速": "speech_rates",
-    "语音": "voice",
     "身体扫描": "body_scan",
     "轻柔弦乐": "soft_strings",
-    "轻音乐": "instrumental_light_music",
     "运河": "canal",
-    "钢琴": "slow_piano",
     "降低身心唤醒": "down_regulation",
     "陪伴式语言引导": "companion_presence_guidance",
-    "雨声": "steady_light_rain",
     "雨林细雨底景": "rainforest_light_rain",
     "雪声_安静雪景": "snow_ambience",
     "雷雨_强风暴声": "storm_ambience",
@@ -452,19 +1602,12 @@
     "非语义人声": "non_lexical_vocal",
     "音乐": "music",
     "颂钵音乐": "singing_bowl",
-    "颜色噪音": "color_noise",
-    "风声": "wind_ambience",
     "马蹄小跑声": "horses_trotting",
     "高": "high",
     "高惊吓风险": "high_startle_risk",
     "鲸鱼": "whale",
-    "鸟叫": "bird_calls",
-    "鸟声": "bird_calls",
     "鸟类叫声": "bird_calls",
-    "鸟鸣": "bird_calls",
     "鸡鸣_鸡群声": "chicken_calls",
-    "鸭子": "ducks",
-    "安静无声": "silence",
-    "雷声": "storm_ambience"
+    "鸭子": "ducks"
   }
 }

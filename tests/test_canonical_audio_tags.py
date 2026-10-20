@@ -10,7 +10,7 @@ from app.schemas.audio import SearchAudioRequest
 
 def test_equivalent_language_tags_share_search_cache_key():
     zh = SearchAudioRequest(
-        sleep_stage_tags=["入睡"], content_tags=["雨声"], disliked_tags=["呼吸引导"], top_k=5
+        sleep_stage_tags=["入睡"], content_tags=["均匀小雨"], disliked_tags=["呼吸引导"], top_k=5
     )
     en = SearchAudioRequest(
         sleep_stage_tags=["soothe"],

@@ -914,7 +914,7 @@ async def test_prescription_search_resolves_codes_and_uses_ranked_search_without
     assert result[0]["id"] == "a1"
     request = retrieval.search.await_args.args[0]
     assert request.sleep_stage_tags == ["unwind"]
-    assert request.content_tags == ["breathing_guidance", "steady_light_rain"]
+    assert request.content_tags == ["breathing_guidance", "rain"]
     assert request.disliked_tags == ["thunder"]
     service._hot.record_search.assert_not_called()
 
