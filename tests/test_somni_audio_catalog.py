@@ -1102,6 +1102,25 @@ async def test_get_audio_same_created_at_keeps_catalog_order() -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_audio_skips_unknown_preference_name() -> None:
+    rain = {**_RAIN, "_id": "rain", "created_at": "2026-01-01T00:00:00Z"}
+    music = {**_MUSIC, "_id": "music", "created_at": "2026-06-01T00:00:00Z"}
+    svc = _service(_mongo_collection([music, rain]))
+
+    payload = await svc.get_audio(
+        page=1,
+        page_size=20,
+        fetch_all=False,
+        query_text="",
+        tag_code="",
+        content_form_codes=["自然声", "颜色噪音"],
+        dislike_text="狗",
+    )
+
+    assert [item["id"] for item in payload["list"]] == ["rain", "music"]
+
+
+@pytest.mark.asyncio
 async def test_get_audio_content_form_name_matches_level1_label() -> None:
     voice = {
         "_id": "voice",
