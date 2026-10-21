@@ -9,6 +9,7 @@ import grpc
 from grpc_reflection.v1alpha import reflection
 from loguru import logger
 
+from app.server.grpc_logging import GrpcAccessLogInterceptor
 from app.server.handboard.audio.rpc import AudioRpc as HandboardAudioRpc
 from app.server.handboard.quiz.rpc import QuizRpc as HandboardQuizRpc
 from app.server.somni.applewatch.rpc import AppleWatchRpc as SomniAppleWatchRpc
@@ -59,7 +60,7 @@ async def stop_grpc_servers(servers: GrpcServers | None, *, grace: float = 5.0) 
 
 
 async def _start_handboard(state: AppState, settings: Settings) -> grpc.aio.Server:
-    server = grpc.aio.server()
+    server = _new_grpc_server()
     uburnode_pb2_grpc.add_AudioServiceServicer_to_server(
         HandboardAudioRpc(getattr(state, "audio_service", None)),
         server,
@@ -73,7 +74,7 @@ async def _start_handboard(state: AppState, settings: Settings) -> grpc.aio.Serv
 
 
 async def _start_somni(state: AppState, settings: Settings) -> grpc.aio.Server:
-    server = grpc.aio.server()
+    server = _new_grpc_server()
     uburnode_somni_pb2_grpc.add_QuizServiceServicer_to_server(
         SomniQuizRpc(getattr(state, "somni_quiz_service", None)),
         server,
@@ -105,6 +106,10 @@ async def _start_somni(state: AppState, settings: Settings) -> grpc.aio.Server:
     _bind(server, bind, "量产")
     await server.start()
     return server
+
+
+def _new_grpc_server() -> grpc.aio.Server:
+    return grpc.aio.server(interceptors=[GrpcAccessLogInterceptor()])
 
 
 def _enable_reflection(server: grpc.aio.Server, proto_module) -> None:

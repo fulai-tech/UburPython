@@ -299,8 +299,9 @@ uv run python scripts/sync_es_from_somni.py --dry-run
 | `LOG_DIR` | `logs` | 日志目录（部署时挂载到宿主机项目 `logs/`） |
 | `LOG_RETENTION` | `7 days` | 历史按日日志保留时长 |
 
-文件命名为 `YYYY-MM-DD_ubur_log`（如 `2026-07-15_ubur_log`），每天一个明文文件，零点滚动。  
-响应头回传 `X-Request-Id` 便于链路追踪。
+公共日志命名为 `YYYY-MM-DD_ubur_log`（HTTP、启动、ES 等），每天一个明文文件，零点滚动。  
+gRPC 按服务再拆成 `logs/{handboard|somni}/{服务}/YYYY-MM-DD_controller`（控制层）和 `_service`（服务层）。  
+响应头回传 `X-Request-Id` 便于链路追踪；gRPC 读取 metadata `x-request-id`，没有则自行生成。
 
 ## Docker 部署
 

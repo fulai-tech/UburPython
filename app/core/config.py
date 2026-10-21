@@ -117,7 +117,7 @@ class Settings(BaseSettings):
 
     log_level: str = "INFO"
     log_dir: str = "logs"
-    # 按日命名 YYYY-MM-DD_ubur_log；超大小则同日再开新文件，见 app.core.logging
+    # 公共日志 YYYY-MM-DD_ubur_log；gRPC 另见 logs/{handboard|somni}/{服务}/日期_controller|_service
     log_rotation_size: str = "100 MB"
     log_retention: str = "7 days"
 
