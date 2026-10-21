@@ -5,9 +5,13 @@ from loguru import logger
 
 from app.core.config import Settings
 from app.core.logging import (
+    LAYER_CONTROLLER,
+    LAYER_SERVICE,
     LOG_FILE_SUFFIX,
     current_log_path,
+    discover_rpc_services,
     parse_log_size,
+    service_log_path,
     setup_logging,
 )
 
@@ -79,3 +83,43 @@ def test_size_rotation_archives_full_file_and_continues_same_day(
     assert active.exists()
     assert active.name == day_prefix
     assert "size-rotation-probe" in active.read_text(encoding="utf-8")
+
+
+def test_discover_rpc_services_skips_mapper_only_packages() -> None:
+    found = set(discover_rpc_services())
+    assert ("somni", "audio") in found
+    assert ("somni", "facts") in found
+    assert ("somni", "applewatch") in found
+    assert ("handboard", "audio") in found
+    assert ("somni", "weather") not in found
+
+
+def test_service_and_controller_logs_go_to_separate_files(tmp_path: Path) -> None:
+    settings = Settings(log_dir=str(tmp_path), log_level="INFO")
+    common = setup_logging(settings)
+    service_logger = logger.patch(
+        lambda record: record.update(name="app.server.somni.audio.catalog")
+    )
+    controller_logger = logger.bind(
+        log_product="somni",
+        log_service="audio",
+        log_layer=LAYER_CONTROLLER,
+    )
+    service_logger.warning("目录服务探测")
+    controller_logger.info("控制层探测")
+    logger.info("公共日志探测")
+    logger.complete()
+
+    service_file = service_log_path(tmp_path, "somni", "audio", LAYER_SERVICE)
+    controller_file = service_log_path(tmp_path, "somni", "audio", LAYER_CONTROLLER)
+    service_text = service_file.read_text(encoding="utf-8")
+    controller_text = controller_file.read_text(encoding="utf-8")
+    common_text = common.read_text(encoding="utf-8")
+
+    assert "目录服务探测" in service_text
+    assert "控制层探测" not in service_text
+    assert "控制层探测" in controller_text
+    assert "目录服务探测" not in controller_text
+    assert "公共日志探测" in common_text
+    assert "目录服务探测" not in common_text
+    assert "控制层探测" not in common_text

@@ -34,7 +34,7 @@ services:
       # HTTP 仍经 nginx :8001
     volumes:
       - hf_cache:/data/huggingface
-      - ./logs:/app/logs  # 宿主机可直接看项目目录 logs/YYYY-MM-DD_ubur_log
+      - ./logs:/app/logs  # 公共日志与 logs/{handboard|somni}/{服务}/ 分层日志
     deploy:
       resources:
         limits:
