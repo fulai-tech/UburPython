@@ -787,8 +787,19 @@ def _is_root_content_form_dict(tag: dict[str, Any]) -> bool:
 
 
 def _normalize_content_form_codes(codes: list[str] | None) -> set[str]:
-    """问卷旧展示别名及新 code 使用同一英文标签身份。"""
-    return {normalize_tag_code(str(code)) for code in (codes or []) if str(code).strip()}
+    """问卷展示名或 code 能对上词典就留下。对不上的跳过，不让整次列表失败。"""
+    resolved: set[str] = set()
+    for code in codes or []:
+        text = str(code).strip()
+        if not text:
+            continue
+        try:
+            canonical = normalize_tag_code(text)
+        except ValueError:
+            continue
+        if canonical:
+            resolved.add(canonical)
+    return resolved
 
 
 def _created_stamp(value: Any) -> str:
