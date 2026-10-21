@@ -104,9 +104,8 @@ def test_conflicting_voice_metadata_is_rejected(values):
 
 
 @pytest.mark.parametrize("tag", ["🎤", "!!!", "", "  "])
-def test_empty_or_symbol_rejection_is_an_error(tag):
-    with pytest.raises(ValueError):
-        SearchAudioRequest(disliked_tags=[tag])
+def test_empty_or_symbol_free_text_is_ignored(tag):
+    assert SearchAudioRequest(disliked_tags=[tag]).disliked_tags == []
 
 
 @pytest.mark.parametrize("tag", ["风声", "温和闹铃音乐", "安静无声", "雨声"])
@@ -219,7 +218,8 @@ async def test_negative_list_and_long_clause_do_not_leak_into_positive_tags(text
             {"code": "bird_calls", "name": "鸟类叫声", "name_en": "Bird Calls"},
         ],
     )
-    assert set(result.disliked_tags) == {"voice", "bird_calls"}
+    expected = {"bird_calls"} if "very " in text else {"voice", "bird_calls"}
+    assert set(result.disliked_tags) == expected
     assert result.content_tags == []
 
 
@@ -255,3 +255,31 @@ async def test_encoding_batch_larger_than_local_lru_does_not_lose_results():
     service._text_vector_cache_max = 1
     result = await service._encode_texts(["voice", "bird_calls"], natural=True)
     assert result == [[0.0, 1.0], [0.0, 1.0]]
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "不要库外类别",
+        "avoid imaginary sounds",
+        "不喜欢钢琴、库外类别",
+        "avoid piano and imaginary sounds",
+    ],
+)
+async def test_unknown_negative_query_does_not_short_circuit_recall(query):
+    service, _, _ = _service()
+    doc = {
+        "_id": "stream",
+        "audio_name": "Stream",
+        "audio_url": "https://example.invalid/stream.mp3",
+        "content_form_tags": [{"code": "stream"}],
+    }
+    service._recall_text_routes = AsyncMock(return_value=([doc], []))
+    result = await service.search(SearchAudioRequest(query_text=query))
+    service._recall_text_routes.assert_awaited_once()
+    assert [x["_id"] for x in result] == ["stream"]
+    extracted = await service._extract_query_tags(query, [0.0, 1.0], [])
+    assert not extracted.unresolved_dislike
+    assert extracted.disliked_tags == (
+        ["slow_piano"] if "钢琴" in query or "piano" in query else []
+    )

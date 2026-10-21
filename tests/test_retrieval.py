@@ -889,7 +889,7 @@ async def test_text_query_recall_preserves_original_exception() -> None:
 
 
 @pytest.mark.asyncio
-async def test_unresolved_query_exclusion_does_not_retrieve_approximate_materials() -> None:
+async def test_unresolved_query_exclusion_is_ignored_while_positive_recall_continues() -> None:
     unit_rain = _unit(0)
     unit_noise = _unit(1)
     service, es_search, encoder = _build_service(
@@ -927,13 +927,13 @@ async def test_unresolved_query_exclusion_does_not_retrieve_approximate_material
 
     results = await service.search(request)
 
-    assert results == []
+    assert [item["_id"] for item in results] == ["keep"]
     merged_calls = [call.args[0] for call in encoder.encode.await_args_list]
     assert ["睡前轻柔雨声，不要嘈杂"] in merged_calls
     assert ["嘈杂"] not in merged_calls
     assert ["睡前轻柔雨声，"] in merged_calls
-    es_search.get_dictionary_vectors.assert_not_awaited()
-    es_search.list_all_audio_candidates.assert_not_awaited()
+    es_search.get_dictionary_vectors.assert_awaited()
+    es_search.list_all_audio_candidates.assert_awaited_once()
 
 
 @pytest.mark.parametrize(

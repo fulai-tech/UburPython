@@ -169,10 +169,8 @@ def is_no_dislike_answer(value: Any) -> bool:
 
 
 def canonical_disliked_tags(values: Sequence[Any], *, strict: bool = True) -> list[str]:
-    """Normalize real exclusions without turning a no-dislike answer into a tag."""
+    """Return reviewed exclusions; unmatched free text never disables retrieval."""
     resolved = resolve_audio_preferences(disliked=values)
-    if strict and resolved["unresolved_disliked"]:
-        raise ValueError("unresolved_audio_dislike: sound must be disabled")
     return resolved["disliked_codes"]
 
 
@@ -192,7 +190,7 @@ def audio_tag_contract_version() -> str:
     """Bind caches and preference evidence to the exact dictionary and mapping."""
     import hashlib
 
-    payload = {"dictionary": dictionary_records(), "rules": _preference_rules(), "resolver": 1}
+    payload = {"dictionary": dictionary_records(), "rules": _preference_rules(), "resolver": 2}
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()
     ).hexdigest()
@@ -245,28 +243,33 @@ def _descendant_codes(codes: Sequence[str]) -> list[str]:
 
 def _preference_term_codes(value: str, *, dislike: bool) -> list[str]:
     text = unicodedata.normalize("NFKC", value).strip()
-    # Strip only an anchored preference clause; unmatched prose remains unresolved.
-    text = re.sub(
-        r"^(?:(?:我)?(?:不喜欢|讨厌|不要|避免)|(?:i\s+)?(?:dislike|hate|avoid|without|no)\s+)\s*",
+    # Match reviewed whole terms, optionally with a conventional negative prefix.
+    text, negative_prefix_count = re.subn(
+        r"^(?:(?:我)?(?:(?:不喜欢|讨厌|不爱)(?:听)?|不想听|不想要|不要(?:放|听)?|避免|排除|拒绝|别放|别)|"
+        r"(?:i\s+)?(?:do\s+not\s+like|don['’]t\s+like|do\s+not\s+want|don['’]t\s+want|"
+        r"dislike|hate|avoid|exclude|without|no|not)\s+)\s*",
         "",
         text,
         flags=re.IGNORECASE,
     )
-    for group in _preference_rules()["groups"]:
-        if _key(text) in {_key(alias) for alias in group["aliases"]}:
-            return list(group["codes"])
+    if negative_prefix_count and not dislike:
+        return []
     try:
         return validated_audio_tags(
             [text], allowed_types=_PREFERENCE_TYPES if dislike else _CONTENT_TYPES
         )
     except ValueError:
-        return []
+        pass
+    for group in _preference_rules()["groups"]:
+        if _key(text) in {_key(alias) for alias in group["aliases"]}:
+            return list(group["codes"])
+    return []
 
 
 def resolve_audio_preferences(
     *, preferred: Sequence[Any] = (), disliked: Sequence[Any] = (), blocked: Sequence[Any] = ()
 ) -> dict[str, Any]:
-    """Resolve user language once; an unresolved explicit exclusion closes sound."""
+    """Resolve reviewed terms; unknown free text is diagnostic only, never a silence choice."""
     rules = _preference_rules()
     result: dict[str, Any] = {
         "preferred_codes": [],
@@ -276,7 +279,11 @@ def resolve_audio_preferences(
         "sound_disabled": False,
         "version": audio_tag_contract_version(),
     }
-    for dislike, values in ((False, preferred), (True, [*disliked, *blocked])):
+    # Programmatic safety constraints remain strict; only free text may be ignored.
+    result["disliked_codes"].extend(
+        _descendant_codes(validated_audio_tags(blocked, allowed_types=_PREFERENCE_TYPES))
+    )
+    for dislike, values in ((False, preferred), (True, disliked)):
         for value in values:
             if not isinstance(value, str) or not value.strip():
                 result["unresolved_disliked" if dislike else "unresolved_preferred"].append(
@@ -290,9 +297,27 @@ def resolve_audio_preferences(
                 continue
             if not dislike and _key(value) in {_key(x) for x in rules["no_preference_answers"]}:
                 continue
-            parts = re.split(r"[,，、;；]|\s+and\s+|和|以及", value, flags=re.IGNORECASE)
+            # Resolve the complete label first (e.g. ASMR/耳语) before splitting lists.
+            whole_codes = _preference_term_codes(value, dislike=dislike)
+            if whole_codes:
+                result["disliked_codes" if dislike else "preferred_codes"].extend(
+                    _descendant_codes(whole_codes)
+                )
+                continue
+            parts = re.split(
+                r"[,，、;；/\n&]|\s+and\s+|和|以及|与",
+                unicodedata.normalize("NFKC", value),
+                flags=re.IGNORECASE,
+            )
             for part in parts:
                 if not part.strip():
+                    continue
+                if dislike and is_no_dislike_answer(part.strip()):
+                    continue
+                if not dislike and _key(part) in {_key(x) for x in rules["silence_answers"]}:
+                    result["sound_disabled"] = True
+                    continue
+                if not dislike and _key(part) in {_key(x) for x in rules["no_preference_answers"]}:
                     continue
                 codes = _preference_term_codes(part, dislike=dislike)
                 key = "disliked_codes" if dislike else "preferred_codes"
@@ -307,15 +332,12 @@ def resolve_audio_preferences(
     result["preferred_codes"] = sorted(
         set(result["preferred_codes"]) - set(result["disliked_codes"])
     )
-    result["sound_disabled"] = result["sound_disabled"] or bool(result["unresolved_disliked"])
     return result
 
 
 def preference_audio_tags(values: Sequence[Any], *, dislike: bool = False) -> list[str]:
-    """Translate a legacy preference list without guessing unrecognized constraints."""
+    """Translate reviewed legacy terms, leaving unknown free text out of machine tags."""
     resolved = resolve_audio_preferences(**{"disliked" if dislike else "preferred": values})
-    if dislike and resolved["unresolved_disliked"]:
-        raise ValueError("unresolved_audio_dislike: sound must be disabled")
     return resolved["disliked_codes" if dislike else "preferred_codes"]
 
 
