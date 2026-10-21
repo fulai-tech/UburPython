@@ -343,9 +343,6 @@ class RetrievalService:
         query_vector = await self._encode_one(query_text)
         tag_vectors = await self._tag_dictionary()
         extracted = await self._extract_query_tags(query_text, query_vector, tag_vectors)
-        if extracted.unresolved_dislike:
-            logger.warning("Audio query exclusion is unresolved; candidate retrieval skipped")
-            return []
         explicit_content_tags = _normalize_color_noise_aliases(request.content_tags)
         content_tags = _unique_preserve_order([*explicit_content_tags, *extracted.content_tags])
         content_tags = _remove_mutually_exclusive_expansions(
@@ -1074,11 +1071,8 @@ class RetrievalService:
         exact_disliked_tags = _unique_preserve_order(
             [tag for tags in exact_by_fragment for tag in tags]
         )
-        disliked_tags = (
-            negative_resolution["disliked_codes"]
-            if not negative_resolution["unresolved_disliked"]
-            else list(exact_disliked_tags)
-        )
+        # Unknown prose is ignored; only reviewed dictionary/near-synonym matches exclude.
+        disliked_tags = list(negative_resolution["disliked_codes"])
         if fragment_vectors:
             for row in range(1, len(fragment_vectors) + 1):
                 disliked_tags.extend(
@@ -1102,7 +1096,7 @@ class RetrievalService:
                 tag for tag in _unique_preserve_order(content_tags) if tag not in disliked_tags
             ][:AUTO_TAG_TOP_K],
             disliked_tags=_usable_dislike_tags(_unique_preserve_order(disliked_tags)),
-            unresolved_dislike=bool(negative_resolution["unresolved_disliked"]),
+            unresolved_dislike=False,
         )
 
     def _dislike_penalty(

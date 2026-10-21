@@ -395,7 +395,7 @@ python scripts/somni_preference_fixture_import.py /path/to/fixture_package --rem
 `GetAudio.tag_code`、问卷 `content_form_codes` 和热点标签记账也使用相同英文 code；已审计中英文别名先归一，再按素材 code 匹配。展示名称改变不改变选中分类，同 code 的多条素材仍按原排序规则排列。自由输入 preference_text/dislike_text 继续作为自然语言处理。
 
 
-别名来源与偏好映射分开维护：aliases仅由真实词典字段派生；rain等广义偏好按下文规则映射为多个现有code，不缩窄成单一小雨标签；piano不自动缩窄成slow_piano。当前字典已重新从Mongo只读导出，168条运行时记录加2条显式隔离测试记录，均有来源证据。U/S/G/W-S*仍是独立阶段协议别名。具体更新与跨仓校验方式见下文“检索前的音频标签对齐”。
+别名来源与偏好映射分开维护：aliases仅由真实词典字段派生；rain等广义偏好按下文规则映射为多个现有code，不缩窄成单一小雨标签；2026-10-21按产品确认，piano/钢琴作为自由文本近义词对齐库内slow_piano，不改变正式词典code身份。当前字典已重新从Mongo只读导出，168条运行时记录加2条显式隔离测试记录，均有来源证据。U/S/G/W-S*仍是独立阶段协议别名。具体更新与跨仓校验方式见下文“检索前的音频标签对齐”。
 
 拒绝条件支持中文和英文子句，例如 不要人声 / no voice / without vocals / do not include voice。明确拒绝片段从正向扩展文本中移除，精确拒绝不参与模糊扩展且不受自动 TOP_K=5 截断。向量服务不可用时退回精确准入和硬拒绝；无向量的精确路径无需编码器。自然句与标签向量缓存分开。重复/冲突/缺失的 voice.value.code 不能证明无人声，仅唯一 none 可通过；显式空白/符号拒绝项返回参数错误。颜色噪音内部标签和拒绝标签统一为英文 code。
 
@@ -409,6 +409,15 @@ python scripts/somni_preference_fixture_import.py /path/to/fixture_package --rem
 
 `somni_audio_tag_dictionary`是合法code来源。`app/core/audio_tag_aliases.json`保留type/id/parent/status；170条源记录中纯数字测试阶段213/1321显式隔离，168条用于运行时。字典本身的别名只从code/name/name_en派生；`audio_preference_rules.json`独立维护审核的日常表达与广义集合，目标必须存在且启用。雨声/rain sounds覆盖现有雨类及含雷雨的storm_ambience，后者保守额外排除强风暴；不排除整个natural_sound。父级内容标签展开为启用后代，喜欢为OR，厌恶命中任一即排除。无厌恶答复与工程none值分开；不明确工程维度的重复取值不作声音类别。
 
-SearchPrescriptionAudio及SearchAudioRequest在检索前完成兼容归一化和存在/类型校验，英文格式不是合法性证明。未知明确厌恶报错，query中未解析否定返回空候选；不以向量猜测硬禁忌。标准标签决定硬排除；向量只作软惩罚和召回/排序。Mongo刷新素材后再次检查厌恶与人声value，不能因ES/缓存旧标签绕过。query继续使用中文原文，不翻译已有embedding。结果缓存audio_search_v5+，标签排序去重并绑定字典/映射摘要；阶段索引及标签向量缓存绑定相同摘要。更改配置后需同步产物和重启，不支持请求中隐式热更新。
+SearchPrescriptionAudio及SearchAudioRequest在检索前完成兼容归一化和存在/类型校验，英文格式不是合法性证明。2026-10-21起，未知自由文本厌恶忽略，query中未解析否定不阻断召回，已识别排除继续保留；不以向量猜测硬禁忌。标准标签决定硬排除；向量只作软惩罚和召回/排序。Mongo刷新素材后再次检查厌恶与人声value，不能因ES/缓存旧标签绕过。query继续使用中文原文，不翻译已有embedding。结果缓存audio_search_v5+，标签排序去重并绑定字典/映射摘要；阶段索引及标签向量缓存绑定相同摘要。更改配置后需同步产物和重启，不支持请求中隐式热更新。
 
 维护源为本仓解析器和配置，使用 `PYTHONPATH=. python scripts/export_audio_tag_contract.py --mirror-root <DeepHealth根目录>` 校验共享产物；`--write`同步配置与解析器；`--refresh --write --env-file <operator profile>`从Mongo只读重导出。工具不写数据库、不重建embedding，输出不含连接凭据。原GetAudioTag仍返回顶层类别，未改变Proto或DB schema。部署前需对两个仓库配套验证。
+
+
+### 声音自由文本偏好（2026-10-21）
+
+`content_tags` / `disliked_tags` 作为兼容自然语言偏好字段，在检索前按 `app/core/audio_preference_rules.json` 的审核中英文近义词映射到真实词典英文 code。例如钢琴/piano→slow_piano、鸟叫→bird_calls/dawn_chorus、海浪→ocean_wave_ambience/gentle_ocean_wave。正式词典code/name优先，不被口语分组扩大；原始词典导出aliases不改造为人工近义词表。
+
+未命中的自由文本（如库内无类别的吉他、摇滚）忽略，已识别的排除保持生效；query中的未识别否定不再让检索直接返回空候选。不做任意子串或向量猜测硬排除。明确静音控制和人声/其他安全约束仍有效；`content_tag_codes`、`sleep_stage_tags` 等机器字段继续严格验证。列表支持常规标点、换行、and/和等，整词先于切分，避免破坏ASMR/耳语。
+
+自然语言embedding query保持原文；所有结构化标签、缓存身份和阶段索引仍用英文code。规则与resolver版本参与缓存契约摘要，新旧缓存自动隔离；必须同步DeepHealth中的偏好规则。此变更不修改素材embedding或数据库词典。

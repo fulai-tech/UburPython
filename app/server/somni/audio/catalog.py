@@ -621,7 +621,7 @@ _AUDIO_LIST_PROJECTION = {
 
 def _prescription_content_tags(values: list[str]) -> list[str]:
     resolved = resolve_audio_preferences(preferred=values)
-    if resolved["unresolved_preferred"] or resolved["sound_disabled"]:
+    if resolved["sound_disabled"]:
         raise ValueError("unresolved_audio_preference")
     return resolved["preferred_codes"]
 

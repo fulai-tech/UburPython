@@ -206,7 +206,7 @@ class SearchAudioRequest(BaseModel):
             return canonical_disliked_tags(values)
         if info.field_name == "content_tags":
             resolved = resolve_audio_preferences(preferred=values)
-            if resolved["unresolved_preferred"] or resolved["sound_disabled"]:
+            if resolved["sound_disabled"]:
                 raise ValueError("unresolved_audio_preference")
             return resolved["preferred_codes"]
         allowed = (

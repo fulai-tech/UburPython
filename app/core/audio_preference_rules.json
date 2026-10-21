@@ -1,5 +1,5 @@
 {
-  "version": "audio_preference_rules_v1",
+  "version": "audio_preference_rules_v2",
   "groups": [
     {
       "aliases": [
@@ -8,7 +8,11 @@
         "rain",
         "rain sounds",
         "rain sound",
-        "rainfall"
+        "rainfall",
+        "下雨声",
+        "下雨的声音",
+        "下雨声音",
+        "rain noise"
       ],
       "codes": [
         "steady_light_rain",
@@ -43,6 +47,463 @@
       ],
       "codes": [
         "color_noise"
+      ]
+    },
+    {
+      "aliases": [
+        "钢琴",
+        "钢琴声",
+        "钢琴曲",
+        "钢琴音乐",
+        "piano",
+        "piano sound",
+        "piano sounds",
+        "piano music",
+        "钢琴的声音",
+        "钢琴声音"
+      ],
+      "codes": [
+        "slow_piano"
+      ]
+    },
+    {
+      "aliases": [
+        "竖琴",
+        "竖琴声",
+        "harp",
+        "harp sounds"
+      ],
+      "codes": [
+        "harp_music"
+      ]
+    },
+    {
+      "aliases": [
+        "手碟",
+        "手碟声",
+        "handpan",
+        "handpan sounds"
+      ],
+      "codes": [
+        "handpan_music"
+      ]
+    },
+    {
+      "aliases": [
+        "颂钵",
+        "颂钵声",
+        "singing bowl",
+        "singing bowls"
+      ],
+      "codes": [
+        "singing_bowl"
+      ]
+    },
+    {
+      "aliases": [
+        "弦乐",
+        "弦乐声",
+        "strings",
+        "string music"
+      ],
+      "codes": [
+        "soft_strings"
+      ]
+    },
+    {
+      "aliases": [
+        "鸟叫",
+        "鸟声",
+        "鸟鸣声",
+        "bird calls",
+        "birds chirping",
+        "bird chirping"
+      ],
+      "codes": [
+        "bird_calls",
+        "dawn_chorus"
+      ]
+    },
+    {
+      "aliases": [
+        "海浪",
+        "海浪声",
+        "海水声",
+        "ocean waves",
+        "sea waves",
+        "wave sounds"
+      ],
+      "codes": [
+        "ocean_wave_ambience",
+        "gentle_ocean_wave"
+      ]
+    },
+    {
+      "aliases": [
+        "溪水",
+        "溪水声",
+        "流水",
+        "流水声",
+        "小溪",
+        "小溪声",
+        "stream sounds",
+        "running stream",
+        "babbling brook"
+      ],
+      "codes": [
+        "stream"
+      ]
+    },
+    {
+      "aliases": [
+        "风",
+        "风声",
+        "wind sounds"
+      ],
+      "codes": [
+        "wind_ambience"
+      ]
+    },
+    {
+      "aliases": [
+        "虫鸣",
+        "虫声",
+        "虫叫",
+        "insects",
+        "insect sounds"
+      ],
+      "codes": [
+        "insect_calls",
+        "crickets_insects"
+      ]
+    },
+    {
+      "aliases": [
+        "蟋蟀",
+        "蟋蟀声",
+        "crickets",
+        "cricket sounds"
+      ],
+      "codes": [
+        "crickets_insects"
+      ]
+    },
+    {
+      "aliases": [
+        "蛙鸣",
+        "蛙声",
+        "青蛙叫",
+        "frogs",
+        "frog sounds"
+      ],
+      "codes": [
+        "frogs"
+      ]
+    },
+    {
+      "aliases": [
+        "猫咪呼噜",
+        "猫呼噜",
+        "猫咪呼噜声",
+        "cat purr",
+        "purring"
+      ],
+      "codes": [
+        "cat_purring"
+      ]
+    },
+    {
+      "aliases": [
+        "火焰声",
+        "篝火声",
+        "壁炉声",
+        "fire sounds",
+        "campfire",
+        "fire crackling"
+      ],
+      "codes": [
+        "fireplace"
+      ]
+    },
+    {
+      "aliases": [
+        "森林",
+        "森林声",
+        "forest sounds"
+      ],
+      "codes": [
+        "forest"
+      ]
+    },
+    {
+      "aliases": [
+        "瀑布",
+        "瀑布声",
+        "waterfall sounds"
+      ],
+      "codes": [
+        "waterfall"
+      ]
+    },
+    {
+      "aliases": [
+        "滴水",
+        "滴水声",
+        "water drops",
+        "dripping water"
+      ],
+      "codes": [
+        "water_dripping"
+      ]
+    },
+    {
+      "aliases": [
+        "喷泉",
+        "喷泉声",
+        "fountain sounds"
+      ],
+      "codes": [
+        "fountain"
+      ]
+    },
+    {
+      "aliases": [
+        "白噪",
+        "白噪声",
+        "白色噪音",
+        "白色噪声",
+        "white noise sounds"
+      ],
+      "codes": [
+        "white_noise"
+      ]
+    },
+    {
+      "aliases": [
+        "粉噪",
+        "粉噪声",
+        "粉红噪音",
+        "粉红噪声",
+        "粉色噪音",
+        "粉色噪声"
+      ],
+      "codes": [
+        "pink_noise"
+      ]
+    },
+    {
+      "aliases": [
+        "棕噪",
+        "棕噪声",
+        "棕色噪音",
+        "棕色噪声",
+        "褐噪音",
+        "褐噪声",
+        "褐色噪音",
+        "布朗噪音"
+      ],
+      "codes": [
+        "brown_noise"
+      ]
+    },
+    {
+      "aliases": [
+        "风扇",
+        "风扇声",
+        "电扇声",
+        "fan",
+        "fan noise",
+        "fan sounds"
+      ],
+      "codes": [
+        "mechanical_airflow"
+      ]
+    },
+    {
+      "aliases": [
+        "空调",
+        "空调声",
+        "air conditioner",
+        "air conditioning"
+      ],
+      "codes": [
+        "air_conditioner"
+      ]
+    },
+    {
+      "aliases": [
+        "加湿器",
+        "加湿器声音",
+        "humidifier",
+        "humidifier noise"
+      ],
+      "codes": [
+        "humidifier"
+      ]
+    },
+    {
+      "aliases": [
+        "钟表声",
+        "时钟声",
+        "滴答声",
+        "clock",
+        "clock ticking"
+      ],
+      "codes": [
+        "clock_tick"
+      ]
+    },
+    {
+      "aliases": [
+        "洗碗机声",
+        "dishwasher sounds"
+      ],
+      "codes": [
+        "dishwasher"
+      ]
+    },
+    {
+      "aliases": [
+        "背景音乐",
+        "氛围音乐",
+        "ambient"
+      ],
+      "codes": [
+        "ambient_music"
+      ]
+    },
+    {
+      "aliases": [
+        "轻音乐",
+        "纯音乐",
+        "没有歌词的音乐",
+        "instrumental music",
+        "instrumental",
+        "music without lyrics"
+      ],
+      "codes": [
+        "instrumental_light_music"
+      ]
+    },
+    {
+      "aliases": [
+        "摇篮曲",
+        "lullaby",
+        "lullabies"
+      ],
+      "codes": [
+        "lullaby_style"
+      ]
+    },
+    {
+      "aliases": [
+        "有人唱歌",
+        "带歌词的歌",
+        "唱歌",
+        "songs with vocals",
+        "songs with lyrics"
+      ],
+      "codes": [
+        "lyrical_song"
+      ]
+    },
+    {
+      "aliases": [
+        "哼唱",
+        "humming"
+      ],
+      "codes": [
+        "non_lexical_vocal"
+      ]
+    },
+    {
+      "aliases": [
+        "耳语",
+        "低语",
+        "whisper",
+        "whispering",
+        "asmr"
+      ],
+      "codes": [
+        "asmr_whisper"
+      ]
+    },
+    {
+      "aliases": [
+        "人声指导",
+        "语音引导",
+        "guided voice",
+        "spoken guidance"
+      ],
+      "codes": [
+        "voice_guidance"
+      ]
+    },
+    {
+      "aliases": [
+        "睡前故事",
+        "故事",
+        "助眠故事",
+        "bedtime story",
+        "sleep story",
+        "stories"
+      ],
+      "codes": [
+        "low_plot_sleep_story"
+      ]
+    },
+    {
+      "aliases": [
+        "呼吸练习",
+        "呼吸训练",
+        "breathing exercise",
+        "breathing exercises"
+      ],
+      "codes": [
+        "breathing_guidance",
+        "breathing_pacing"
+      ]
+    },
+    {
+      "aliases": [
+        "正念",
+        "mindfulness"
+      ],
+      "codes": [
+        "mindfulness_meditation",
+        "mindfulness_sleep"
+      ]
+    },
+    {
+      "aliases": [
+        "肌肉放松",
+        "渐进肌肉放松",
+        "pmr",
+        "muscle relaxation"
+      ],
+      "codes": [
+        "progressive_muscle_relaxation"
+      ]
+    },
+    {
+      "aliases": [
+        "身体扫描引导",
+        "body scanning"
+      ],
+      "codes": [
+        "body_scan"
+      ]
+    },
+    {
+      "aliases": [
+        "自然音",
+        "大自然声音",
+        "nature",
+        "nature sounds",
+        "natural sounds"
+      ],
+      "codes": [
+        "natural_sound"
       ]
     }
   ],

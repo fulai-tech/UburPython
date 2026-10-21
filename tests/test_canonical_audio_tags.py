@@ -46,9 +46,10 @@ def test_stage_filter_queries_existing_nested_code_field():
     }
 
 
-def test_unknown_chinese_tag_is_validation_error():
+def test_unknown_free_text_is_ignored_but_machine_codes_stay_strict():
+    assert SearchAudioRequest(disliked_tags=["未审核的新标签"]).disliked_tags == []
     with pytest.raises(ValueError):
-        SearchAudioRequest(disliked_tags=["未审核的新标签"])
+        SearchAudioRequest(content_tag_codes=["未审核的新标签"])
 
 
 @pytest.mark.parametrize("values", ["rain", None, False, 1, [True], [{"name": "rain"}]])
@@ -77,15 +78,19 @@ def test_voice_engineering_filter_uses_dictionary_voice_code(code):
 
 
 @pytest.mark.asyncio
-async def test_unknown_chinese_rpc_tag_is_invalid_argument_not_ignored():
-    from unittest.mock import MagicMock
+async def test_unknown_rpc_dislike_is_ignored_before_retrieval():
+    from unittest.mock import AsyncMock
 
     from app.core.config import Settings
-    from app.server.somni.audio.catalog import AudioCatalogService, InvalidAudioQueryError
+    from app.server.somni.audio.catalog import AudioCatalogService
 
-    service = AudioCatalogService(None, Settings(), retrieval=MagicMock())
-    with pytest.raises(InvalidAudioQueryError):
-        await service.search_prescription_audio({"disliked_tags": ["未审核的新标签"]})
+    retrieval = AsyncMock()
+    retrieval.search.return_value = []
+    service = AudioCatalogService(None, Settings(), retrieval=retrieval)
+    assert (
+        await service.search_prescription_audio({"disliked_tags": ["未审核的新标签", "钢琴"]}) == []
+    )
+    assert retrieval.search.await_args.args[0].disliked_tags == ["slow_piano"]
 
 
 def test_english_alias_does_not_match_inside_another_word():
