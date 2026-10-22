@@ -157,7 +157,8 @@ async def test_activity_uses_own_date_and_owner() -> None:
     query, projection = collection.find.call_args.args
     assert query["user_id"] == "synthetic"
     assert "activity_date" in query and "record_date" not in query
-    assert "activity" in projection
+    assert "activity.windows.calendar_day.steps" in projection
+    assert "activity" not in projection
 
 
 async def test_daily_sleep_reports_are_user_date_and_cutoff_scoped() -> None:
@@ -178,7 +179,10 @@ async def test_daily_sleep_reports_are_user_date_and_cutoff_scoped() -> None:
         "reports_id",
         "record_date",
         "language",
-        "overnight_vitals",
+        "overnight_vitals.hr.value",
+        "overnight_vitals.br.value",
+        "revision",
+        "content_hash",
         "received_at",
         "create_time",
         "update_time",

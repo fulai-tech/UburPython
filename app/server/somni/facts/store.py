@@ -513,9 +513,20 @@ class FactsStore:
         )
         radar = await self._read(
             "records",
-            self._visible({"uid": uid, "record_date": dates}, read_at),
+            self._visible(
+                {
+                    "uid": uid,
+                    "record_date": dates,
+                    "raw_data.bed_time": {"$exists": True},
+                    "raw_data.wake_up_time": {"$exists": True},
+                },
+                read_at,
+            ),
             "episode_id source revision record_date timezone_offset main_sleep "
-            "selection_policy_version raw_data quality received_at metric_windows",
+            "selection_policy_version quality received_at "
+            "raw_data.bed_time raw_data.wake_time raw_data.wake_up_time "
+            "raw_data.awake_ratio raw_data.rem_ratio raw_data.light_sleep_ratio "
+            "raw_data.deep_sleep_ratio raw_data.sleep_latency raw_data.sleep_efficiency",
             missing_reasons=missing_reasons,
         )
         return [{**row, "source_type": "wearable_daily"} for row in wearable] + [
@@ -526,9 +537,15 @@ class FactsStore:
     def _daily_fields() -> str:
         return (
             "episode_id source revision record_date activity_date timezone_offset "
-            "sleep physiology activity quality data_gaps device_algorithm definition_version "
-            "hrv_method main_sleep selection_policy_version source_upload_record_ids received_at "
-            "metric_windows"
+            "sleep.start_at sleep.end_at sleep.total_asleep_min sleep.unit sleep.method "
+            "sleep.awakening_count sleep.deep_min sleep.rem_min sleep.core_min "
+            "sleep.unspecified_asleep_min sleep.waso_min "
+            "physiology.heart_rate_sleep_avg_bpm physiology.heart_rate_sleep_min_bpm "
+            "physiology.heart_rate_sleep_max_bpm physiology.hrv_sleep_avg_ms "
+            "physiology.respiratory_rate_sleep_avg activity.windows.calendar_day.steps "
+            "activity.windows.calendar_day.exercise_min "
+            "quality.valid device_algorithm definition_version "
+            "hrv_method main_sleep selection_policy_version received_at"
         )
 
     async def load_daily_metrics(
@@ -564,7 +581,8 @@ class FactsStore:
                 {"uid": uid, "record_date": {"$gte": start, "$lt": end}},
                 read_at,
             ),
-            "uid reports_id record_date language overnight_vitals",
+            "uid reports_id record_date revision content_hash language "
+            "overnight_vitals.hr.value overnight_vitals.br.value",
             [("record_date", 1), ("language", 1), ("reports_id", 1), ("_id", 1)],
             missing_reasons=missing_reasons,
         )
