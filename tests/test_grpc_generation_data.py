@@ -173,6 +173,7 @@ async def test_scoped_target_and_unverified_execution_round_trip(scope) -> None:
             "weekly_generation_id": "week-1",
         }
     ]
+    store.load_latest_user_plan.return_value = store.load_active_plan.return_value
     store.load_blueprint.return_value = {
         "uid": "u",
         "generation_id": "week-1",

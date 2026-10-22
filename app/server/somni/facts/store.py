@@ -463,6 +463,27 @@ class FactsStore:
             limit=2,
         )
 
+    async def load_latest_user_plan(
+        self, uid: str, target_date: str, read_at: datetime
+    ) -> list[dict]:
+        """Select the latest user plan across active and legacy no-status records."""
+        return await self._read(
+            "plans",
+            self._visible(
+                {
+                    "uid": uid,
+                    "date": target_date,
+                    "scope": "user",
+                    "$or": [{"status": "active"}, {"status": {"$exists": False}}],
+                },
+                read_at,
+            ),
+            "uid date plan_id version weekly_generation_id generation_id received_at "
+            "phases device_id scope name status update_time create_time",
+            [("update_time", -1), ("create_time", -1), ("version", -1), ("_id", -1)],
+            limit=1,
+        )
+
     async def load_latest_active_plan_date_before(
         self, uid: str, target_date: str, read_at: datetime
     ) -> str | None:
