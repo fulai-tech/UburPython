@@ -595,10 +595,11 @@ class GenerationDataService:
             target_date = parse_date(target_local_date).isoformat()
         except (TypeError, ValueError) as exc:
             raise DataError("INVALID_ARGUMENT", "invalid_target_local_date") from exc
-        # Resolve the latest effective plan through the unique active pointer visible at read_at.
-        rows = await self.store.load_active_plan(uid, target_date, read_at)
-        if not rows and stored_compat:
-            rows = await self.store.load_stored_current_plan(uid, target_date, read_at)
+        if stored_compat:
+            # Daily adjustment selects the latest user plan, never a device projection.
+            rows = await self.store.load_latest_user_plan(uid, target_date, read_at)
+        else:
+            rows = await self.store.load_active_plan(uid, target_date, read_at)
         if not rows:
             return section(status="not_found", reasons=["active_plan_not_found"])
         if len(rows) != 1:

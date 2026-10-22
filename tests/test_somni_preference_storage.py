@@ -232,3 +232,47 @@ def test_changed_node_identity_does_not_become_preference():
     snapshots[0]["phases"][0]["nodes"][0]["node_id"] = "old-node"
     snapshots[1]["phases"][0]["nodes"][0]["node_id"] = "new-node"
     assert aggregate(snapshots, sessions)["observations"] == []
+
+
+@pytest.mark.asyncio
+async def test_daily_target_reads_latest_user_plan_without_active_device_fallback():
+    from unittest.mock import AsyncMock
+
+    from app.core.config import Settings
+    from app.server.somni.facts.service import GenerationDataService
+
+    snapshots, _ = stored_sources()
+    pointer = {
+        key: deepcopy(snapshots[0][key])
+        for key in ("uid", "plan_id", "version", "date", "phases", "device_id")
+    }
+    pointer["scope"] = "user"
+    store = AsyncMock()
+    store.load_latest_user_plan.return_value = [pointer]
+    store.load_plan_revision.return_value = snapshots[0]
+    read_at = datetime.now(UTC)
+    result = await GenerationDataService(None, Settings(), store=store)._target_plan(
+        "u", "2026-10-15", read_at, {}, stored_compat=True
+    )
+    assert result["status"] == "ok"
+    assert result["value"]["plan_id"] == "p"
+    store.load_latest_user_plan.assert_awaited_once_with("u", "2026-10-15", read_at)
+    store.load_active_plan.assert_not_awaited()
+    store.load_stored_current_plan.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_daily_missing_user_plan_does_not_fall_back_to_device_plan():
+    from unittest.mock import AsyncMock
+
+    from app.core.config import Settings
+    from app.server.somni.facts.service import GenerationDataService
+
+    store = AsyncMock()
+    store.load_latest_user_plan.return_value = []
+    store.load_active_plan.return_value = [{"uid": "u", "scope": "device"}]
+    result = await GenerationDataService(None, Settings(), store=store)._target_plan(
+        "u", "2026-10-15", datetime.now(UTC), {}, stored_compat=True
+    )
+    assert result["status"] == "not_found"
+    store.load_active_plan.assert_not_awaited()

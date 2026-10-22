@@ -568,3 +568,36 @@ async def test_profile_default_uses_latest_complete_pair_but_exact_id_never_fall
     assert linked == (None if snapshot_id else long)
     if not snapshot_id:
         assert store._read.await_args_list[-1].args[1]["content_hash"] == "found"
+
+
+async def test_latest_daily_user_plan_filters_scope_before_sort_and_limit() -> None:
+    store, collection = make_store([])
+    read_at = datetime(2026, 10, 22, tzinfo=UTC)
+    await store.load_latest_user_plan("u", "2026-10-22", read_at)
+    query, projection = collection.find.call_args_list[0].args
+    assert query["uid"] == "u"
+    assert query["date"] == "2026-10-22"
+    assert query["scope"] == "user"
+    assert query["$or"] == [{"status": "active"}, {"status": {"$exists": False}}]
+    assert "scope" in projection
+    assert collection.find.return_value.sort_spec == [
+        ("update_time", -1),
+        ("create_time", -1),
+        ("version", -1),
+        ("_id", -1),
+    ]
+
+
+async def test_other_active_plan_callers_keep_existing_scope_semantics() -> None:
+    store, collection = make_store([])
+    await store.load_active_plan("u", "2026-10-22", datetime.now(UTC))
+    assert "scope" not in collection.find.call_args.args[0]
+
+
+async def test_latest_user_plan_returns_one_row_after_deterministic_sort() -> None:
+    store, collection = make_store(
+        [{"plan_id": "latest", "version": 1}, {"plan_id": "older", "version": 9}]
+    )
+    rows = await store.load_latest_user_plan("u", "2026-10-22", datetime.now(UTC))
+    assert [row["plan_id"] for row in rows] == ["latest"]
+    assert collection.find.return_value.sort_spec[0] == ("update_time", -1)
