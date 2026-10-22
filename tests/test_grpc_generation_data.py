@@ -438,6 +438,23 @@ async def test_populated_episode_and_weekly_comparison_round_trip() -> None:
 )
 async def test_profile_inputs_accepts_preference_evidence_section(purpose: int) -> None:
     svc, store = make_service()
+    if purpose == pb.GetProfileInputsReq.initial:
+        async with channel(svc) as client:
+            with pytest.raises(grpc.aio.AioRpcError) as caught:
+                await client.GetProfileInputs(
+                    pb.GetProfileInputsReq(
+                        uid="u",
+                        request_id="initial-section-rejected",
+                        purpose=purpose,
+                        review_end_local_date="2026-10-17",
+                        timezone_offset="+08:00",
+                        requested_sections=["preference_evidence"],
+                    )
+                )
+            assert caught.value.code() == grpc.StatusCode.INVALID_ARGUMENT
+            assert caught.value.details() == "initial_section_not_allowed"
+        store.load_preference_sources.assert_not_called()
+        return
     async with channel(svc) as client:
         response = await client.GetProfileInputs(
             pb.GetProfileInputsReq(

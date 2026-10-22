@@ -32,6 +32,7 @@ from app.server.somni.facts.models import (
     utc_now,
     validate_profile,
 )
+from app.server.somni.facts.profile_provenance import compact_profile_provenance
 from app.server.somni.facts.sleep_debt import calculate_sleep_debt
 from app.server.somni.facts.store import FactsStore
 from app.server.somni.facts.time import (
@@ -45,6 +46,18 @@ from app.server.somni.facts.time import (
     visible_by,
 )
 from app.server.somni.quiz.answer_value import concrete_answer_value
+
+
+def _source_ids(value: Any) -> set[str]:
+    if isinstance(value, list):
+        return set().union(*(_source_ids(item) for item in value)) if value else set()
+    if isinstance(value, dict):
+        refs = {ref for ref in value.get("source_refs", []) if isinstance(ref, str)}
+        for key, child in value.items():
+            if key not in {"source_refs", "operation_bursts", "reference_table"}:
+                refs.update(_source_ids(child))
+        return refs
+    return set()
 
 
 def _pick(row: dict, fields: str) -> dict:
@@ -167,7 +180,7 @@ def normalize_report_vitals(
                 "local_date": local_date,
                 "value": next(iter(unique_values)),
                 "quality": "valid",
-                "source_refs": list(dict.fromkeys(ref for _, ref in values)),
+                "source_refs": [min(ref for _, ref in values)],
             }
         )
     return metrics, list(dict.fromkeys(reasons))
@@ -257,8 +270,11 @@ class GenerationDataService:
         ):
             raise DataError("PERMISSION_DENIED", "profile_link_mismatch")
         try:
+            profile = compact_profile_provenance(profile)
             profile["content_hash"] = canonical_hash(profile)
             profile = validate_profile(profile, uid, verify_long_term_hash=verify_long_term_hash)
+        except ValueError as exc:
+            raise DataError("RESOURCE_EXHAUSTED", "profile_provenance_budget_exceeded") from exc
         except DataError as exc:
             if exc.code == "PERMISSION_DENIED":
                 raise
@@ -495,10 +511,6 @@ class GenerationDataService:
         from app.server.somni.facts.preference import aggregate_preference_evidence
 
         sources = await self.store.load_preference_sources(uid, end_local_date, timezone_offset)
-        # Register canonical references as well as compact aggregate references.
-        for name, rows in sources.items():
-            for row in rows:
-                collect_source_refs(row, name, manifest)
         value = aggregate_preference_evidence(
             uid,
             end_local_date,
@@ -506,6 +518,31 @@ class GenerationDataService:
             **sources,
             read_at=read_at,
         )
+        # Register only evidence that survived aggregation, never all scanned operations.
+        used = _source_ids(value)
+        for name, rows in sources.items():
+            for row in rows:
+                local = {}
+                collect_source_refs(row, name, local)
+                for entry in local.values():
+                    aliases = {entry["ref"]}
+                    aliases.update(
+                        f"{name}:{row[key]}"
+                        for key in ("op_id", "snapshot_id", "session_id")
+                        if row.get(key)
+                    )
+                    for ref in aliases & used:
+                        manifest[ref] = {**entry, "ref": ref}
+        value["source_summary"] = {
+            "input_record_count": sum(len(rows) for rows in sources.values()),
+            "effective_observation_count": len(value["observations"]),
+            "window_start": value["start_local_date"],
+            "window_end": value["review_end_local_date"],
+        }
+        # Bursts are intermediate diagnostics; policy uses observations/exposures only.
+        bursts = value.pop("operation_bursts", [])
+        value["source_summary"]["operation_burst_count"] = len(bursts)
+        value["source_summary"]["operation_burst_digest"] = canonical_hash(bursts)
         reasons = value["missing_reasons"]
         return section(value, status="partial" if reasons else "ok", reasons=reasons)
 
@@ -873,6 +910,11 @@ class GenerationDataService:
             ],
         )
         reasons.extend(report_reasons)
+        selected_records, selected_reasons = select_somni_record_rows(
+            [row for row in rows if row.get("source_type") == "records"]
+        )
+        reasons.extend(selected_reasons)
+        rows = [row for row in rows if row.get("source_type") != "records"] + selected_records
         for row in rows + activity:
             row["source_refs"] = collect_source_refs(
                 row, row.get("source_type", "wearable_daily"), manifest
@@ -1029,6 +1071,11 @@ class GenerationDataService:
         }
         if requested_sections and not set(requested_sections) <= allowed_sections:
             raise DataError("INVALID_ARGUMENT", "unknown_requested_section")
+        if purpose == "initial":
+            initial_sections = {"questionnaires", "prior_profile", "facts", "sleep_debt"}
+            if requested_sections and not set(requested_sections) <= initial_sections:
+                raise DataError("INVALID_ARGUMENT", "initial_section_not_allowed")
+            requested_sections = requested_sections or sorted(initial_sections)
         tasks = {
             "sleep_debt": lambda: self.build_sleep_debt(
                 uid, (scope.end - timedelta(days=1)).isoformat(), read_at, manifest
@@ -1059,6 +1106,13 @@ class GenerationDataService:
             tasks = {key: value for key, value in tasks.items() if key in requested_sections}
         results = await asyncio.gather(*(self._optional(query) for query in tasks.values()))
         data = dict(zip(tasks, results, strict=True))
+        used = _source_ids(data)
+        # profile refs are envelope-level identity proofs, not recursive inherited sources.
+        manifest = {
+            ref: entry
+            for ref, entry in manifest.items()
+            if ref in used or entry.get("source_type") in {"profile_short", "profile_long"}
+        }
         response = self._envelope(uid, request_id, read_at, data, manifest)
         response["time_context"] = {
             "review_end_local_date": review_end_local_date,

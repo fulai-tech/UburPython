@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from copy import deepcopy
 from datetime import datetime, timedelta
 from math import isfinite
 from typing import Any
@@ -179,7 +178,7 @@ def merge_operation_bursts(rows: list[dict]) -> list[dict]:
                     "reversed": any(value > 0 for value in changes)
                     and any(value < 0 for value in changes),
                     "source_refs": sorted(
-                        {ref for event in events_in_burst for ref in event["refs"]}
+                        {min(event["refs"]) for event in (first, last) if event["refs"]}
                     ),
                 }
             )
@@ -421,7 +420,16 @@ def aggregate_preference_evidence(
                 "reversed": burst["reversed"],
                 "source": "operation",
                 "occurred_at_utc": burst["last_at_utc"],
-                "source_refs": deepcopy(burst["source_refs"]),
+                "source_refs": sorted(
+                    set(
+                        [
+                            *burst["source_refs"],
+                            _ref(session, "sessions"),
+                            _ref(snapshot, "snapshots"),
+                        ]
+                    )
+                    - {""}
+                ),
             }
         )
     return {

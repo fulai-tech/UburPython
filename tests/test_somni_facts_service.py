@@ -250,7 +250,7 @@ async def test_build_facts_deduplicates_equal_language_report_values() -> None:
 
     hr = next(item for item in facts["value"]["series"] if item["metric_id"] == "sleep_hr_mean_bpm")
     assert hr["stats_28d"]["valid_count"] == 1
-    assert len(hr["daily"][0]["source_refs"]) == 2
+    assert len(hr["daily"][0]["source_refs"]) == 1
 
 
 async def test_build_facts_omits_conflicting_language_report_values() -> None:
