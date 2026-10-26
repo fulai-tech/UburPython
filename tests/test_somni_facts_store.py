@@ -570,14 +570,14 @@ async def test_profile_default_uses_latest_complete_pair_but_exact_id_never_fall
         assert store._read.await_args_list[-1].args[1]["content_hash"] == "found"
 
 
-async def test_latest_daily_user_plan_filters_scope_before_sort_and_limit() -> None:
+async def test_latest_daily_plan_ignores_scope_and_preserves_owner_date_status_and_sort() -> None:
     store, collection = make_store([])
     read_at = datetime(2026, 10, 22, tzinfo=UTC)
     await store.load_latest_user_plan("u", "2026-10-22", read_at)
     query, projection = collection.find.call_args_list[0].args
     assert query["uid"] == "u"
     assert query["date"] == "2026-10-22"
-    assert query["scope"] == "user"
+    assert "scope" not in query
     assert query["$or"] == [{"status": "active"}, {"status": {"$exists": False}}]
     assert "scope" in projection
     assert collection.find.return_value.sort_spec == [

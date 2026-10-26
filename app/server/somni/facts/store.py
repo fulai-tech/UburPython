@@ -466,14 +466,13 @@ class FactsStore:
     async def load_latest_user_plan(
         self, uid: str, target_date: str, read_at: datetime
     ) -> list[dict]:
-        """Select the latest user plan across active and legacy no-status records."""
+        """Select the latest owned plan; legacy method name does not imply a scope filter."""
         return await self._read(
             "plans",
             self._visible(
                 {
                     "uid": uid,
                     "date": target_date,
-                    "scope": "user",
                     "$or": [{"status": "active"}, {"status": {"$exists": False}}],
                 },
                 read_at,

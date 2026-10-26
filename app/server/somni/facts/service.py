@@ -596,7 +596,7 @@ class GenerationDataService:
         except (TypeError, ValueError) as exc:
             raise DataError("INVALID_ARGUMENT", "invalid_target_local_date") from exc
         if stored_compat:
-            # Daily adjustment selects the latest user plan, never a device projection.
+            # Scope is legacy metadata; select the latest owned plan for this date.
             rows = await self.store.load_latest_user_plan(uid, target_date, read_at)
         else:
             rows = await self.store.load_active_plan(uid, target_date, read_at)

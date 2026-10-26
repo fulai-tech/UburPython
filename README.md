@@ -424,13 +424,15 @@ SearchPrescriptionAudio及SearchAudioRequest在检索前完成兼容归一化和
 自然语言embedding query保持原文；所有结构化标签、缓存身份和阶段索引仍用英文code。规则与resolver版本参与缓存契约摘要，新旧缓存自动隔离；必须同步DeepHealth中的偏好规则。此变更不修改素材embedding或数据库词典。
 
 
-### 每日微调的目标方案 scope（2026-10-22）
+### 每日微调的目标方案选择（2026-10-26）
 
-`GetPlanInputs(scope=daily)`只读取`somni_plans`中同UID、同目标日期且`scope=user`的目标方案。
+`GetPlanInputs(scope=daily)`读取`somni_plans`中同UID、同目标日期的目标方案。
+方案记录的`scope`已不参与准入判断：`user`、`device`或缺少该字段均可参与选择。
+请求参数`scope=daily`仍用于区分每日任务，不能与方案记录的旧`scope`字段混淆。
 查询同时接受`status=active`和无`status`的兼容记录，按`update_time`、`create_time`、`version`、
 `_id`依次降序取第一份；缺少时间的记录按Mongo排序位于有时间的记录之后。
 不同plan_id的版本号并非全局时间序列，因此更新时间优先于版本号。
-`scope=device`或缺少scope的记录不参与选择；多份user方案不再导致`active_plan_ambiguous`。
-没有user方案返回目标缺失，不回退device方案。选中最新项后仍校验版本、快照及正文关联，
+多份同日方案仍按上述排序确定最新项，不依赖scope筛选或另行回退查询。
+没有符合用户、日期和有效状态的方案返回目标缺失。选中最新项后仍校验版本、快照及正文关联，
 最新项关联错误则明确失败，不静默回退旧方案。其他路径的active方案读取语义保持原样。
 没有修改Proto、持久化结构或写库逻辑；现有数据不迁移、不删除，需发布中间件代码后生效。

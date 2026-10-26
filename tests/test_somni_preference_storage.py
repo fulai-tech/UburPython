@@ -235,7 +235,8 @@ def test_changed_node_identity_does_not_become_preference():
 
 
 @pytest.mark.asyncio
-async def test_daily_target_reads_latest_user_plan_without_active_device_fallback():
+@pytest.mark.parametrize("scope", ["user", "device", None])
+async def test_daily_target_reads_latest_owned_plan_regardless_of_legacy_scope(scope):
     from unittest.mock import AsyncMock
 
     from app.core.config import Settings
@@ -246,7 +247,8 @@ async def test_daily_target_reads_latest_user_plan_without_active_device_fallbac
         key: deepcopy(snapshots[0][key])
         for key in ("uid", "plan_id", "version", "date", "phases", "device_id")
     }
-    pointer["scope"] = "user"
+    if scope is not None:
+        pointer["scope"] = scope
     store = AsyncMock()
     store.load_latest_user_plan.return_value = [pointer]
     store.load_plan_revision.return_value = snapshots[0]
@@ -262,7 +264,7 @@ async def test_daily_target_reads_latest_user_plan_without_active_device_fallbac
 
 
 @pytest.mark.asyncio
-async def test_daily_missing_user_plan_does_not_fall_back_to_device_plan():
+async def test_daily_missing_plan_does_not_fall_back_to_another_query():
     from unittest.mock import AsyncMock
 
     from app.core.config import Settings
@@ -275,4 +277,49 @@ async def test_daily_missing_user_plan_does_not_fall_back_to_device_plan():
         "u", "2026-10-15", datetime.now(UTC), {}, stored_compat=True
     )
     assert result["status"] == "not_found"
+    store.load_active_plan.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "invalid,reason",
+    [
+        ("owner", "active_plan_owner_mismatch"),
+        ("date", "active_plan_date_mismatch"),
+        ("version", "active_plan_snapshot_version_mismatch"),
+        ("snapshot_id", "active_plan_link_incomplete"),
+        ("body", "active_plan_body_mismatch"),
+    ],
+)
+async def test_daily_device_scope_keeps_target_identity_and_revision_checks(invalid, reason):
+    from unittest.mock import AsyncMock
+
+    from app.core.config import Settings
+    from app.server.somni.facts.models import DataError
+    from app.server.somni.facts.service import GenerationDataService
+
+    snapshots, _ = stored_sources()
+    pointer = {
+        key: deepcopy(snapshots[0][key])
+        for key in ("uid", "plan_id", "version", "date", "phases", "device_id")
+    }
+    pointer["scope"] = "device"
+    if invalid == "owner":
+        pointer["uid"] = "other"
+    elif invalid == "date":
+        pointer["date"] = "2026-10-16"
+    elif invalid == "version":
+        pointer["version"] = 2
+    elif invalid == "snapshot_id":
+        snapshots[0]["snapshot_id"] = ""
+    elif invalid == "body":
+        pointer["phases"][0]["nodes"][0]["sound"]["tracks"][0]["volume"] = 99
+    store = AsyncMock()
+    store.load_latest_user_plan.return_value = [pointer]
+    store.load_plan_revision.return_value = snapshots[0]
+    with pytest.raises(DataError, match=reason):
+        await GenerationDataService(None, Settings(), store=store)._target_plan(
+            "u", "2026-10-15", datetime.now(UTC), {}, stored_compat=True
+        )
+    store.load_latest_user_plan.assert_awaited_once()
     store.load_active_plan.assert_not_awaited()
