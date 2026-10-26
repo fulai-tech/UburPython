@@ -14,23 +14,38 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from app.server.somni.facts.time import instant, parse_date, parse_offset
 
-REJECTED = {"discarded", "device_rejected", "queued", "pending"}
+REJECTED = {"discarded", "device_rejected", "queued", "pending", "declined"}
 
 
 def normalize_snapshot(row: dict) -> dict:
     """Map production date/time/source fields; reject explicit invalid states."""
     result = deepcopy(row)
+    apply_status = row.get("apply_status")
+    if apply_status in REJECTED:
+        result["lifecycle"] = "rejected"
+        result["status"] = "rejected"
+        return result
+    status = row.get("status")
+    # BioNode uses 2 for applied, including app edits archived as recorded.
+    # Keep the historical status=0/no-status shape compatible; execution proof
+    # is still required by normalize_sources and the preference aggregator.
+    allowed_apply = (
+        (None, "", "applied", "recorded")
+        if type(status) is int and status == 2
+        else (None, "", "applied")
+    )
     if "plan_start_local_date" in row:
-        if row.get("apply_status") in REJECTED:
-            result["lifecycle"] = "rejected"
-            result["status"] = "rejected"
+        if type(status) is int and status == 2:
+            if apply_status not in allowed_apply:
+                result["lifecycle"] = "rejected"
+            elif not row.get("lifecycle"):
+                result["lifecycle"] = "committed"
         return result
     if not isinstance(row.get("date"), str) or instant(row.get("create_time")) is None:
         return result
-    status = row.get("status")
-    if "status" in row and (type(status) is not int or status != 0):
+    if "status" in row and (type(status) is not int or status not in (0, 2)):
         return result
-    if row.get("apply_status") not in (None, "", "applied"):
+    if apply_status not in allowed_apply:
         return result
     result.update(
         plan_start_local_date=row["date"],

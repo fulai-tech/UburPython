@@ -76,6 +76,66 @@ def test_real_storage_fields_prove_adopted_revision_without_persisted_uid():
     assert "uid" not in sessions[0]  # normalization never mutates source
 
 
+@pytest.mark.parametrize("apply_status", [None, "", "applied", "recorded"])
+@pytest.mark.parametrize("canonical", [False, True])
+def test_bionode_applied_snapshots_prove_exposure_and_manual_preference(apply_status, canonical):
+    snapshots, sessions = stored_sources()
+    for snapshot in snapshots:
+        snapshot["status"] = 2  # BioNode: 0=unapplied, 1=read, 2=applied.
+        if apply_status is not None:
+            snapshot["apply_status"] = apply_status
+        if canonical:
+            snapshot.update(
+                plan_start_local_date=snapshot["date"],
+                created_at=snapshot["create_time"],
+                timezone_offset="+08:00",
+                edit_source="manual" if snapshot["edit_source"] == "app" else "dph",
+            )
+    if canonical:
+        snapshots[1]["base_plan_version"] = 1
+    original = deepcopy(snapshots)
+    result = aggregate(snapshots, sessions)
+    assert len(result["exposures"]) == 1
+    assert result["observations"][0]["after"] == 20
+    assert result["observations"][0]["applied"] is True
+    assert "snapshot_lifecycle_unverified" not in result["missing_reasons"]
+    assert snapshots == original
+
+
+@pytest.mark.parametrize(
+    "apply_status", ["pending", "queued", "declined", "discarded", "device_rejected", "unknown"]
+)
+@pytest.mark.parametrize("canonical", [False, True])
+def test_rejected_or_pending_applied_snapshots_never_prove_exposure(apply_status, canonical):
+    snapshots, sessions = stored_sources()
+    for snapshot in snapshots:
+        snapshot.update(status=2, apply_status=apply_status)
+        if canonical:
+            snapshot.update(
+                plan_start_local_date=snapshot["date"],
+                created_at=snapshot["create_time"],
+                lifecycle="committed",
+            )
+    assert aggregate(snapshots, sessions)["exposures"] == []
+
+
+@pytest.mark.parametrize("status", [1, 3, True, "2"])
+def test_read_unknown_or_invalid_status_is_not_application_proof(status):
+    snapshots, sessions = stored_sources()
+    for snapshot in snapshots:
+        snapshot.update(status=status, apply_status="applied")
+    assert aggregate(snapshots, sessions)["exposures"] == []
+
+
+def test_applied_snapshots_without_execution_sessions_are_not_preference_proof():
+    snapshots, _ = stored_sources()
+    for snapshot in snapshots:
+        snapshot.update(status=2, apply_status="applied")
+    result = aggregate(snapshots, [])
+    assert result["exposures"] == []
+    assert result["observations"] == []
+
+
 @pytest.mark.parametrize(
     "changes",
     [
@@ -141,7 +201,8 @@ def test_hardware_real_shape_is_burst_observation_without_hold_vote():
 
 
 @pytest.mark.asyncio
-async def test_stored_target_requires_exact_revision_and_equal_current_body():
+@pytest.mark.parametrize("snapshot_status", [0, 2])
+async def test_stored_target_requires_exact_revision_and_equal_current_body(snapshot_status):
     from unittest.mock import AsyncMock
 
     from app.core.config import Settings
@@ -149,6 +210,7 @@ async def test_stored_target_requires_exact_revision_and_equal_current_body():
     from app.server.somni.facts.service import GenerationDataService
 
     snapshots, _ = stored_sources()
+    snapshots[0].update(status=snapshot_status, apply_status="applied")
     pointer = {
         key: deepcopy(snapshots[0][key])
         for key in ("uid", "plan_id", "version", "date", "phases", "device_id")
