@@ -367,7 +367,9 @@ uv run pytest
 
 ### 生产结构偏好适配与验证数据
 
-偏好聚合支持快照`date/create_time/status=0/edit_source=app`，会话通过唯一归属的`plan_id + plan_version`关联。完整暴露必须同时验证completed、非预览、设备、时区、方案时间及节点总数；停止/失败/缺少时区不计。已采纳App修改仅比较连续唯一版本；排队/丢弃/拒绝快照不作采纳证据。硬件成功记录可归并为观察，但缺少持续生效证明仍不自动确认。
+偏好聚合支持快照`date/create_time/edit_source=app`。BioNode数字状态为`0=未应用、1=已读、2=已应用`；`status=2`在应用状态无冲突时转换为`lifecycle=committed`，其中App历史留档的`apply_status=recorded`也支持。兼容既有`status=0`或未保存status的历史格式，但它们仍须由完整执行会话证明实际采用，不能仅凭状态计为执行。显式`pending/queued/declined/discarded/device_rejected`均排除，即使数字状态为2或已有committed标记；不向数据库补字段或改写状态。
+
+会话通过唯一归属的`plan_id + plan_version`关联。完整暴露必须同时验证completed、非预览、设备、时区、方案时间及节点总数；停止/失败/缺少时区不计。已采纳App修改仅比较连续唯一版本；排队/丢弃/拒绝快照不作采纳证据。硬件成功记录可归并为观察，但缺少持续生效证明仍不自动确认。状态兼容修复不会绕过版本归属、执行证明或DeepHealth的独立夜数/一致率阈值。
 
 daily兼容没有generation链接的旧当前方案，通过用户/日期/版本/快照正文一致核验返回现有目标协议；weekly/realtime的独立读取语义不扩展。当前方案内可选null占位不构成正文差异，真正数值/节点差异仍拒绝。候选保存需版本和正文hash CAS，并写`trigger_reason=daily_preference`防重复递减。
 
