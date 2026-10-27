@@ -194,6 +194,7 @@ def aggregate_preference_evidence(
     sessions: list[dict],
     *,
     read_at: datetime,
+    phases: set[str] | None = None,
 ) -> dict:
     """Return facts with exact joins and explicit unknowns, never learned preferences.
 
@@ -203,6 +204,14 @@ def aggregate_preference_evidence(
     """
     from app.server.somni.facts.preference_storage import normalize_sources
 
+    # Demo collections are isolated; reject synthetic rows even if misrouted.
+    snapshots = [r for r in snapshots if not r.get("synthetic") and not r.get("preview_only")]
+    sessions = [
+        r
+        for r in sessions
+        if not r.get("synthetic") and not r.get("previewing") and not r.get("preview_only")
+    ]
+    operations = [r for r in operations if not r.get("synthetic") and not r.get("preview_only")]
     snapshots, sessions, operations = normalize_sources(
         uid, timezone_offset, snapshots, sessions, operations
     )
@@ -278,7 +287,28 @@ def aggregate_preference_evidence(
             continue
         session, snapshot, night = context
         executed_nodes = session.get("executed_nodes")
+        completed = {
+            (r.get("phase"), str(r.get("node_key")))
+            for r in (executed_nodes or [])
+            if isinstance(r, dict) and r.get("completed") is True
+        }
+        stage_maxima = {}
+        for phase in snapshot.get("phases", []):
+            name = phase.get("phase")
+            required = {
+                (name, str(n.get("node_type") or n.get("node_key") or i))
+                for i, n in enumerate(phase.get("nodes", []))
+            }
+            values = [
+                v
+                for (p, _n, _r, parameter), v in _parameters(snapshot).items()
+                if p == name and parameter == "volume"
+            ]
+            if required and required <= completed and values:
+                stage_maxima[name] = max(values)
         for key in _parameters(snapshot):
+            if phases is not None and key[0] not in phases:
+                continue
             if not isinstance(executed_nodes, list) or not any(
                 item.get("phase") == key[0]
                 and str(item.get("node_key")) == key[1]
@@ -292,11 +322,18 @@ def aggregate_preference_evidence(
             exposures.append(
                 {
                     "night": night,
+                    "started_at_utc": timestamp(instant(session["started_at"])),
+                    "ended_at_utc": timestamp(instant(session["ended_at"])),
                     "phase": phase,
                     "node_key": node,
                     "resource_id": resource,
                     "parameter": parameter,
                     "source_refs": [_ref(session, "sessions"), _ref(snapshot, "snapshots")],
+                    **(
+                        {"stage_max_volume": stage_maxima[phase]}
+                        if parameter == "volume" and phase in stage_maxima
+                        else {}
+                    ),
                 }
             )
         # Only direct, ordered, explicitly manual revisions with unchanged node identity.
@@ -356,6 +393,8 @@ def aggregate_preference_evidence(
             original_ids, final_ids = node_ids(original), node_ids(final)
             before, after = _parameters(original), _parameters(final)
             for key in before.keys() & after.keys():
+                if phases is not None and key[0] not in phases:
+                    continue
                 if before[key] == after[key]:
                     continue
                 if original_ids.get(key[:2]) != final_ids.get(key[:2]):
@@ -386,6 +425,8 @@ def aggregate_preference_evidence(
         session, snapshot, night = context
         at = instant(burst["last_at_utc"])
         key = tuple(burst[field] for field in ("phase", "node_key", "resource_id", "parameter"))
+        if phases is not None and key[0] not in phases:
+            continue
         baseline = _parameters(snapshot).get(key)
         if (
             burst["device_id"] != session.get("device_id")

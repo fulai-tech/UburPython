@@ -436,3 +436,15 @@ SearchPrescriptionAudio及SearchAudioRequest在检索前完成兼容归一化和
 没有符合用户、日期和有效状态的方案返回目标缺失。选中最新项后仍校验版本、快照及正文关联，
 最新项关联错误则明确失败，不静默回退旧方案。其他路径的active方案读取语义保持原样。
 没有修改Proto、持久化结构或写库逻辑；现有数据不迁移、不删除，需发布中间件代码后生效。
+
+## 画像偏好记忆的来源修订检测
+
+`GetPlanInputs(scope=daily)` 和 `GetProfileInputs` 的 preference_evidence 增加兼容字段 `source_revision`、`unchanged`、`evaluated_phases`、`source_summary.read_mode`。请求和 Proto 不变。画像保存由 BioNode 完成，中间件只读。
+
+Mongo Change Stream 监控正常操作、快照、会话集合的新增、修改、删除及状态变化。进程游标只用于本机缓存可信性，画像保存的是稳定 Canonical BSON 内容指纹。指纹与 v3 画像记忆一致时，不重新聚合历史。跨进程首次访问需一次冷读取，后续可复用；重启不会信任旧进程游标。
+
+最多128个用户/时区来源缓存，总计16 MiB、单项4 MiB。已知操作阶段只评估受影响阶段；未知阶段、删除或生产会话缺 UID 时保守扩大刷新范围。返回 `evaluated_phases` 时 DPH 必须保留其余阶段记忆，不能解释成证据删除。
+
+Change Stream 不支持、关闭、断开或积压超预算时，回退完整读取并标记 `read_mode=bypass`，不承诺该模式有增量收益。执行结束等待30分钟仍保留。合成和预览记录排除，不把自动方案或候选接受当成手动支持。阶段最高音量只来自具有完整节点执行证明的最终快照，DPH 才能据此形成跨音频目标。
+
+需要三端配套部署；不修改历史数据。BioNode 画像写入需支持 Mongo 事务。独立本地副本集联调使用合成数据，不能据此宣称远端已部署或真实用户已保存。

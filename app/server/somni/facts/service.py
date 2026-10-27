@@ -188,6 +188,10 @@ def normalize_report_vitals(
 
 class GenerationDataService:
     def __init__(self, client: Any, settings: Settings, store: FactsStore | None = None) -> None:
+        from app.server.somni.facts.preference_revision import PreferenceRevision
+
+        self.preference_revision = PreferenceRevision(client, settings)
+        self._preference_sources_cache = {}
         self.settings = settings
         self.store = store if store is not None else FactsStore(client, settings)
 
@@ -470,7 +474,7 @@ class GenerationDataService:
         if scope == "daily":
             data["preference_evidence"] = await self._optional(
                 lambda: self._preference_evidence(
-                    uid, target_local_date, timezone_offset, read_at, manifest
+                    uid, target_local_date, timezone_offset, read_at, manifest, profile=profile
                 )
             )
         if scope == "realtime":
@@ -507,17 +511,116 @@ class GenerationDataService:
         timezone_offset: str,
         read_at: datetime,
         manifest: dict,
+        *,
+        profile: dict | None = None,
     ) -> dict:
+        from copy import deepcopy
+
         from app.server.somni.facts.preference import aggregate_preference_evidence
 
-        sources = await self.store.load_preference_sources(uid, end_local_date, timezone_offset)
+        revision = await self.preference_revision.revision(uid)
+        if profile is None and revision:
+            profile = await self._profile(uid, "", read_at, manifest, end_local_date)
+        body = ((profile or {}).get("value") or {}).get("long_term_profile") or {}
+        memory = body.get("learned_preferences") or {}
+        # Date is part of evaluation, not source identity. Cached raw sources can
+        # be reused on a later date; executed future nights always emit changes.
+        key = (uid, timezone_offset)
+        cached = self._preference_sources_cache.get(key)
+        previous_cursor = cached[0] if cached else ""
+        previous_digest = cached[3] if cached else ""
+        if revision and cached and cached[0] == revision and cached[1] <= end_local_date:
+            sources = deepcopy(cached[2])
+            read_mode = "cached_sources"
+        else:
+            sources = await self.store.load_preference_sources(uid, end_local_date, timezone_offset)
+            after = await self.preference_revision.revision(uid)
+            if revision and after != revision:
+                raise DataError("ABORTED", "preference_sources_changed_during_read")
+            read_mode = "full_read" if revision else "bypass"
+        input_record_count = sum(len(rows) for rows in sources.values())
+        # Stable content fingerprints are shared across workers. Stream epochs
+        # certify only this worker's cache; they never enter the saved profile.
+        from bson.json_util import CANONICAL_JSON_OPTIONS, dumps
+
+        first = parse_date(end_local_date) - timedelta(days=14)
+        zone = parse_offset(timezone_offset)
+        lower = datetime.combine(first, datetime.min.time(), zone)
+        upper = datetime.combine(parse_date(end_local_date), datetime.min.time(), zone) + timedelta(
+            hours=18
+        )
+        sources["snapshots"] = [
+            r
+            for r in sources["snapshots"]
+            if first.isoformat()
+            <= str(r.get("plan_start_local_date") or r.get("date") or "")
+            < end_local_date
+        ]
+        for name, field in (("operations", "executed_at"), ("sessions", "started_at")):
+            sources[name] = [
+                r
+                for r in sources[name]
+                if instant(r.get(field)) is not None and lower <= instant(r[field]) < upper
+            ]
+        source_revision = canonical_hash(
+            {
+                "uid": uid,
+                "timezone_offset": timezone_offset,
+                "sources": json.loads(dumps(sources, json_options=CANONICAL_JSON_OPTIONS)),
+            }
+        )
+        source_bytes = len(dumps(sources, json_options=CANONICAL_JSON_OPTIONS).encode("utf-8"))
+        if revision and source_bytes <= 4 * 1024 * 1024:
+            self._preference_sources_cache.pop(key, None)
+            while self._preference_sources_cache and (
+                len(self._preference_sources_cache) >= 128
+                or sum(row[4] for row in self._preference_sources_cache.values()) + source_bytes
+                > 16 * 1024 * 1024
+            ):
+                self._preference_sources_cache.pop(next(iter(self._preference_sources_cache)))
+            self._preference_sources_cache[key] = (
+                revision,
+                end_local_date,
+                deepcopy(sources),
+                source_revision,
+                source_bytes,
+            )
+        if (
+            revision
+            and memory.get("policy_version") == "somni_preference_memory.v3"
+            and memory.get("source_revision") == source_revision
+        ):
+            return section(
+                {
+                    "schema_version": "somni_preference_evidence.v1",
+                    "uid": uid,
+                    "review_end_local_date": end_local_date,
+                    "timezone_offset": timezone_offset,
+                    "source_revision": source_revision,
+                    "unchanged": True,
+                    "source_summary": {
+                        "read_mode": "unchanged",
+                        "input_record_count": 0,
+                        "source_cache_hit": read_mode == "cached_sources",
+                    },
+                }
+            )
+        changed_phases = (
+            self.preference_revision.changed_phases(uid, previous_cursor)
+            if revision and previous_digest == memory.get("source_revision")
+            else None
+        )
         value = aggregate_preference_evidence(
             uid,
             end_local_date,
             timezone_offset,
             **sources,
             read_at=read_at,
+            phases=changed_phases,
         )
+        if changed_phases is not None:
+            value["evaluated_phases"] = sorted(changed_phases)
+        value["source_revision"] = source_revision
         # Register only evidence that survived aggregation, never all scanned operations.
         used = _source_ids(value)
         for name, rows in sources.items():
@@ -534,7 +637,8 @@ class GenerationDataService:
                     for ref in aliases & used:
                         manifest[ref] = {**entry, "ref": ref}
         value["source_summary"] = {
-            "input_record_count": sum(len(rows) for rows in sources.values()),
+            "read_mode": read_mode,
+            "input_record_count": input_record_count,
             "effective_observation_count": len(value["observations"]),
             "window_start": value["start_local_date"],
             "window_end": value["review_end_local_date"],

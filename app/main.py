@@ -240,6 +240,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await shutdown_audio_search_cache(search_cache)
     if materials_store is not None:
         materials_store.close()
+    if _app_state.generation_data_service is not None:
+        await _app_state.generation_data_service.preference_revision.close()
     if somni_mongo is not None:
         somni_mongo.close()
     if somni_redis is not None:
