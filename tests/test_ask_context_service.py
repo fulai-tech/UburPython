@@ -3,19 +3,23 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 
 import grpc
 import pytest
 from bson import ObjectId
-from google.protobuf.json_format import MessageToDict, ParseDict
-from google.protobuf.struct_pb2 import Struct
 from loguru import logger
 
 from app.core.config import Settings
 from app.server.somni.ask.errors import AskContextError
 from app.server.somni.ask.rpc import AskContextRpc
 from app.server.somni.ask.service import AskContextService
+from app.uburnode_grpc.grpc_gen import uburnode_somni_pb2 as pb
+
+
+def _query(value: dict) -> str:
+    return json.dumps(value, ensure_ascii=False)
 
 USER_ID = "demo-user"
 REPORT_ID = "674b1c2e0a1b2c3d4e5f6789"
@@ -96,7 +100,7 @@ async def test_session_history_rejects_business_refs() -> None:
                 "context_type": "session_history",
                 "query_id": "summary-1",
                 "session_id": "ask-session-1",
-                "source_refs": [{"table_name": "somni_plans", "query": {"plan_id": "p1"}}],
+                "source_refs": [{"table_name": "somni_plans", "query": _query({"plan_id": "p1"})}],
             }
         )
     assert caught.value.status == "INVALID_ARGUMENT"
@@ -124,23 +128,29 @@ async def test_shapes_zero_one_and_many_records() -> None:
             "context_type": "source_data",
             "query_id": "ask-1",
             "source_refs": [
-                {"table_name": "somni_plans", "query": {"plan_id": "plan-1"}, "filter_key": []},
+                {
+                    "table_name": "somni_plans",
+                    "query": _query({"plan_id": "plan-1"}),
+                    "filter_key": [],
+                },
                 {
                     "table_name": "somni_sleep_reports",
-                    "query": {"record_date": {"$in": ["2026-10-26", "2026-10-27"]}},
+                    "query": _query({"record_date": {"$in": ["2026-10-26", "2026-10-27"]}}),
                     "filter_key": ["sleep_summary.body_battery"],
                 },
-                {"table_name": "somni_acoustic_clips", "query": {"tag": "snore"}},
+                {"table_name": "somni_acoustic_clips", "query": _query({"tag": "snore"})},
             ],
         }
     )
-    assert result["table_data"]["somni_plans"]["_id"] == REPORT_ID
-    assert "public_url" not in result["table_data"]["somni_plans"]
-    assert result["table_data"]["somni_sleep_reports"] == [
+    plans = json.loads(result["table_data"]["somni_plans"])
+    assert isinstance(result["table_data"]["somni_plans"], str)
+    assert plans["_id"] == REPORT_ID
+    assert "public_url" not in plans
+    assert json.loads(result["table_data"]["somni_sleep_reports"]) == [
         {"sleep_summary": {"body_battery": 80}},
         {"sleep_summary": {"body_battery": 70}},
     ]
-    assert result["table_data"]["somni_acoustic_clips"] == []
+    assert result["table_data"]["somni_acoustic_clips"] == "[]"
     clip_call = next(
         call for call in store.calls if call[0] == "find" and call[1] == "somni_acoustic_clips"
     )
@@ -162,18 +172,18 @@ async def test_merges_same_record_and_reports_missing_field() -> None:
             "source_refs": [
                 {
                     "table_name": "somni_plans",
-                    "query": {"plan_id": "plan-1"},
+                    "query": _query({"plan_id": "plan-1"}),
                     "filter_key": ["name"],
                 },
                 {
                     "table_name": "somni_plans",
-                    "query": {"name": "晚间"},
+                    "query": _query({"name": "晚间"}),
                     "filter_key": ["phases.phase", "phases.nodes.name"],
                 },
             ],
         }
     )
-    assert result["table_data"]["somni_plans"] == {
+    assert json.loads(result["table_data"]["somni_plans"]) == {
         "name": "晚间",
         "phases": [{"phase": "Unwind", "nodes": [{"name": "入睡"}]}],
     }
@@ -185,7 +195,7 @@ async def test_merges_same_record_and_reports_missing_field() -> None:
                 "source_refs": [
                     {
                         "table_name": "somni_plans",
-                        "query": {"plan_id": "plan-1"},
+                        "query": _query({"plan_id": "plan-1"}),
                         "filter_key": ["phases.missing"],
                     }
                 ],
@@ -205,8 +215,8 @@ async def test_source_queries_run_together() -> None:
             "context_type": "source_data",
             "query_id": "ask-4",
             "source_refs": [
-                {"table_name": "somni_plans", "query": {"plan_id": "plan-1"}},
-                {"table_name": "somni_acoustic_clips", "query": {"tag": "snore"}},
+                {"table_name": "somni_plans", "query": _query({"plan_id": "plan-1"})},
+                {"table_name": "somni_acoustic_clips", "query": _query({"tag": "snore"})},
             ],
         }
     )
@@ -223,10 +233,10 @@ async def test_direct_sn_skips_device_lookup_and_keeps_status_valid() -> None:
             "context_type": "source_data",
             "query_id": "ask-5",
             "source_refs": [
-                {"table_name": "somni_acoustic_clips", "query": {"sn": "SN-OTHER"}},
+                {"table_name": "somni_acoustic_clips", "query": _query({"sn": "SN-OTHER"})},
                 {
                     "table_name": "somni_wearable_daily_profiles",
-                    "query": {"status": 1.0, "record_date": "2026-10-28"},
+                    "query": _query({"status": 1.0, "record_date": "2026-10-28"}),
                 },
             ],
         }
@@ -239,33 +249,28 @@ async def test_direct_sn_skips_device_lookup_and_keeps_status_valid() -> None:
 
 
 @pytest.mark.asyncio
-async def test_oversized_result_is_rejected() -> None:
+async def test_large_result_is_returned() -> None:
     store = FakeStore(
         {"somni_plans": [{"_id": "plan-1", "name": "x" * 70000}]}
     )
-    with pytest.raises(AskContextError, match="65536") as caught:
-        await _service(store).get_context(
-            {
-                "context_type": "source_data",
-                "query_id": "ask-6",
-                "source_refs": [
-                    {"table_name": "somni_plans", "query": {"plan_id": "plan-1"}}
-                ],
-            }
-        )
-    assert caught.value.status == "RESOURCE_EXHAUSTED"
+    result = await _service(store).get_context(
+        {
+            "context_type": "source_data",
+            "query_id": "ask-6",
+            "source_refs": [
+                {"table_name": "somni_plans", "query": _query({"plan_id": "plan-1"})}
+            ],
+        }
+    )
+    assert json.loads(result["table_data"]["somni_plans"])["name"] == "x" * 70000
 
 
 @pytest.mark.asyncio
-async def test_rpc_returns_struct_for_session_history() -> None:
-    request = Struct()
-    ParseDict(
-        {
-            "context_type": "session_history",
-            "query_id": "summary-1",
-            "session_id": "ask-session-1",
-        },
-        request,
+async def test_rpc_returns_turns_for_session_history() -> None:
+    request = pb.GetContextReq(
+        context_type="session_history",
+        query_id="summary-1",
+        session_id="ask-session-1",
     )
 
     class Context:
@@ -273,27 +278,23 @@ async def test_rpc_returns_struct_for_session_history() -> None:
             raise AssertionError((code, message))
 
     response = await AskContextRpc(_service(FakeStore())).GetContext(request, Context())
-    payload = MessageToDict(response, preserving_proto_field_name=True)
-    assert payload["turns"] == []
-    assert payload["session_id"] == "ask-session-1"
+    assert list(response.turns) == []
+    assert response.session_id == "ask-session-1"
+    assert response.query_id == "summary-1"
 
 
 @pytest.mark.asyncio
 async def test_failure_log_includes_reason() -> None:
-    request = Struct()
-    ParseDict(
-        {
-            "context_type": "source_data",
-            "query_id": "ask-missing",
-            "source_refs": [
-                {
-                    "table_name": "somni_plans",
-                    "query": {"plan_id": "plan-1"},
-                    "filter_key": ["phases.missing"],
-                }
-            ],
-        },
-        request,
+    request = pb.GetContextReq(
+        context_type="source_data",
+        query_id="ask-missing",
+        source_refs=[
+            pb.AskContextSourceRef(
+                table_name="somni_plans",
+                query=_query({"plan_id": "plan-1"}),
+                filter_key=["phases.missing"],
+            )
+        ],
     )
     store = FakeStore(
         {"somni_plans": [{"_id": "plan-1", "phases": [{"phase": "Unwind"}]}]}

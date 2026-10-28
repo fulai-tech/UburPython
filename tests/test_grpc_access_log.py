@@ -8,8 +8,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import grpc
 import pytest
-from google.protobuf.json_format import ParseDict
-from google.protobuf.struct_pb2 import Struct
 from loguru import logger
 from pymongo.errors import ServerSelectionTimeoutError
 
@@ -26,33 +24,21 @@ from app.uburnode_grpc.grpc_gen import uburnode_somni_pb2
 async def test_ask_access_log_omits_request_and_response_body(tmp_path: Path) -> None:
     setup_logging(Settings(log_dir=str(tmp_path), log_level="INFO"))
 
-    request = Struct()
-    ParseDict(
-        {
-            "context_type": "source_data",
-            "user_id": "secret-user",
-            "query_id": "ask-trace-1",
-            "source_refs": [
-                {
-                    "table_name": "somni_sleep_reports",
-                    "query": {"record_date": "2026-10-01"},
-                }
-            ],
-        },
-        request,
+    request = uburnode_somni_pb2.GetContextReq(
+        context_type="source_data",
+        query_id="ask-trace-1",
+        source_refs=[
+            uburnode_somni_pb2.AskContextSourceRef(
+                table_name="somni_sleep_reports",
+                query='{"record_date":"2026-10-01","uid":"secret-user"}',
+            )
+        ],
     )
 
     async def behavior(req, context):
         del req, context
-        response = Struct()
-        ParseDict(
-            {
-                "user_id": "secret-user",
-                "query_id": "ask-trace-1",
-                "table_data": {"somni_sleep_reports": {"sleep_summary": {"body_battery": 80}}},
-            },
-            response,
-        )
+        response = uburnode_somni_pb2.GetContextRes(query_id="ask-trace-1")
+        response.table_data["somni_sleep_reports"] = '{"sleep_summary":{"body_battery":80}}'
         return response
 
     handler = await _intercept(behavior, "/uburnode.somni.v1.AskContextService/GetContext")
