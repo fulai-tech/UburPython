@@ -76,6 +76,9 @@ class Settings(BaseSettings):
     somni_mongo_generations_collection: str = "somni_plan_generations"
     somni_mongo_snapshots_collection: str = "somni_plans_snapshots"
     somni_mongo_plans_collection: str = "somni_plans"
+    somni_mongo_acoustic_clips_collection: str = "somni_acoustic_clips"
+    somni_mongo_chat_messages_collection: str = "somni_chat_messages"
+    ask_context_deadline_sec: float = Field(default=8.0, gt=0, le=30)
     somni_mongo_sessions_collection: str = "somni_sessions"
     somni_mongo_session_payloads_collection: str = "somni_session_payloads"
     somni_mongo_operations_collection: str = "somni_device_operations"
@@ -117,7 +120,7 @@ class Settings(BaseSettings):
 
     log_level: str = "INFO"
     log_dir: str = "logs"
-    # 公共日志 YYYY-MM-DD_ubur_log；gRPC 另见 logs/{handboard|somni}/{服务}/日期_controller|_service
+    # 公共日志 YYYY-MM-DD_ubur_log；gRPC 另见 logs/{handboard|somni}/{服务}/日期_log
     log_rotation_size: str = "100 MB"
     log_retention: str = "7 days"
 

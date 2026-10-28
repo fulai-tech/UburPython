@@ -13,6 +13,7 @@ from app.server.grpc_logging import GrpcAccessLogInterceptor
 from app.server.handboard.audio.rpc import AudioRpc as HandboardAudioRpc
 from app.server.handboard.quiz.rpc import QuizRpc as HandboardQuizRpc
 from app.server.somni.applewatch.rpc import AppleWatchRpc as SomniAppleWatchRpc
+from app.server.somni.ask.rpc import AskContextRpc
 from app.server.somni.audio.rpc import AudioRpc as SomniAudioRpc
 from app.server.somni.facts.rpc import GenerationDataRpc
 from app.server.somni.profile.rpc import ProfileRpc as SomniProfileRpc
@@ -99,6 +100,10 @@ async def _start_somni(state: AppState, settings: Settings) -> grpc.aio.Server:
     )
     uburnode_somni_pb2_grpc.add_AppleWatchServiceServicer_to_server(
         SomniAppleWatchRpc(getattr(state, "somni_applewatch_service", None)),
+        server,
+    )
+    uburnode_somni_pb2_grpc.add_AskContextServiceServicer_to_server(
+        AskContextRpc(getattr(state, "ask_context_service", None)),
         server,
     )
     _enable_reflection(server, uburnode_somni_pb2)

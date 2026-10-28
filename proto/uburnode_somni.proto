@@ -1114,3 +1114,8 @@ message GetBedtimeReminderInputsRes {
   InputTimeWindow target_window = 12;
   BedtimeReminderData data = 13;
 }
+
+// Ask 上下文只读。请求和响应都是 Struct，正文不带版本字段。
+service AskContextService {
+  rpc GetContext (google.protobuf.Struct) returns (google.protobuf.Struct);
+}

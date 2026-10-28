@@ -3,6 +3,7 @@
 import grpc
 import warnings
 
+from google.protobuf import struct_pb2 as google_dot_protobuf_dot_struct__pb2
 from . import uburnode_somni_pb2 as uburnode__somni__pb2
 
 GRPC_GENERATED_VERSION = '1.81.0'
@@ -962,6 +963,81 @@ class GenerationDataService:
             '/uburnode.somni.v1.GenerationDataService/GetBedtimeReminderInputs',
             uburnode__somni__pb2.GetBedtimeReminderInputsReq.SerializeToString,
             uburnode__somni__pb2.GetBedtimeReminderInputsRes.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+
+class AskContextServiceStub:
+    """Ask 上下文只读。请求和响应都是 Struct，正文不带版本字段。
+    """
+
+    def __init__(self, channel):
+        """Constructor.
+
+        Args:
+            channel: A grpc.Channel.
+        """
+        self.GetContext = channel.unary_unary(
+                '/uburnode.somni.v1.AskContextService/GetContext',
+                request_serializer=google_dot_protobuf_dot_struct__pb2.Struct.SerializeToString,
+                response_deserializer=google_dot_protobuf_dot_struct__pb2.Struct.FromString,
+                _registered_method=True)
+
+
+class AskContextServiceServicer:
+    """Ask 上下文只读。请求和响应都是 Struct，正文不带版本字段。
+    """
+
+    def GetContext(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+
+def add_AskContextServiceServicer_to_server(servicer, server):
+    rpc_method_handlers = {
+            'GetContext': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetContext,
+                    request_deserializer=google_dot_protobuf_dot_struct__pb2.Struct.FromString,
+                    response_serializer=google_dot_protobuf_dot_struct__pb2.Struct.SerializeToString,
+            ),
+    }
+    generic_handler = grpc.method_handlers_generic_handler(
+            'uburnode.somni.v1.AskContextService', rpc_method_handlers)
+    server.add_generic_rpc_handlers((generic_handler,))
+    server.add_registered_method_handlers('uburnode.somni.v1.AskContextService', rpc_method_handlers)
+
+
+ # This class is part of an EXPERIMENTAL API.
+class AskContextService:
+    """Ask 上下文只读。请求和响应都是 Struct，正文不带版本字段。
+    """
+
+    @staticmethod
+    def GetContext(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/uburnode.somni.v1.AskContextService/GetContext',
+            google_dot_protobuf_dot_struct__pb2.Struct.SerializeToString,
+            google_dot_protobuf_dot_struct__pb2.Struct.FromString,
             options,
             channel_credentials,
             insecure,

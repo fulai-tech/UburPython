@@ -24,6 +24,7 @@ MAX_SUMMARY_LEN = 2048
 _LIST_PREVIEW = 3
 _SERVICE_DIR = {
     "GenerationDataService": "facts",
+    "AskContextService": "ask",
 }
 
 
@@ -88,6 +89,7 @@ def _wrap_unary_unary(
         access = logger
         token = None
         label = method
+        service = ""
         if route is not None:
             product, service, rpc_name = route
             label = f"{product}.{service}.{rpc_name}"
@@ -99,20 +101,31 @@ def _wrap_unary_unary(
             token = rpc_access_logger.set(access)
         try:
             with logger.contextualize(request_id=request_id):
-                access.info(
-                    "gRPC 请求开始，接口={}，对端={}，请求={}",
-                    label,
-                    peer,
-                    summarize_message(request),
-                )
+                ask = _ask_trace(request) if service == "ask" else None
+                if ask is None:
+                    access.info(
+                        "gRPC 请求开始，接口={}，对端={}，请求={}",
+                        label,
+                        peer,
+                        summarize_message(request),
+                    )
+                else:
+                    access.info(
+                        "gRPC 请求开始，接口={}，对端={}，query_id={}，context_type={}",
+                        label,
+                        peer,
+                        ask[0],
+                        ask[1],
+                    )
                 try:
                     response = await behavior(request, context)
                 except grpc.aio.AbortError:
                     access.info(
-                        "gRPC 请求中止，接口={}，对端={}，状态={}，耗时={}毫秒",
+                        "gRPC 请求中止，接口={}，对端={}，状态={}，原因={}，耗时={}毫秒",
                         label,
                         peer,
                         _status_name(context),
+                        _status_details(context),
                         _elapsed_ms(started_at),
                     )
                     raise
@@ -124,19 +137,47 @@ def _wrap_unary_unary(
                         _elapsed_ms(started_at),
                     )
                     raise
-                access.info(
-                    "gRPC 请求完成，接口={}，对端={}，耗时={}毫秒，响应={}",
-                    label,
-                    peer,
-                    _elapsed_ms(started_at),
-                    summarize_message(response),
-                )
+                if ask is None:
+                    access.info(
+                        "gRPC 请求完成，接口={}，对端={}，耗时={}毫秒，响应={}",
+                        label,
+                        peer,
+                        _elapsed_ms(started_at),
+                        summarize_message(response),
+                    )
+                else:
+                    access.info(
+                        "gRPC 请求完成，接口={}，对端={}，耗时={}毫秒，"
+                        "query_id={}，context_type={}",
+                        label,
+                        peer,
+                        _elapsed_ms(started_at),
+                        ask[0],
+                        ask[1],
+                    )
                 return response
         finally:
             if token is not None:
                 rpc_access_logger.reset(token)
 
     return logged
+
+
+def _ask_trace(message: Any) -> tuple[str, str]:
+    """只取出追踪字段。Ask 访问日志不记录请求体和响应正文。"""
+    query_id = ""
+    context_type = ""
+    if isinstance(message, Message):
+        try:
+            raw = MessageToDict(message, preserving_proto_field_name=True)
+        except Exception:
+            raw = None
+        if isinstance(raw, dict):
+            if isinstance(raw.get("query_id"), str):
+                query_id = raw["query_id"]
+            if isinstance(raw.get("context_type"), str):
+                context_type = raw["context_type"]
+    return query_id, context_type
 
 
 def summarize_message(message: Any) -> str:
@@ -201,6 +242,17 @@ def _status_name(context: grpc.aio.ServicerContext) -> str:
     if code is None:
         return "unknown"
     return code.name if hasattr(code, "name") else str(code)
+
+
+def _status_details(context: grpc.aio.ServicerContext) -> str:
+    """读取 abort 写入的失败原因，例如 invalid_uid、active_plan_link_incomplete。"""
+    try:
+        details = context.details()
+    except Exception:
+        return "unknown"
+    if not isinstance(details, str) or not details:
+        return "unknown"
+    return _truncate(" ".join(details.split()), MAX_SUMMARY_LEN)
 
 
 def _elapsed_ms(started_at: float) -> int:
