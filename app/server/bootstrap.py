@@ -75,7 +75,7 @@ async def _start_handboard(state: AppState, settings: Settings) -> grpc.aio.Serv
 
 
 async def _start_somni(state: AppState, settings: Settings) -> grpc.aio.Server:
-    server = _new_grpc_server()
+    server = _new_grpc_server(unlimited_messages=True)
     uburnode_somni_pb2_grpc.add_QuizServiceServicer_to_server(
         SomniQuizRpc(getattr(state, "somni_quiz_service", None)),
         server,
@@ -113,8 +113,14 @@ async def _start_somni(state: AppState, settings: Settings) -> grpc.aio.Server:
     return server
 
 
-def _new_grpc_server() -> grpc.aio.Server:
-    return grpc.aio.server(interceptors=[GrpcAccessLogInterceptor()])
+def _new_grpc_server(*, unlimited_messages: bool = False) -> grpc.aio.Server:
+    options = None
+    if unlimited_messages:
+        options = [
+            ("grpc.max_send_message_length", -1),
+            ("grpc.max_receive_message_length", -1),
+        ]
+    return grpc.aio.server(interceptors=[GrpcAccessLogInterceptor()], options=options)
 
 
 def _enable_reflection(server: grpc.aio.Server, proto_module) -> None:

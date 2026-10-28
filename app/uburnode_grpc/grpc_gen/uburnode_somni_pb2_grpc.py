@@ -3,7 +3,6 @@
 import grpc
 import warnings
 
-from google.protobuf import struct_pb2 as google_dot_protobuf_dot_struct__pb2
 from . import uburnode_somni_pb2 as uburnode__somni__pb2
 
 GRPC_GENERATED_VERSION = '1.81.0'
@@ -975,8 +974,7 @@ class GenerationDataService:
 
 
 class AskContextServiceStub:
-    """Ask 上下文只读。请求和响应都是 Struct，正文不带版本字段。
-    """
+    """Missing associated documentation comment in .proto file."""
 
     def __init__(self, channel):
         """Constructor.
@@ -986,14 +984,13 @@ class AskContextServiceStub:
         """
         self.GetContext = channel.unary_unary(
                 '/uburnode.somni.v1.AskContextService/GetContext',
-                request_serializer=google_dot_protobuf_dot_struct__pb2.Struct.SerializeToString,
-                response_deserializer=google_dot_protobuf_dot_struct__pb2.Struct.FromString,
+                request_serializer=uburnode__somni__pb2.GetContextReq.SerializeToString,
+                response_deserializer=uburnode__somni__pb2.GetContextRes.FromString,
                 _registered_method=True)
 
 
 class AskContextServiceServicer:
-    """Ask 上下文只读。请求和响应都是 Struct，正文不带版本字段。
-    """
+    """Missing associated documentation comment in .proto file."""
 
     def GetContext(self, request, context):
         """Missing associated documentation comment in .proto file."""
@@ -1006,8 +1003,8 @@ def add_AskContextServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
             'GetContext': grpc.unary_unary_rpc_method_handler(
                     servicer.GetContext,
-                    request_deserializer=google_dot_protobuf_dot_struct__pb2.Struct.FromString,
-                    response_serializer=google_dot_protobuf_dot_struct__pb2.Struct.SerializeToString,
+                    request_deserializer=uburnode__somni__pb2.GetContextReq.FromString,
+                    response_serializer=uburnode__somni__pb2.GetContextRes.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -1018,8 +1015,7 @@ def add_AskContextServiceServicer_to_server(servicer, server):
 
  # This class is part of an EXPERIMENTAL API.
 class AskContextService:
-    """Ask 上下文只读。请求和响应都是 Struct，正文不带版本字段。
-    """
+    """Missing associated documentation comment in .proto file."""
 
     @staticmethod
     def GetContext(request,
@@ -1036,8 +1032,8 @@ class AskContextService:
             request,
             target,
             '/uburnode.somni.v1.AskContextService/GetContext',
-            google_dot_protobuf_dot_struct__pb2.Struct.SerializeToString,
-            google_dot_protobuf_dot_struct__pb2.Struct.FromString,
+            uburnode__somni__pb2.GetContextReq.SerializeToString,
+            uburnode__somni__pb2.GetContextRes.FromString,
             options,
             channel_credentials,
             insecure,

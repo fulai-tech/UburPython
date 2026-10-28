@@ -19,7 +19,6 @@ from app.server.somni.ask.query_builder import (
 )
 from app.server.somni.ask.store import AskContextStore
 
-_RESPONSE_BYTES = 65536
 _MAX_TOKEN = 256
 
 
@@ -46,7 +45,7 @@ class AskContextService:
                 "INVALID_ARGUMENT",
                 "context_type 必须是 source_data 或 session_history",
             )
-        return _within_budget(result)
+        return result
 
     async def _source_data(self, payload: dict[str, Any], query_id: str) -> dict[str, Any]:
         if payload.get("session_id"):
@@ -54,22 +53,23 @@ class AskContextService:
         refs = payload.get("source_refs")
         if not isinstance(refs, list):
             raise AskContextError("INVALID_ARGUMENT", "source_refs 必须是数组")
+        decoded = [_with_query_object(ref) for ref in refs]
         try:
-            assembled = assemble_source_queries(refs)
+            assembled = assemble_source_queries(decoded)
         except QueryBuildError as exc:
             raise AskContextError("INVALID_ARGUMENT", exc.message) from exc
-        projections = [_projection(ref) for ref in refs]
+        projections = [_projection(ref) for ref in decoded]
         docs_by_index = await self._load(assembled)
         table_order: list[str] = []
         grouped: dict[str, list[tuple[list[dict[str, Any]], list[str] | None]]] = {}
-        for index, ref in enumerate(refs):
+        for index, ref in enumerate(decoded):
             table_name = ref["table_name"]
             if table_name not in grouped:
                 table_order.append(table_name)
                 grouped[table_name] = []
             grouped[table_name].append((docs_by_index[index], projections[index]))
         table_data = {
-            table_name: shape_table(grouped[table_name], readable_roots(table_name))
+            table_name: _dump_json(shape_table(grouped[table_name], readable_roots(table_name)))
             for table_name in table_order
         }
         return {"query_id": query_id, "table_data": table_data}
@@ -96,6 +96,33 @@ class AskContextService:
             "session_id": session_id,
             "turns": _chat_turns(messages),
         }
+
+
+def _with_query_object(ref: Any) -> dict[str, Any]:
+    if not isinstance(ref, dict):
+        raise AskContextError("INVALID_ARGUMENT", "source_refs 的每一项必须是对象")
+    item = dict(ref)
+    item["query"] = _parse_query_json(ref.get("query"))
+    return item
+
+
+def _parse_query_json(value: Any) -> dict[str, Any]:
+    if not isinstance(value, str) or not value.strip():
+        raise AskContextError("INVALID_ARGUMENT", "query 必须是 JSON 对象字符串")
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise AskContextError("INVALID_ARGUMENT", "query 必须是 JSON 对象字符串") from exc
+    if not isinstance(parsed, dict):
+        raise AskContextError("INVALID_ARGUMENT", "query 必须是 JSON 对象字符串")
+    return parsed
+
+
+def _dump_json(value: Any) -> str:
+    try:
+        return json.dumps(value, ensure_ascii=False, allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise AskContextError("INTERNAL", "结果无法编码为 JSON") from exc
 
 
 def _projection(ref: dict[str, Any]) -> list[str] | None:
@@ -161,12 +188,3 @@ def _token(value: Any, name: str) -> str:
         )
     return value
 
-
-def _within_budget(payload: dict[str, Any]) -> dict[str, Any]:
-    try:
-        encoded = json.dumps(payload, ensure_ascii=False, allow_nan=False).encode("utf-8")
-    except (TypeError, ValueError) as exc:
-        raise AskContextError("INTERNAL", "结果无法编码为 JSON") from exc
-    if len(encoded) > _RESPONSE_BYTES:
-        raise AskContextError("RESOURCE_EXHAUSTED", "结果超过 65536 字节")
-    return payload
