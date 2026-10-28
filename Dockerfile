@@ -2,7 +2,7 @@
 FROM python:3.12-slim-bookworm AS exporter
 
 ARG APT_MIRROR=mirrors.tencent.com
-ARG PIP_INDEX_URL=https://mirrors.cloud.tencent.com/pypi/simple
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 ARG HF_ENDPOINT=https://hf-mirror.com
 
 WORKDIR /export
@@ -20,14 +20,25 @@ RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
     && apt-get install -y --no-install-recommends build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir \
-        --timeout 300 \
-        --retries 5 \
-        --trusted-host mirrors.cloud.tencent.com \
-        --trusted-host pypi.tuna.tsinghua.edu.cn \
-        -i "${PIP_INDEX_URL}" \
-        --extra-index-url "https://pypi.tuna.tsinghua.edu.cn/simple" \
-        "sentence-transformers>=3.3.0" torch onnxscript
+# 只走清华源。单次下载被截断时再试，不再使用腾讯 PyPI。
+RUN set -eu; \
+    pip_install() { \
+      host=$$(printf '%s\n' "${PIP_INDEX_URL}" | sed -E 's#^[a-z]+://([^/:]+).*#\1#'); \
+      n=0; \
+      while [ "$$n" -lt 3 ]; do \
+        n=$$((n + 1)); \
+        echo "pip install via ${PIP_INDEX_URL} attempt $$n"; \
+        if pip install --no-cache-dir --timeout 120 --retries 3 \
+            --trusted-host "$$host" -i "${PIP_INDEX_URL}" "$$@"; then \
+          return 0; \
+        fi; \
+        echo "pip install failed, attempt $$n" >&2; \
+        sleep $$((n * 5)); \
+      done; \
+      return 1; \
+    }; \
+    pip_install --upgrade pip; \
+    pip_install "sentence-transformers>=3.3.0" torch onnxscript
 
 COPY scripts/export_onnx_model.py ./scripts/
 RUN python scripts/export_onnx_model.py --output-dir /export/onnx
@@ -36,7 +47,7 @@ RUN python scripts/export_onnx_model.py --output-dir /export/onnx
 FROM python:3.12-slim-bookworm AS builder
 
 ARG APT_MIRROR=mirrors.tencent.com
-ARG PIP_INDEX_URL=https://mirrors.cloud.tencent.com/pypi/simple
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 
 WORKDIR /app
 
@@ -54,14 +65,25 @@ RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
 COPY pyproject.toml README.md ./
 COPY app ./app
 
-RUN pip install --no-cache-dir \
-        --timeout 300 \
-        --retries 5 \
-        --trusted-host mirrors.cloud.tencent.com \
-        --trusted-host pypi.tuna.tsinghua.edu.cn \
-        -i "${PIP_INDEX_URL}" \
-        --extra-index-url "https://pypi.tuna.tsinghua.edu.cn/simple" \
-        .
+# 只走清华源。单次下载被截断时再试，不再使用腾讯 PyPI。
+RUN set -eu; \
+    pip_install() { \
+      host=$$(printf '%s\n' "${PIP_INDEX_URL}" | sed -E 's#^[a-z]+://([^/:]+).*#\1#'); \
+      n=0; \
+      while [ "$$n" -lt 3 ]; do \
+        n=$$((n + 1)); \
+        echo "pip install via ${PIP_INDEX_URL} attempt $$n"; \
+        if pip install --no-cache-dir --timeout 120 --retries 3 \
+            --trusted-host "$$host" -i "${PIP_INDEX_URL}" "$$@"; then \
+          return 0; \
+        fi; \
+        echo "pip install failed, attempt $$n" >&2; \
+        sleep $$((n * 5)); \
+      done; \
+      return 1; \
+    }; \
+    pip_install --upgrade pip; \
+    pip_install .
 
 FROM python:3.12-slim-bookworm AS runtime
 
