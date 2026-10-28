@@ -20,7 +20,14 @@ RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
     && apt-get install -y --no-install-recommends build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir -i "${PIP_INDEX_URL}" "sentence-transformers>=3.3.0" torch onnxscript
+RUN pip install --no-cache-dir \
+        --timeout 300 \
+        --retries 5 \
+        --trusted-host mirrors.cloud.tencent.com \
+        --trusted-host pypi.tuna.tsinghua.edu.cn \
+        -i "${PIP_INDEX_URL}" \
+        --extra-index-url "https://pypi.tuna.tsinghua.edu.cn/simple" \
+        "sentence-transformers>=3.3.0" torch onnxscript
 
 COPY scripts/export_onnx_model.py ./scripts/
 RUN python scripts/export_onnx_model.py --output-dir /export/onnx
@@ -47,7 +54,14 @@ RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
 COPY pyproject.toml README.md ./
 COPY app ./app
 
-RUN pip install --no-cache-dir -i "${PIP_INDEX_URL}" .
+RUN pip install --no-cache-dir \
+        --timeout 300 \
+        --retries 5 \
+        --trusted-host mirrors.cloud.tencent.com \
+        --trusted-host pypi.tuna.tsinghua.edu.cn \
+        -i "${PIP_INDEX_URL}" \
+        --extra-index-url "https://pypi.tuna.tsinghua.edu.cn/simple" \
+        .
 
 FROM python:3.12-slim-bookworm AS runtime
 
