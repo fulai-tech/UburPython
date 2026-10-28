@@ -1,13 +1,12 @@
 """loguru 初始化：控制台 + 按日/按大小文件。
 
 公共日志落在 LOG_DIR/YYYY-MM-DD_ubur_log（HTTP、启动、ES、编码器等）。
-gRPC 按服务再拆两层，避免不同服务、控制层与服务层写进同一个文件：
+每个 gRPC 服务一个文件，访问日志和该服务自己的日志写在一起：
 
-- logs/{handboard|somni}/{服务}/YYYY-MM-DD_controller  控制层（rpc 访问日志）
-- logs/{handboard|somni}/{服务}/YYYY-MM-DD_service     服务层
+- logs/{handboard|somni}/{服务}/YYYY-MM-DD_log
 
-路由规则：记录上的 log_product/log_service/log_layer 优先（拦截器 bind）；
-否则按 logger 所在模块 app.server.{产品}.{服务}.* 归类，rpc 模块进控制层，其余进服务层。
+路由规则：拦截器 bind 的 log_product/log_service，或模块名 app.server.{产品}.{服务}.*，
+都进该服务的同一个日志文件。
 - 本地日历跨日：切到新日期文件。
 - 单日文件超过 log_rotation_size：旧文件追加时间戳后缀归档，新建同名文件继续写。
 enqueue=True：异步写盘，避免阻塞请求线程。
@@ -32,6 +31,16 @@ FILE_LOG_FORMAT = (
     "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | "
     "{extra[request_id]} | {name}:{function}:{line} | {message}"
 )
+# tail -f 直接显示这些 ANSI 码。正常为绿，警告为黄，错误为红。
+_ANSI_GREEN = "\033[32m"
+_ANSI_YELLOW = "\033[33m"
+_ANSI_RED = "\033[31m"
+_ANSI_RESET = "\033[0m"
+_FILE_LEVEL_COLOR = {
+    "WARNING": _ANSI_YELLOW,
+    "ERROR": _ANSI_RED,
+    "CRITICAL": _ANSI_RED,
+}
 
 CONSOLE_LOG_FORMAT = (
     "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
@@ -45,7 +54,7 @@ DEFAULT_REQUEST_ID = "-"
 LOG_FILE_SUFFIX = "_ubur_log"
 LAYER_CONTROLLER = "controller"
 LAYER_SERVICE = "service"
-_LAYERS = (LAYER_CONTROLLER, LAYER_SERVICE)
+LAYER_LOG = "log"
 _MODULE_RE = re.compile(
     r"^app\.server\.(handboard|somni)\.([a-z0-9_]+)(?:\.(.+))?$"
 )
@@ -56,6 +65,13 @@ _SIZE_PATTERN = re.compile(
 _routes: set[tuple[str, str, str]] = set()
 # 拦截器在单次 RPC 期间放入控制层 logger，供 run_rpc_call 把异常栈写进对应控制层文件。
 rpc_access_logger: ContextVar[Any] = ContextVar("rpc_access_logger", default=None)
+
+
+def file_log_format(record: dict) -> str:
+    """返回带颜色码的文件日志模板，供 tail -f 按级别着色。"""
+    color = _FILE_LEVEL_COLOR.get(record["level"].name, _ANSI_GREEN)
+    record["extra"]["ansi"] = color
+    return "{extra[ansi]}" + FILE_LOG_FORMAT + "{exception}" + _ANSI_RESET + "\n"
 
 
 def current_log_path(log_dir: Path, when: date | None = None) -> Path:
@@ -97,9 +113,8 @@ def route_record(record: dict) -> tuple[str, str, str] | None:
     extra = record["extra"]
     product = extra.get("log_product")
     service = extra.get("log_service")
-    layer = extra.get("log_layer")
-    if product and service and layer in _LAYERS:
-        return str(product), str(service), str(layer)
+    if product and service and _is_grpc_service(str(product), str(service)):
+        return str(product), str(service), LAYER_LOG
     return _route_by_module(str(record["name"]))
 
 
@@ -107,12 +122,14 @@ def _route_by_module(name: str) -> tuple[str, str, str] | None:
     match = _MODULE_RE.match(name)
     if match is None:
         return None
-    product, service, rest = match.group(1), match.group(2), match.group(3)
-    if rest == "rpc" or (rest or "").startswith("rpc."):
-        layer = LAYER_CONTROLLER
-    else:
-        layer = LAYER_SERVICE
-    return product, service, layer
+    product, service, _rest = match.group(1), match.group(2), match.group(3)
+    if not _is_grpc_service(product, service):
+        return None
+    return product, service, LAYER_LOG
+
+
+def _is_grpc_service(product: str, service: str) -> bool:
+    return (product, service, LAYER_LOG) in _routes
 
 
 def _common_filter(record: dict) -> bool:
@@ -165,8 +182,7 @@ def setup_logging(settings: Settings) -> Path:
     found = discover_rpc_services()
     _routes.clear()
     for product, service in found:
-        for layer in _LAYERS:
-            _routes.add((product, service, layer))
+        _routes.add((product, service, LAYER_LOG))
 
     logger.remove()
     logger.configure(extra={"request_id": DEFAULT_REQUEST_ID})
@@ -175,7 +191,7 @@ def setup_logging(settings: Settings) -> Path:
     logger.add(
         sink_pattern,
         level=level,
-        format=FILE_LOG_FORMAT,
+        format=file_log_format,
         rotation=daily_or_size_rotation(max_bytes),
         retention=settings.log_retention,
         encoding="utf-8",
@@ -185,17 +201,16 @@ def setup_logging(settings: Settings) -> Path:
     for product, service in found:
         service_dir = log_dir / product / service
         service_dir.mkdir(parents=True, exist_ok=True)
-        for layer in _LAYERS:
-            logger.add(
-                str(service_dir / f"{{time:YYYY-MM-DD}}_{layer}"),
-                level=level,
-                format=FILE_LOG_FORMAT,
-                rotation=daily_or_size_rotation(max_bytes),
-                retention=settings.log_retention,
-                encoding="utf-8",
-                enqueue=True,
-                filter=_route_filter(product, service, layer),
-            )
+        logger.add(
+            str(service_dir / "{time:YYYY-MM-DD}_log"),
+            level=level,
+            format=file_log_format,
+            rotation=daily_or_size_rotation(max_bytes),
+            retention=settings.log_retention,
+            encoding="utf-8",
+            enqueue=True,
+            filter=_route_filter(product, service, LAYER_LOG),
+        )
     logger.info(
         "日志已初始化，级别={}，公共文件={}，单文件上限={}，gRPC 服务数={}",
         level,

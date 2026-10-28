@@ -49,6 +49,21 @@ def test_file_log_includes_request_id_from_context(tmp_path: Path) -> None:
     assert "带 request_id 的探测日志" in content
 
 
+def test_file_log_colors_level_for_tail(tmp_path: Path) -> None:
+    settings = Settings(log_dir=str(tmp_path), log_level="DEBUG")
+    log_file = setup_logging(settings)
+    logger.info("正常探测")
+    logger.warning("警告探测")
+    logger.error("错误探测")
+    logger.complete()
+    content = log_file.read_text(encoding="utf-8")
+    assert "\033[32m" in content.split("正常探测")[0]
+    warning = content.split("警告探测")[0].rsplit("\033[", 1)[-1]
+    error = content.split("错误探测")[0].rsplit("\033[", 1)[-1]
+    assert warning.startswith("33m")
+    assert error.startswith("31m")
+
+
 def test_file_log_uses_default_request_id_when_absent(tmp_path: Path) -> None:
     settings = Settings(log_dir=str(tmp_path), log_level="INFO")
     log_file = setup_logging(settings)
@@ -85,6 +100,23 @@ def test_size_rotation_archives_full_file_and_continues_same_day(
     assert "size-rotation-probe" in active.read_text(encoding="utf-8")
 
 
+def test_ask_logs_use_one_file(tmp_path: Path) -> None:
+    settings = Settings(log_dir=str(tmp_path), log_level="INFO")
+    setup_logging(settings)
+    ask_logger = logger.patch(
+        lambda record: record.update(name="app.server.somni.ask.rpc")
+    )
+    ask_logger.info("Ask 单文件探测")
+    logger.complete()
+
+    day = date.today()
+    single = tmp_path / "somni" / "ask" / f"{day:%Y-%m-%d}_log"
+    assert single.exists()
+    assert "Ask 单文件探测" in single.read_text(encoding="utf-8")
+    assert not (tmp_path / "somni" / "ask" / f"{day:%Y-%m-%d}_service").exists()
+    assert not (tmp_path / "somni" / "ask" / f"{day:%Y-%m-%d}_controller").exists()
+
+
 def test_discover_rpc_services_skips_mapper_only_packages() -> None:
     found = set(discover_rpc_services())
     assert ("somni", "audio") in found
@@ -94,7 +126,7 @@ def test_discover_rpc_services_skips_mapper_only_packages() -> None:
     assert ("somni", "weather") not in found
 
 
-def test_service_and_controller_logs_go_to_separate_files(tmp_path: Path) -> None:
+def test_service_and_access_logs_share_one_file(tmp_path: Path) -> None:
     settings = Settings(log_dir=str(tmp_path), log_level="INFO")
     common = setup_logging(settings)
     service_logger = logger.patch(
@@ -110,16 +142,14 @@ def test_service_and_controller_logs_go_to_separate_files(tmp_path: Path) -> Non
     logger.info("公共日志探测")
     logger.complete()
 
-    service_file = service_log_path(tmp_path, "somni", "audio", LAYER_SERVICE)
-    controller_file = service_log_path(tmp_path, "somni", "audio", LAYER_CONTROLLER)
-    service_text = service_file.read_text(encoding="utf-8")
-    controller_text = controller_file.read_text(encoding="utf-8")
+    day = date.today()
+    single = tmp_path / "somni" / "audio" / f"{day:%Y-%m-%d}_log"
+    text = single.read_text(encoding="utf-8")
     common_text = common.read_text(encoding="utf-8")
 
-    assert "目录服务探测" in service_text
-    assert "控制层探测" not in service_text
-    assert "控制层探测" in controller_text
-    assert "目录服务探测" not in controller_text
+    assert "目录服务探测" in text
+    assert "控制层探测" in text
     assert "公共日志探测" in common_text
     assert "目录服务探测" not in common_text
-    assert "控制层探测" not in common_text
+    assert not service_log_path(tmp_path, "somni", "audio", LAYER_SERVICE).exists()
+    assert not service_log_path(tmp_path, "somni", "audio", LAYER_CONTROLLER).exists()

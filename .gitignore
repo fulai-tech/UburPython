@@ -11,9 +11,7 @@ venv/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
-logs/*.log
-logs/*.json
-logs/*.log.*
+logs/
 data/sync_backup/
 .DS_Store
 .idea/
