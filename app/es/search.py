@@ -21,6 +21,18 @@ from app.es.index_mappings import (
 from app.schemas.audio import AudioTags, TagItem
 
 LEGACY_INDICES = ("audio_materials", "tag_vectors")
+_GET_AUDIO_BM25_SOURCE = (
+    "audio_name",
+    "description",
+    "short_description",
+    "audio_url",
+    "cover_url",
+    "content_form_tags",
+    "vip",
+    "language",
+    "status",
+    "created_at",
+)
 CONTENT_TAG_TYPES = ("content_form", "mechanism", "audio_engineering")
 # 检索候选只取流水线与响应组装需要的字段，避免新增索引字段被默认带回。
 SEARCH_CANDIDATE_SOURCE_INCLUDES = (
@@ -71,6 +83,25 @@ def _parse_engineering_tags(items: list[dict[str, Any]] | None) -> list[TagItem]
         if tag:
             parsed.append(tag)
     return parsed
+
+
+def build_get_audio_filters(*, language: str, tag_code: str = "") -> list[dict[str, Any]]:
+    """GetAudio 两路检索共用过滤：语言、启用、可选内容形态 code。"""
+    filters: list[dict[str, Any]] = [
+        {"term": {"language": language}},
+        {"term": {"status": True}},
+    ]
+    code = tag_code.strip()
+    if code:
+        filters.append(
+            {
+                "nested": {
+                    "path": "content_form_tags",
+                    "query": {"term": {"content_form_tags.code": code}},
+                }
+            }
+        )
+    return filters
 
 
 def _document_from_hit(hit: dict[str, Any]) -> dict[str, Any]:
@@ -429,6 +460,38 @@ class EsSearch:
             },
         )
         return [_document_from_hit(hit) for hit in response["hits"]["hits"]]
+
+    async def search_get_audio_bm25(
+        self,
+        query_text: str,
+        *,
+        language: str,
+        tag_code: str = "",
+        size: int,
+    ) -> list[dict[str, Any]]:
+        """量产 GetAudio：按 description_text 做 BM25 检索。"""
+        response = await self._client.search(
+            index=self.audio_index,
+            body={
+                "size": max(1, size),
+                "query": {
+                    "bool": {
+                        "filter": build_get_audio_filters(
+                            language=language,
+                            tag_code=tag_code,
+                        ),
+                        "must": [
+                            {"match_phrase": {"description_text": query_text}}
+                        ],
+                    }
+                },
+                "_source": {"includes": list(_GET_AUDIO_BM25_SOURCE)},
+            },
+        )
+        docs = [_document_from_hit(hit) for hit in response["hits"]["hits"]]
+        for doc, hit in zip(docs, response["hits"]["hits"]):
+            doc["_bm25_score"] = float(hit.get("_score") or 0.0)
+        return docs
 
     async def migrate_legacy_indices(self) -> None:
         """删除旧版 audio_materials / tag_vectors 索引。"""

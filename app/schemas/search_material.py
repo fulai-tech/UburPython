@@ -15,9 +15,7 @@ def project_search_material(doc: dict[str, Any]) -> dict[str, Any]:
         "cover_url": str(doc.get("cover_url") or ""),
         "sleep_stage_tags": _project_tag_refs(doc.get("sleep_stage_tags")),
         "content_form_tags": _project_content_form_tags(doc.get("content_form_tags")),
-        "mechanism_tags": _project_tag_refs(doc.get("mechanism_tags")),
         "audio_engineering_tags": _project_engineering_tags(doc.get("audio_engineering_tags")),
-        "medical_risk_tags": _project_tag_refs(doc.get("medical_risk_tags")),
         "evidence_level_tags": _project_tag_refs(doc.get("evidence_level_tags")),
     }
     if "status" in doc:

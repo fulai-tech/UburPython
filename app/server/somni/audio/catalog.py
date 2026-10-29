@@ -8,7 +8,6 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from time import monotonic
 from typing import Any
 
 from bson import ObjectId
@@ -24,12 +23,14 @@ from app.core.audio_tags import (
     resolve_audio_preferences,
     validated_audio_tags,
 )
+from app.cache.somni_audio_catalog_cache import SomniAudioCatalogCache
 from app.core.bson_util import bson_to_jsonable
 from app.core.codes import HttpStatus
 from app.core.config import Settings
 from app.core.exceptions import AppError, EncoderNotReadyError
 from app.embedding.encoder import Encoder
 from app.es.search import CONTENT_TAG_TYPES, EsSearch
+from app.schemas.audio import SearchAudioRequest
 from app.schemas.search_material import project_search_material
 from app.server.somni.audio.hot import HotTracker, normalize_tag_code
 from app.server.somni.audio.segment import segment_dislike_text, segment_dislike_text_en
@@ -75,6 +76,7 @@ class AudioCatalogService:
         encoder_en: Encoder | None = None,
         hot: HotTracker | None = None,
         retrieval: Any | None = None,
+        redis: Any | None = None,
     ) -> None:
         self._client = client
         self._settings = settings
@@ -84,8 +86,12 @@ class AudioCatalogService:
         self._hot = hot
         self._content_form_tag_bank_cache: list[dict[str, Any]] | None = None
         self._retrieval = retrieval
-        self._audio_cache: dict[tuple[bool, str], tuple[float, list[dict[str, Any]]]] = {}
-        self._audio_cache_lock = asyncio.Lock()
+        self._catalog_cache = (
+            SomniAudioCatalogCache(redis, ttl_sec=settings.somni_audio_catalog_cache_ttl_sec)
+            if redis is not None
+            else None
+        )
+        self._catalog_load_lock = asyncio.Lock()
         self._hot_tasks: set[asyncio.Task[None]] = set()
         self._hot_sem = asyncio.Semaphore(32)
 
@@ -133,6 +139,8 @@ class AudioCatalogService:
             ) from exc
         pref = preference_text.strip()
         dislike = dislike_text.strip()
+        # 暂时：zh / en 都走中文目录、中文标签和中文检索。
+        language = "zh"
         # 搜索词走原检索，不套问卷偏好。分类筛选仍保留偏好排序。
         if text:
             codes = []
@@ -145,8 +153,19 @@ class AudioCatalogService:
             hot_tag_codes.add(code)
         if text:
             matched = await self._content_form_tags_by_text(text, language=language)
-            docs = [doc for doc in docs if _has_content_form_tag_id(doc, matched.ids)]
+            tag_docs = [doc for doc in docs if _has_content_form_tag_id(doc, matched.ids)]
             hot_tag_codes |= matched.codes
+            bm25_docs = await self._bm25_audio_docs(
+                text,
+                language=language,
+                tag_code=code,
+                fetch_all=fetch_all,
+            )
+            docs = _rrf_merge_docs(
+                tag_docs,
+                bm25_docs,
+                k=self._settings.get_audio_rrf_k,
+            )
         preferred_ids: set[str] = set()
         if codes or pref:
             preferred_ids = await self._preferred_audio_ids(
@@ -275,12 +294,16 @@ class AudioCatalogService:
                 logger.warning("英文标签名向量失败：{}", exc)
                 tag["vector_en_model"] = []
 
+    async def search_audio(self, request: SearchAudioRequest) -> list[dict[str, Any]]:
+        """与 POST /api/audio/search 相同的检索流水线，数据源是量产 ES。"""
+        if self._retrieval is None:
+            raise AppError(message="检索服务未就绪", status_code=HttpStatus.SERVICE_UNAVAILABLE)
+        return await self._retrieval.search(request)
+
     async def search_prescription_audio(self, task: dict[str, Any]) -> list[dict[str, Any]]:
         """Use the configured ranked retrieval service without recording hot queries."""
         if self._retrieval is None:
             raise AppError(message="检索服务未就绪", status_code=HttpStatus.SERVICE_UNAVAILABLE)
-        from app.schemas.audio import SearchAudioRequest
-
         try:
             machine_tags = {
                 field: (
@@ -487,29 +510,24 @@ class AudioCatalogService:
                 logger.warning("量产热点后台记账失败：{}", exc)
 
     async def _load_audios(self, *, from_es: bool, language: str) -> list[dict[str, Any]]:
-        cache_key = (from_es, language)
-        now = monotonic()
-        cached = self._audio_cache.get(cache_key)
-        if cached is not None and self._is_cache_fresh(cached[0], now):
-            return cached[1]
-        async with self._audio_cache_lock:
-            cached = self._audio_cache.get(cache_key)
-            if cached is not None and self._is_cache_fresh(cached[0], now):
-                return cached[1]
+        if self._catalog_cache is not None:
+            cached = await self._catalog_cache.get(from_es=from_es, language=language)
+            if cached is not None:
+                return cached
+        async with self._catalog_load_lock:
+            if self._catalog_cache is not None:
+                cached = await self._catalog_cache.get(from_es=from_es, language=language)
+                if cached is not None:
+                    return cached
             raw = (
                 await self._fetch_audios_es(language)
                 if from_es
                 else await self._fetch_audios_mongo(language)
             )
             docs = [_map_material(doc) for doc in raw]
-            self._audio_cache[cache_key] = (now, docs)
+            if self._catalog_cache is not None:
+                await self._catalog_cache.set(from_es=from_es, language=language, docs=docs)
             return docs
-
-    def _is_cache_fresh(self, loaded_at: float, now: float) -> bool:
-        ttl = self._settings.somni_audio_catalog_cache_ttl_sec
-        if ttl <= 0:
-            return True
-        return now - loaded_at < ttl
 
     async def _fetch_audios_mongo(self, language: str) -> list[dict[str, Any]]:
         collection = self._materials()
@@ -532,6 +550,29 @@ class AudioCatalogService:
         )
         self._reject_over_limit(len(docs))
         return docs
+
+    async def _bm25_audio_docs(
+        self,
+        text: str,
+        *,
+        language: str,
+        tag_code: str,
+        fetch_all: bool,
+    ) -> list[dict[str, Any]]:
+        if not self._settings.get_audio_bm25_enabled or self._es_search is None:
+            return []
+        size = (
+            self._settings.fetch_all_hard_limit
+            if fetch_all
+            else self._settings.get_audio_bm25_size
+        )
+        raw = await self._es_search.search_get_audio_bm25(
+            text,
+            language=language,
+            tag_code=tag_code,
+            size=size,
+        )
+        return [_map_material(doc) for doc in raw]
 
     async def _content_form_tags_by_text(
         self,
@@ -594,6 +635,33 @@ class AudioCatalogService:
         limit = self._settings.fetch_all_hard_limit
         if total > limit:
             raise InvalidAudioQueryError(f"全量条数超过上限 {limit}")
+
+
+def _rrf_merge_docs(
+    tag_docs: list[dict[str, Any]],
+    bm25_docs: list[dict[str, Any]],
+    *,
+    k: int,
+) -> list[dict[str, Any]]:
+    """标签向量路与 BM25 路按名次融合。一路为空时保留另一路原顺序。"""
+    if not bm25_docs:
+        return tag_docs
+    if not tag_docs:
+        return bm25_docs
+    scores: dict[str, float] = {}
+    for docs in (tag_docs, bm25_docs):
+        for rank, doc in enumerate(docs, start=1):
+            doc_id = str(doc.get("id") or doc.get("_id") or "")
+            if not doc_id:
+                continue
+            scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (k + rank)
+    by_id: dict[str, dict[str, Any]] = {}
+    for doc in (*tag_docs, *bm25_docs):
+        doc_id = str(doc.get("id") or doc.get("_id") or "")
+        if doc_id and doc_id not in by_id:
+            by_id[doc_id] = doc
+    ranked = sorted(scores.items(), key=lambda item: (-item[1], item[0]))
+    return [by_id[doc_id] for doc_id, _score in ranked if doc_id in by_id]
 
 
 def _select_matched_tag_ids(scored: list[tuple[float, str]]) -> set[str]:

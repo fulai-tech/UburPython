@@ -293,6 +293,12 @@ async def test_mongo_sync_job_migrates_legacy_indices() -> None:
     es_search.ensure_indices.assert_awaited_once()
 
 
+def test_somni_es_node_does_not_fall_back_to_handboard() -> None:
+    settings = Settings(somni_es_node="", es_node="http://handboard-es:9200")
+    with pytest.raises(RuntimeError, match="SOMNI_ES_NODE"):
+        _ = settings.effective_somni_es_node
+
+
 @pytest.mark.asyncio
 async def test_run_cli_uses_somni_es_node_and_indexes() -> None:
     settings = Settings(
@@ -333,3 +339,71 @@ async def test_run_cli_uses_somni_es_node_and_indexes() -> None:
     kwargs = mk_search.call_args.kwargs
     assert kwargs["audio_index"] == "prod_audio"
     assert kwargs["tag_dictionary_index"] == "prod_tags"
+
+
+@pytest.mark.asyncio
+async def test_run_cli_clears_catalog_cache_after_real_sync() -> None:
+    settings = Settings(
+        somni_mongo_uri="mongodb://localhost:27017",
+        somni_es_node="http://somni-es:9200",
+        embedding_backend="torch",
+    )
+    es_client = MagicMock()
+    es_client.close = AsyncMock()
+    encoder = MagicMock()
+    encoder.load = MagicMock()
+    mongo = MagicMock()
+    mongo.close = AsyncMock()
+    job = MagicMock()
+    job.run = AsyncMock(return_value=MagicMock(failed=0))
+    clear = AsyncMock(return_value=True)
+
+    with (
+        patch("scripts.sync_es_from_somni.get_settings", return_value=settings),
+        patch("scripts.sync_es_from_somni.setup_logging"),
+        patch("scripts.sync_es_from_somni.create_es_client", return_value=es_client),
+        patch("scripts.sync_es_from_somni.create_encoder", return_value=encoder),
+        patch("scripts.sync_es_from_somni.MongoSource", return_value=mongo),
+        patch("scripts.sync_es_from_somni.EsSearch"),
+        patch("scripts.sync_es_from_somni.MongoEsSyncJob", return_value=job),
+        patch("scripts.sync_es_from_somni._clear_catalog_cache", clear),
+    ):
+        from scripts.sync_es_from_somni import _run_cli
+
+        code = await _run_cli(dry_run=False)
+
+    assert code == 0
+    clear.assert_awaited_once_with(settings)
+
+
+@pytest.mark.asyncio
+async def test_clear_catalog_cache_deletes_prefixed_keys() -> None:
+    from app.cache.somni_audio_catalog_cache import clear_somni_audio_catalog_cache
+
+    class _Redis:
+        def __init__(self) -> None:
+            self.keys = [
+                "somni:audio:catalog:v1:mongo:zh",
+                "somni:audio:catalog:v1:es:en",
+                "somni:audio:hot:v1:query:zh:2026-W35",
+            ]
+            self.deleted: list[str] = []
+
+        async def scan_iter(self, *, match: str, count: int):
+            _ = count
+            prefix = match.removesuffix("*")
+            for key in self.keys:
+                if key.startswith(prefix):
+                    yield key
+
+        async def delete(self, *keys: str) -> int:
+            self.deleted.extend(keys)
+            return len(keys)
+
+    redis = _Redis()
+    deleted = await clear_somni_audio_catalog_cache(redis)
+    assert deleted == 2
+    assert redis.deleted == [
+        "somni:audio:catalog:v1:mongo:zh",
+        "somni:audio:catalog:v1:es:en",
+    ]

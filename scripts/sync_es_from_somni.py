@@ -6,8 +6,9 @@
   - 再按 Mongo 启用文档全量插入；ES 文档 id = Mongo `_id`，_source 不含 `id`/`_id`
   - 先同步 somni_audio_tag_dictionary，再同步 somni_audio_materials
 
-数据源：SOMNI_MONGO_* + effective_somni_es_node + somni_es_* 索引。
+数据源：SOMNI_MONGO_* + SOMNI_ES_NODE + somni_es_* 索引。
 与 scripts/sync_es_from_comm.py（手板）隔离，避免误写手板索引。
+正式同步结束后删除量产 Redis 里的 GetAudio 目录缓存；dry-run 不删。
 
 用法:
   .venv/bin/python scripts/sync_es_from_somni.py
@@ -31,9 +32,11 @@ if str(_ROOT) not in sys.path:
 from loguru import logger  # noqa: E402
 from motor.motor_asyncio import AsyncIOMotorClient  # noqa: E402
 
+from app.cache.somni_audio_catalog_cache import clear_somni_audio_catalog_cache  # noqa: E402
 from app.core.bson_util import bson_to_jsonable  # noqa: E402
 from app.core.config import Settings, get_settings  # noqa: E402
 from app.core.logging import setup_logging  # noqa: E402
+from app.core.somni_redis import create_somni_redis  # noqa: E402
 from app.embedding.encoder import Encoder, create_encoder  # noqa: E402
 from app.es.client import create_es_client  # noqa: E402
 from app.es.search import EsSearch  # noqa: E402
@@ -406,6 +409,22 @@ class MongoEsSyncJob:
         return result
 
 
+async def _clear_catalog_cache(settings: Settings) -> bool:
+    client = await create_somni_redis(settings)
+    if client is None:
+        logger.warning("未配置 SOMNI_REDIS_URL，未清理量产 GetAudio 目录缓存")
+        return True
+    try:
+        deleted = await clear_somni_audio_catalog_cache(client)
+        logger.info("已清理量产 GetAudio 目录缓存，删除 {} 个 key", deleted)
+        return True
+    except Exception as exc:
+        logger.error("清理量产 GetAudio 目录缓存失败：{}", exc)
+        return False
+    finally:
+        await client.aclose()
+
+
 async def _run_cli(*, dry_run: bool) -> int:
     settings = get_settings()
     setup_logging(settings)
@@ -422,10 +441,13 @@ async def _run_cli(*, dry_run: bool) -> int:
         )
         job = MongoEsSyncJob(mongo, es_search, es_client, encoder, settings)
         result = await job.run(dry_run=dry_run)
+        cache_cleared = True if dry_run else await _clear_catalog_cache(settings)
     finally:
         await mongo.close()
         await es_client.close()
-    return 1 if result.failed > 0 else 0
+    if result.failed > 0 or not cache_cleared:
+        return 1
+    return 0
 
 
 def main() -> None:

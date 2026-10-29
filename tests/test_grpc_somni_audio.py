@@ -24,7 +24,7 @@ def _make_rpc() -> tuple[AudioRpc, MagicMock]:
 
 
 @pytest.mark.asyncio
-async def test_get_audio_passes_language_en() -> None:
+async def test_get_audio_treats_language_en_as_zh() -> None:
     rpc, service = _make_rpc()
     service.get_audio = AsyncMock(
         return_value={"list": [], "page": 1, "page_size": 20, "total": 0}
@@ -40,7 +40,7 @@ async def test_get_audio_passes_language_en() -> None:
         content_form_codes=[],
         preference_text="",
         dislike_text="",
-        language="en",
+        language="zh",
     )
 
 
@@ -176,6 +176,27 @@ async def test_get_audio_tag_maps_fields() -> None:
     assert res.tags[0].id == "root-natural"
     assert res.tags[0].parent_tag_id.WhichOneof("kind") == "null_value"
     assert res.tags[0].status == "启用"
+
+
+@pytest.mark.asyncio
+async def test_search_audio_matches_http_search_request() -> None:
+    rpc, service = _make_rpc()
+    service.search_audio = AsyncMock(
+        return_value=[{"id": "a1", "audio_name": "持续海浪拍岸声"}]
+    )
+    res = await rpc.SearchAudio(
+        uburnode_somni_pb2.SearchAudioReq(query_text="海浪声", top_k=5),
+        _context(),
+    )
+    body = service.search_audio.await_args.args[0]
+    assert body.query_text == "海浪声"
+    assert body.top_k == 5
+    assert body.sleep_stage_tags == []
+    assert body.content_tags == []
+    assert body.content_tag_codes == []
+    assert body.disliked_tags == []
+    assert res.materials[0]["audio_name"] == "持续海浪拍岸声"
+    assert res.materials[0]["id"] == "a1"
 
 
 @pytest.mark.asyncio

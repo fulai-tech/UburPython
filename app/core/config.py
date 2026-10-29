@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     es_request_timeout_sec: float = 30.0
     search_max_concurrency: int = 25  # 同时执行的检索流水线上限，防止打满 ES
 
-    # 量产 ES（与手板向量/节点隔离）
+    # 量产 ES（独立节点；空则不可用，不回退 ES_NODE）
     somni_es_node: str = ""
     somni_es_audio_index: str = "somni_audio_materials"
     somni_es_tag_vectors_index: str = "somni_audio_tag_dictionary"
@@ -97,6 +97,10 @@ class Settings(BaseSettings):
     sim_threshold: float = 0.7  # 内容形态向量模糊命中阈值（规范 §五-2）
     # GetAudio query_text 与内容形态标签（含二级）向量相似度下限
     get_audio_root_tag_sim_threshold: float = 0.75
+    # 有 query_text 时，标签向量路与 description_text BM25 路用 RRF 合并
+    get_audio_bm25_enabled: bool = True
+    get_audio_bm25_size: int = 50
+    get_audio_rrf_k: int = 60
     # 问卷自定义输入：描述向量得分不低于最高分的该比例才进入优先组，不按条数截断
     get_audio_preference_score_ratio: float = 0.945
     # 多路文本检索厌恶硬剔除阈值；≥ 该值 penalty=1.0 丢弃候选
@@ -149,7 +153,7 @@ class Settings(BaseSettings):
     redis_max_connections: int = 512
     search_cache_max_size: int = 2048
     search_cache_ttl_sec: int = 604800  # 7 天
-    # 量产音频目录内存缓存。≤0 表示常驻，进程重启前不因时间过期
+    # 量产 GetAudio 目录 Redis 缓存 TTL（秒）。≤0 表示不过期，由同步脚本删除
     somni_audio_catalog_cache_ttl_sec: float = 0
     # CUD 后延时重建睡眠阶段候选缓存，窗口内多次写入只重建一次
     sleep_stage_cache_rewarm_delay_sec: float = 5.0
@@ -188,8 +192,11 @@ class Settings(BaseSettings):
 
     @property
     def effective_somni_es_node(self) -> str:
-        """量产 ES 节点；未配置时回退手板（仅本地兜底，生产应显式配置）。"""
-        return self.somni_es_node or self.es_node
+        """量产 ES 节点。未配置时不使用手板 ES_NODE。"""
+        node = self.somni_es_node.strip()
+        if not node:
+            raise RuntimeError("未配置 SOMNI_ES_NODE，量产 ES 不能使用手板 ES_NODE")
+        return node
 
 
 @lru_cache

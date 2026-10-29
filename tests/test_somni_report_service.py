@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -160,6 +160,71 @@ async def test_get_events_attaches_intervention() -> None:
     assert payload["idf_data"][0]["stage"] == "deep"
     assert payload["physio_data"][0]["metrics"]["heart_rate"] == 68
     assert payload["env_data"][0]["noise"] == 28
+
+
+@pytest.mark.asyncio
+async def test_get_events_half_hour_physio_and_env() -> None:
+    store = MagicMock()
+    store.list_events = AsyncMock(return_value=[])
+    store.find_record = AsyncMock(return_value=None)
+    store.find_device_id = AsyncMock(return_value="dev_1")
+    anchor = datetime(2026, 8, 9, 18, 7, tzinfo=UTC)
+    store.list_telemetry = AsyncMock(
+        side_effect=[
+            [
+                {"ts": anchor, "data": {"hr": 60.4, "br": 14.5}},
+                {
+                    "ts": anchor + timedelta(minutes=10),
+                    "data": {"hr": 61.4, "br": 15.5},
+                },
+                {
+                    "ts": anchor + timedelta(minutes=30),
+                    "data": {"hr": 70.2, "br": 16.2},
+                },
+            ],
+            [
+                {
+                    "ts": anchor,
+                    "data": {"temp": 23.2, "humi": 50.4, "lux": 1.2, "noise_db": 28.5},
+                },
+                {
+                    "ts": anchor + timedelta(minutes=12),
+                    "data": {"temp": 24.2, "humi": 51.4, "lux": 1.4, "noise_db": 29.5},
+                },
+                {
+                    "ts": anchor + timedelta(minutes=70),
+                    "data": {"temp": 22.2, "humi": 48.2, "lux": 0.4, "noise_db": 30.2},
+                },
+            ],
+        ]
+    )
+    payload = await _service(store).get_events("u1", "2026-08-10")
+    assert payload["physio_data"] == [
+        {
+            "collected_at": "2026-08-10T02:07:00+08:00",
+            "metrics": {"heart_rate": 61, "respiration_rate": 15},
+        },
+        {
+            "collected_at": "2026-08-10T02:37:00+08:00",
+            "metrics": {"heart_rate": 70, "respiration_rate": 16},
+        },
+    ]
+    assert payload["env_data"] == [
+        {
+            "collected_at": "2026-08-10T02:07:00+08:00",
+            "temperature": 24,
+            "humidity": 51,
+            "illuminance": 1,
+            "noise": 29,
+        },
+        {
+            "collected_at": "2026-08-10T03:07:00+08:00",
+            "temperature": 22,
+            "humidity": 48,
+            "illuminance": 0,
+            "noise": 30,
+        },
+    ]
 
 
 @pytest.mark.asyncio

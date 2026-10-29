@@ -350,3 +350,15 @@ async def test_search_by_description_vector_includes_pipeline_fields() -> None:
             ]
         }
     }
+
+
+@pytest.mark.asyncio
+async def test_search_get_audio_bm25_matches_phrase() -> None:
+    client = MagicMock()
+    client.search = AsyncMock(return_value={"hits": {"hits": []}})
+    search = EsSearch(client, Settings())
+
+    await search.search_get_audio_bm25("雨声", language="zh", size=50)
+
+    must = client.search.await_args.kwargs["body"]["query"]["bool"]["must"]
+    assert must == [{"match_phrase": {"description_text": "雨声"}}]

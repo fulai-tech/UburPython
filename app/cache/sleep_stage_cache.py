@@ -90,12 +90,24 @@ def merge_candidates_by_audio_url(
 class SleepStageCandidateCache:
     """文档单份存储 + 四阶段 url 索引。"""
 
-    def __init__(self, redis: RedisLike, *, ttl_sec: int = _WEEK_SECONDS) -> None:
+    def __init__(
+        self,
+        redis: RedisLike,
+        *,
+        ttl_sec: int = _WEEK_SECONDS,
+        owns_client: bool = False,
+    ) -> None:
         if ttl_sec < 1:
             raise ValueError("ttl_sec must be >= 1")
         self._redis = redis
         self._ttl_sec = ttl_sec
+        self._owns_client = owns_client
         self._mutation_lock = asyncio.Lock()
+
+    async def aclose(self) -> None:
+        close = getattr(self._redis, "aclose", None)
+        if self._owns_client and close is not None:
+            await close()
 
     async def get(self, stages: list[str]) -> list[dict[str, Any]] | None:
         """全部阶段索引命中且文档齐全才返回；否则 None。"""
@@ -286,19 +298,31 @@ def _normalize_stages(stages: list[str]) -> list[str]:
 async def create_sleep_stage_candidate_cache(
     settings: Settings,
     redis: Any | None = None,
+    *,
+    redis_url: str | None = None,
 ) -> SleepStageCandidateCache | None:
-    """复用已有 Redis 客户端；否则按 REDIS_URL 新建。空 URL 返回 None。"""
+    """复用已有 Redis 客户端；否则按 URL 新建。空 URL 返回 None。
+
+    redis_url 为 None 时使用手板 REDIS_URL。传入字符串（含空串）时只用该地址，不回退。
+    """
     if redis is not None:
         return SleepStageCandidateCache(redis, ttl_sec=settings.search_cache_ttl_sec)
-    if not settings.redis_url.strip():
-        logger.warning("未配置 REDIS_URL，睡眠阶段候选缓存已关闭")
+    url = settings.redis_url if redis_url is None else redis_url
+    url_name = "REDIS_URL" if redis_url is None else "SOMNI_REDIS_URL"
+    if not url.strip():
+        logger.warning("未配置 {}，睡眠阶段候选缓存已关闭", url_name)
         return None
     from redis.asyncio import Redis
 
     client = Redis.from_url(
-        settings.redis_url,
+        url.strip(),
         decode_responses=False,
-        max_connections=max(1, settings.redis_max_connections),
+        max_connections=max(
+            1,
+            settings.redis_max_connections
+            if redis_url is None
+            else settings.somni_redis_max_connections,
+        ),
     )
     try:
         await client.ping()
@@ -308,4 +332,8 @@ async def create_sleep_stage_candidate_cache(
             logger.warning("Redis 不可用（调试模式，跳过睡眠阶段缓存）：{}", exc)
             return None
         raise
-    return SleepStageCandidateCache(client, ttl_sec=settings.search_cache_ttl_sec)
+    return SleepStageCandidateCache(
+        client,
+        ttl_sec=settings.search_cache_ttl_sec,
+        owns_client=True,
+    )

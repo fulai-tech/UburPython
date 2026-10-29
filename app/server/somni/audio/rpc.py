@@ -6,8 +6,11 @@ from typing import TYPE_CHECKING, Any
 
 from google.protobuf.json_format import ParseDict
 from google.protobuf.struct_pb2 import Struct, Value
+from pydantic import ValidationError
 
-from app.core.exceptions import ServiceNotReadyError
+from app.core.codes import HttpStatus
+from app.core.exceptions import AppError, ServiceNotReadyError
+from app.schemas.audio import SearchAudioRequest
 from app.server.errors import abort_from_app_error, abort_invalid, run_rpc_call
 from app.server.somni.audio.catalog import prescription_material_scope
 from app.server.somni.audio.hot import parse_hot_kind
@@ -28,6 +31,8 @@ class AudioRpc(uburnode_somni_pb2_grpc.AudioServiceServicer):
             language = parse_language(request.language if request.HasField("language") else None)
         except ValueError as exc:
             await abort_invalid(context, str(exc))
+        # 暂时：GetAudio 的 en 与 zh 都按中文处理。
+        language = "zh"
 
         async def _do():
             payload = await service.get_audio(
@@ -45,6 +50,16 @@ class AudioRpc(uburnode_somni_pb2_grpc.AudioServiceServicer):
         async def _do():
             payload = await service.get_audio_tag()
             return _to_tag_res(payload)
+
+        return await run_rpc_call(context, _do)
+
+    async def SearchAudio(self, request, context):
+        service = await self._require(context)
+
+        async def _do():
+            body = _search_audio_request(request)
+            materials = await service.search_audio(body)
+            return _to_search_audio_res(materials)
 
         return await run_rpc_call(context, _do)
 
@@ -143,6 +158,36 @@ def _to_value(value: Any) -> Value:
     else:
         result.string_value = str(value)
     return result
+
+
+def _search_audio_request(request) -> SearchAudioRequest:
+    payload: dict[str, Any] = {
+        "sleep_stage_tags": list(request.sleep_stage_tags),
+        "content_tags": list(request.content_tags),
+        "content_tag_codes": list(request.content_tag_codes),
+        "disliked_tags": list(request.disliked_tags),
+    }
+    if request.HasField("query_text"):
+        payload["query_text"] = request.query_text
+    if request.HasField("top_k"):
+        payload["top_k"] = request.top_k
+    try:
+        return SearchAudioRequest.model_validate(payload)
+    except ValidationError as exc:
+        message = "; ".join(
+            f"{'.'.join(str(part) for part in err.get('loc', ()))}: {err.get('msg', '')}"
+            for err in exc.errors()
+        )
+        raise AppError(message=message, status_code=HttpStatus.UNPROCESSABLE_ENTITY) from exc
+
+
+def _to_search_audio_res(materials: list[dict[str, Any]]) -> uburnode_somni_pb2.SearchAudioRes:
+    res = uburnode_somni_pb2.SearchAudioRes()
+    for item in materials:
+        struct = Struct()
+        struct.update(item if isinstance(item, dict) else {})
+        res.materials.append(struct)
+    return res
 
 
 def _to_hot_res(payload: dict[str, Any]) -> uburnode_somni_pb2.GetHotRes:

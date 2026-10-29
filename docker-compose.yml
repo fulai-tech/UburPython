@@ -1,4 +1,4 @@
-# 生产编排：nginx 反代 + UburNode + Elasticsearch（单节点）
+# 生产编排：nginx 反代 + UburNode + 手板/量产各自的 Elasticsearch 与 Redis
 # 服务器 git pull 后本地 build app 镜像（与 intelligent_reimbursement 相同模式）
 
 services:
@@ -26,6 +26,7 @@ services:
       - .env
     environment:
       ES_NODE: http://elasticsearch:9200
+      SOMNI_ES_NODE: http://elasticsearch-somni:9200
       REDIS_URL: redis://redis:6379/0
       SOMNI_REDIS_URL: redis://redis-somni:6379/0
     ports:
@@ -41,6 +42,8 @@ services:
           memory: 2560M
     depends_on:
       elasticsearch:
+        condition: service_healthy
+      elasticsearch-somni:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -93,7 +96,29 @@ services:
       start_period: 40s
     restart: unless-stopped
 
+  elasticsearch-somni:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.0
+    container_name: uburnode-es-somni
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - es_somni_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+    restart: unless-stopped
+
 volumes:
   es_data:
+  es_somni_data:
   hf_cache:
   redis_somni_data:

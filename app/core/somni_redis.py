@@ -13,12 +13,10 @@ def resolve_somni_redis_url(settings: Settings) -> str:
 
 
 async def create_somni_redis(settings: Settings) -> Redis | None:
-    """仅按 SOMNI_REDIS_URL 建连接；启用热点时配置错误立即阻止启动。"""
-    if not settings.somni_hot_enabled:
-        return None
+    """按 SOMNI_REDIS_URL 建连接，供 GetHot 与 GetAudio 目录缓存共用。空 URL 不回退手板 Redis。"""
     url = resolve_somni_redis_url(settings)
     if not url:
-        logger.warning("未配置 SOMNI_REDIS_URL，量产 GetHot 热点排行不可用")
+        logger.warning("未配置 SOMNI_REDIS_URL，量产 GetHot 与 GetAudio 目录缓存不可用")
         return None
     client = Redis.from_url(
         url,
