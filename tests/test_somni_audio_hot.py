@@ -55,6 +55,23 @@ async def test_create_somni_redis_uses_only_somni_config(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_create_somni_redis_connects_when_hot_disabled(monkeypatch) -> None:
+    from app.core.somni_redis import create_somni_redis
+
+    client = MagicMock()
+    client.ping = AsyncMock()
+    monkeypatch.setattr("app.core.somni_redis.Redis.from_url", MagicMock(return_value=client))
+
+    assert (
+        await create_somni_redis(
+            Settings(somni_redis_url="redis://somni:6379/0", somni_hot_enabled=False)
+        )
+        is client
+    )
+    client.ping.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_create_somni_redis_closes_failed_client(monkeypatch) -> None:
     from app.core.somni_redis import create_somni_redis
 

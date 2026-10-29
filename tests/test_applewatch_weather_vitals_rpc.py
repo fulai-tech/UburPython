@@ -93,6 +93,14 @@ async def test_get_vitals_rpc() -> None:
         uburnode_somni_pb2.GetVitalsReq(session_id="s1"),
         _context(),
     )
-    data = MessageToDict(res, preserving_proto_field_name=True)
-    assert data["hr"]["value"] == 68.0
-    assert data["hrv"]["value"] == 39.0
+    data = MessageToDict(
+        res,
+        preserving_proto_field_name=True,
+        always_print_fields_with_no_presence=True,
+    )
+    assert data["hr"]["value"] == 68
+    assert isinstance(data["hr"]["value"], int)
+    assert data["hr"]["series"][0]["value"] == 68
+    assert isinstance(data["hr"]["series"][0]["value"], int)
+    assert data["hrv"]["value"] == 39
+    assert isinstance(data["hrv"]["value"], int)

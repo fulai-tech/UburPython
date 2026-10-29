@@ -212,8 +212,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         audio_index=settings.somni_es_audio_index,
         tag_dictionary_index=settings.somni_es_tag_vectors_index,
     )
+    somni_sleep_stage_cache = await create_sleep_stage_candidate_cache(
+        settings,
+        redis_url=settings.somni_redis_url,
+    )
     somni_retrieval = RetrievalService(
-        somni_es_search, encoder, settings, sleep_stage_cache=sleep_stage_cache,
+        somni_es_search,
+        encoder,
+        settings,
+        sleep_stage_cache=somni_sleep_stage_cache,
     )
     somni_redis = await create_somni_redis(settings)
     events_store = SearchEventsStore(somni_es_client, settings)
@@ -226,6 +233,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         encoder_en=encoder_en,
         hot=hot_tracker,
         retrieval=somni_retrieval,
+        redis=somni_redis,
     )
 
     start_sync_scheduler(_app_state, settings)
@@ -245,6 +253,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         materials_store.close()
     if somni_mongo is not None:
         somni_mongo.close()
+    if somni_sleep_stage_cache is not None:
+        await somni_sleep_stage_cache.aclose()
     if somni_redis is not None:
         await somni_redis.aclose()
     await somni_es_client.close()

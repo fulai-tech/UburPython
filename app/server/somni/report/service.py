@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
+from decimal import ROUND_HALF_UP, Decimal
 import math
 from typing import Any
 
@@ -181,9 +182,13 @@ class ReportService:
             end_time=end_time,
         )
         docs = await self._store.list_telemetry_by_filter(query)
+        hr = _avg_series(_metric_series(docs, "hr"))
+        br = _avg_series(_metric_series(docs, "br"))
+        hr["series"] = _half_hour_metric_series(docs, "hr")
+        br["series"] = _half_hour_metric_series(docs, "br")
         return {
-            "hr": _avg_series(_metric_series(docs, "hr")),
-            "br": _avg_series(_metric_series(docs, "br")),
+            "hr": hr,
+            "br": br,
             "hrv": fixed_hrv(),
             "brv": fixed_brv(),
         }
@@ -242,16 +247,15 @@ def _idf_data(record: dict[str, Any] | None) -> list[dict[str, str]]:
 
 def _physio_data(docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     points: list[dict[str, Any]] = []
-    for doc in docs:
-        data = doc.get("data") or {}
-        hr = calc.as_float(data.get("hr") if isinstance(data, dict) else None)
-        br = calc.as_float(data.get("br") if isinstance(data, dict) else None)
+    for start, bucket in _half_hour_groups(docs):
+        hrs = _bucket_floats(bucket, "hr")
+        brs = _bucket_floats(bucket, "br")
         points.append(
             {
-                "collected_at": calc.format_collected_at(doc.get("ts")),
+                "collected_at": calc.format_collected_at(start),
                 "metrics": {
-                    "heart_rate": 0 if hr is None else calc.floor_avg([hr]),
-                    "respiration_rate": 0 if br is None else calc.floor_avg([br]),
+                    "heart_rate": _round_mean(hrs),
+                    "respiration_rate": _round_mean(brs),
                 },
             }
         )
@@ -260,23 +264,77 @@ def _physio_data(docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _env_data(docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     points: list[dict[str, Any]] = []
-    for doc in docs:
-        data = doc.get("data") if isinstance(doc.get("data"), dict) else {}
+    for start, bucket in _half_hour_groups(docs):
         points.append(
             {
-                "collected_at": calc.format_collected_at(doc.get("ts")),
-                "temperature": _floor_one(data.get("temp")),
-                "humidity": _floor_one(data.get("humi")),
-                "illuminance": _floor_one(data.get("lux")),
-                "noise": _floor_one(data.get("noise_db")),
+                "collected_at": calc.format_collected_at(start),
+                "temperature": _round_mean(_bucket_floats(bucket, "temp")),
+                "humidity": _round_mean(_bucket_floats(bucket, "humi")),
+                "illuminance": _round_mean(_bucket_floats(bucket, "lux")),
+                "noise": _round_mean(_bucket_floats(bucket, "noise_db")),
             }
         )
     return points
 
 
-def _floor_one(value: Any) -> int:
-    num = calc.as_float(value)
-    return 0 if num is None else calc.floor_avg([num])
+_HALF_HOUR_SEC = 30 * 60
+
+
+def _half_hour_groups(
+    docs: list[dict[str, Any]],
+) -> list[tuple[datetime, list[dict[str, Any]]]]:
+    stamped: list[tuple[datetime, dict[str, Any]]] = []
+    for doc in docs:
+        ts = calc.coerce_datetime(doc.get("ts"))
+        if ts is None:
+            continue
+        stamped.append((ts, doc))
+    if not stamped:
+        return []
+    anchor = min(ts for ts, _ in stamped)
+    groups: dict[datetime, list[dict[str, Any]]] = {}
+    for ts, doc in stamped:
+        steps = int((ts - anchor).total_seconds() // _HALF_HOUR_SEC)
+        start = anchor + timedelta(seconds=steps * _HALF_HOUR_SEC)
+        groups.setdefault(start, []).append(doc)
+    return [(start, groups[start]) for start in sorted(groups)]
+
+
+def _bucket_floats(docs: list[dict[str, Any]], key: str) -> list[float]:
+    values: list[float] = []
+    for doc in docs:
+        data = doc.get("data")
+        if not isinstance(data, dict):
+            continue
+        num = calc.as_float(data.get(key))
+        if num is not None:
+            values.append(num)
+    return values
+
+
+def _round_mean(values: list[float]) -> int:
+    if not values:
+        return 0
+    total = sum((Decimal(str(value)) for value in values), Decimal(0))
+    mean = total / Decimal(len(values))
+    return int(mean.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
+def _half_hour_metric_series(
+    docs: list[dict[str, Any]], key: str
+) -> list[dict[str, Any]]:
+    series: list[dict[str, Any]] = []
+    for start, bucket in _half_hour_groups(docs):
+        values = _bucket_floats(bucket, key)
+        if not values:
+            continue
+        series.append(
+            {
+                "collected_at": calc.format_collected_at(start),
+                "value": _round_mean(values),
+            }
+        )
+    return series
 
 
 def _assemble_sleep_events(
@@ -412,7 +470,7 @@ def _metric_series(docs: list[dict[str, Any]], key: str) -> list[dict[str, Any]]
         points.append(
             {
                 "collected_at": calc.format_collected_at(doc.get("ts")),
-                "value": float(math.floor(num)),
+                "value": math.floor(num),
             }
         )
     return points
@@ -420,6 +478,6 @@ def _metric_series(docs: list[dict[str, Any]], key: str) -> list[dict[str, Any]]
 
 def _avg_series(series: list[dict[str, Any]]) -> dict[str, Any]:
     if not series:
-        return {"value": 0.0, "series": []}
-    values = [float(item["value"]) for item in series]
-    return {"value": float(math.floor(sum(values) / len(values))), "series": series}
+        return {"value": 0, "series": []}
+    values = [int(item["value"]) for item in series]
+    return {"value": math.floor(sum(values) / len(values)), "series": series}

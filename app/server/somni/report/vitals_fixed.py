@@ -6,24 +6,24 @@ import math
 from typing import Any
 
 _FIXED_SERIES = [
-    {"collected_at": "2026-09-23T23:00:00+08:00", "value": 36.0},
-    {"collected_at": "2026-09-24T01:00:00+08:00", "value": 38.0},
-    {"collected_at": "2026-09-24T03:00:00+08:00", "value": 39.0},
-    {"collected_at": "2026-09-24T05:00:00+08:00", "value": 42.0},
-    {"collected_at": "2026-09-24T07:00:00+08:00", "value": 41.0},
+    {"collected_at": "2026-09-23T23:00:00+08:00", "value": 36},
+    {"collected_at": "2026-09-24T01:00:00+08:00", "value": 38},
+    {"collected_at": "2026-09-24T03:00:00+08:00", "value": 39},
+    {"collected_at": "2026-09-24T05:00:00+08:00", "value": 42},
+    {"collected_at": "2026-09-24T07:00:00+08:00", "value": 41},
 ]
 
 _FIXED_BRV_SERIES = [
-    {"collected_at": "2026-09-23T23:00:00+08:00", "value": 50.0},
-    {"collected_at": "2026-09-24T01:00:00+08:00", "value": 54.0},
-    {"collected_at": "2026-09-24T03:00:00+08:00", "value": 56.0},
-    {"collected_at": "2026-09-24T05:00:00+08:00", "value": 60.0},
-    {"collected_at": "2026-09-24T07:00:00+08:00", "value": 60.0},
+    {"collected_at": "2026-09-23T23:00:00+08:00", "value": 50},
+    {"collected_at": "2026-09-24T01:00:00+08:00", "value": 54},
+    {"collected_at": "2026-09-24T03:00:00+08:00", "value": 56},
+    {"collected_at": "2026-09-24T05:00:00+08:00", "value": 60},
+    {"collected_at": "2026-09-24T07:00:00+08:00", "value": 60},
 ]
 
 
-def _floor_num(value: float) -> float:
-    return float(math.floor(value))
+def _floor_num(value: float) -> int:
+    return math.floor(value)
 
 
 def _floor_series(items: list[dict[str, Any]]) -> list[dict[str, Any]]:

@@ -332,12 +332,12 @@ def _to_vitals_res(payload: dict[str, Any]) -> uburnode_somni_pb2.GetVitalsRes:
 
 def _vital_series(item: Any) -> uburnode_somni_pb2.VitalSeries:
     data = item if isinstance(item, dict) else {}
-    series = uburnode_somni_pb2.VitalSeries(value=float(data.get("value") or 0.0))
+    series = uburnode_somni_pb2.VitalSeries(value=int(data.get("value") or 0))
     for point in data.get("series") or []:
         series.series.append(
             uburnode_somni_pb2.VitalPoint(
                 collected_at=str(point.get("collected_at") or ""),
-                value=float(point.get("value") or 0.0),
+                value=int(point.get("value") or 0),
             )
         )
     return series
@@ -346,15 +346,15 @@ def _vital_series(item: Any) -> uburnode_somni_pb2.VitalSeries:
 def _baseline_series(item: Any) -> uburnode_somni_pb2.BaselineSeries:
     data = item if isinstance(item, dict) else {}
     series = uburnode_somni_pb2.BaselineSeries(
-        value=float(data.get("value") or 0.0),
-        personal_baseline=float(data.get("personal_baseline") or 0.0),
-        vs_baseline_percent=float(data.get("vs_baseline_percent") or 0.0),
+        value=int(data.get("value") or 0),
+        personal_baseline=int(data.get("personal_baseline") or 0),
+        vs_baseline_percent=int(data.get("vs_baseline_percent") or 0),
     )
     for point in data.get("series") or []:
         series.series.append(
             uburnode_somni_pb2.VitalPoint(
                 collected_at=str(point.get("collected_at") or ""),
-                value=float(point.get("value") or 0.0),
+                value=int(point.get("value") or 0),
             )
         )
     return series

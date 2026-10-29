@@ -72,6 +72,28 @@ _MUSIC = {
 }
 
 
+class _CatalogRedis:
+    """按 ex 秒过期的内存 Redis，时钟由测试推进。"""
+
+    def __init__(self) -> None:
+        self.store: dict[str, tuple[str, float | None]] = {}
+        self.now = 0.0
+
+    async def get(self, key: str) -> str | None:
+        item = self.store.get(key)
+        if item is None:
+            return None
+        value, deadline = item
+        if deadline is not None and self.now >= deadline:
+            del self.store[key]
+            return None
+        return value
+
+    async def set(self, key: str, value: str, ex: int | None = None) -> None:
+        deadline = None if ex is None else self.now + ex
+        self.store[key] = (value, deadline)
+
+
 def _service(
     collection: MagicMock,
     *,
@@ -81,6 +103,7 @@ def _service(
     hot: MagicMock | None = None,
     fetch_all_hard_limit: int = 50,
     cache_ttl_sec: float = 60.0,
+    redis: _CatalogRedis | None = None,
 ) -> AudioCatalogService:
     db = MagicMock()
     db.__getitem__ = MagicMock(return_value=collection)
@@ -95,6 +118,10 @@ def _service(
         get_audio_root_tag_sim_threshold=0.75,
         somni_audio_catalog_cache_ttl_sec=cache_ttl_sec,
     )
+    if es_search is not None and not isinstance(
+        getattr(es_search, "search_get_audio_bm25", None), AsyncMock
+    ):
+        es_search.search_get_audio_bm25 = AsyncMock(return_value=[])
     return AudioCatalogService(
         client,
         settings,
@@ -102,6 +129,7 @@ def _service(
         encoder=encoder,
         encoder_en=encoder_en,
         hot=hot,
+        redis=redis if redis is not None else _CatalogRedis(),
     )
 
 
@@ -155,9 +183,9 @@ async def test_get_audio_filters_by_language_mongo() -> None:
     )
 
     assert [item["id"] for item in zh_payload["list"]] == ["zh1"]
-    assert [item["id"] for item in en_payload["list"]] == ["en1"]
+    assert [item["id"] for item in en_payload["list"]] == ["zh1"]
     assert collection.find.call_args_list[0].args[0] == {"language": "zh"}
-    assert collection.find.call_args_list[1].args[0] == {"language": "en"}
+    assert collection.find.call_count == 1
 
 
 @pytest.mark.asyncio
@@ -174,7 +202,7 @@ async def test_get_audio_keeps_language_caches_separate() -> None:
         page=1, page_size=10, fetch_all=False, query_text="", tag_code="", language="en"
     )
 
-    assert collection.find.call_count == 2
+    assert collection.find.call_count == 1
 
 
 @pytest.mark.asyncio
@@ -223,10 +251,10 @@ async def test_get_audio_maps_short_description_into_description() -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_audio_tag_uses_name_en_when_language_en() -> None:
+async def test_get_audio_tag_uses_chinese_name_when_language_en() -> None:
     doc = {
         **_RAIN,
-        "language": "en",
+        "language": "zh",
         "content_form_tags": [
             {
                 "tag_id": "root-rain",
@@ -253,7 +281,7 @@ async def test_get_audio_tag_uses_name_en_when_language_en() -> None:
         tag_code="",
         language="en",
     )
-    assert payload["list"][0]["tag"] == ["Natural Sound", "Steady Rain"]
+    assert payload["list"][0]["tag"] == ["自然声", "中雨/稳定雨声"]
 
 
 @pytest.mark.asyncio
@@ -331,29 +359,30 @@ async def test_get_audio_keeps_mongo_and_es_caches_separate() -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_audio_cache_expires(monkeypatch) -> None:
-    times = iter([100.0, 111.0])
-    monkeypatch.setattr(catalog, "monotonic", lambda: next(times), raising=False)
+async def test_get_audio_cache_expires() -> None:
     collection = _mongo_collection([_RAIN])
-    svc = _service(collection, cache_ttl_sec=10.0)
+    redis = _CatalogRedis()
+    svc = _service(collection, cache_ttl_sec=10.0, redis=redis)
 
     await svc.get_audio(page=1, page_size=10, fetch_all=False, query_text="", tag_code="")
+    redis.now = 11.0
     await svc.get_audio(page=1, page_size=10, fetch_all=False, query_text="", tag_code="")
 
     assert collection.find.call_count == 2
 
 
 @pytest.mark.asyncio
-async def test_get_audio_cache_stays_resident(monkeypatch) -> None:
-    times = iter([100.0, 100_000.0])
-    monkeypatch.setattr(catalog, "monotonic", lambda: next(times), raising=False)
+async def test_get_audio_cache_stays_resident() -> None:
     collection = _mongo_collection([_RAIN])
-    svc = _service(collection, cache_ttl_sec=0)
+    redis = _CatalogRedis()
+    svc = _service(collection, cache_ttl_sec=0, redis=redis)
 
     await svc.get_audio(page=1, page_size=10, fetch_all=False, query_text="", tag_code="")
+    redis.now = 100_000.0
     await svc.get_audio(page=1, page_size=10, fetch_all=False, query_text="", tag_code="")
 
     assert collection.find.call_count == 1
+    assert any(key.startswith("somni:audio:catalog:v1:mongo:") for key in redis.store)
 
 
 @pytest.mark.asyncio
@@ -391,6 +420,48 @@ async def test_get_audio_query_text_matches_root_tag_via_es() -> None:
     collection.find.assert_not_called()
     es_search.list_audio_catalog_docs.assert_awaited_once_with(size=51, language="zh")
     assert [item["id"] for item in payload["list"]] == ["a1"]
+
+
+@pytest.mark.asyncio
+async def test_get_audio_query_merges_bm25_hits() -> None:
+    piano = {
+        "_id": "a-piano",
+        "audio_name": "雨声钢琴",
+        "language": "zh",
+        "content_form_tags": [],
+    }
+    encoder = MagicMock()
+    encoder.is_loaded = True
+    encoder.encode_one = AsyncMock(return_value=[1.0, 0.0])
+    es_search = MagicMock()
+    es_search.list_content_tag_vectors = AsyncMock(
+        return_value=[
+            {
+                "id": "root-rain",
+                "dimension": "content_form",
+                "parent_tag_id": "",
+                "vector": [1.0, 0.0],
+                "code": "natural_sound",
+            }
+        ]
+    )
+    es_search.list_audio_catalog_docs = AsyncMock(return_value=[_RAIN])
+    es_search.search_get_audio_bm25 = AsyncMock(return_value=[piano])
+    svc = _service(_mongo_collection([_RAIN]), es_search=es_search, encoder=encoder)
+    payload = await svc.get_audio(
+        page=1,
+        page_size=10,
+        fetch_all=False,
+        query_text="雨声",
+        tag_code="",
+    )
+    assert {item["id"] for item in payload["list"]} == {"a1", "a-piano"}
+    es_search.search_get_audio_bm25.assert_awaited_once_with(
+        "雨声",
+        language="zh",
+        tag_code="",
+        size=50,
+    )
 
 
 @pytest.mark.asyncio
@@ -557,7 +628,7 @@ async def test_get_audio_records_tag_hot_codes_when_query_hits() -> None:
     await asyncio.sleep(0)
     hot.record_search.assert_awaited_once()
     kwargs = hot.record_search.await_args.kwargs
-    assert kwargs["language"] == "en"
+    assert kwargs["language"] == "zh"
     assert kwargs["hit_count"] == 1
     assert kwargs["tag_codes"] == {"heavy_rain"}
 
