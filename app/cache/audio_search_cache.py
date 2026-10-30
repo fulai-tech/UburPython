@@ -14,6 +14,7 @@ from app.core.config import Settings
 from app.schemas.audio import SearchAudioRequest
 
 AUDIO_SEARCH_KEY_PREFIX = "audio_search_v5+"
+AUDIO_SEARCH_FALLBACK_KEY_PREFIX = "audio_search_fallback_v5+"
 AUDIO_SEARCH_LRU_INDEX_KEY = "audio_search_v5:_lru_index"
 _LRU_INDEX_KEY = AUDIO_SEARCH_LRU_INDEX_KEY  # 兼容旧测试名
 _WEEK_SECONDS = 7 * 24 * 60 * 60
@@ -37,8 +38,7 @@ class RedisLike(Protocol):
     async def close(self) -> None: ...
 
 
-def build_audio_search_cache_key(query: SearchAudioRequest) -> str:
-    """key = sha256(audio_search_v5+{稳定序列化单条 query})。"""
+def _audio_search_cache_digest(query: SearchAudioRequest, prefix: str) -> str:
     normalized = query.model_dump(mode="json")
     for field in ("sleep_stage_tags", "content_tags", "content_tag_codes", "disliked_tags"):
         normalized[field] = sorted(set(normalized[field]))
@@ -49,8 +49,17 @@ def build_audio_search_cache_key(query: SearchAudioRequest) -> str:
         ensure_ascii=False,
         separators=(",", ":"),
     )
-    digest = hashlib.sha256(f"{AUDIO_SEARCH_KEY_PREFIX}{body}".encode()).hexdigest()
-    return digest
+    return hashlib.sha256(f"{prefix}{body}".encode()).hexdigest()
+
+
+def build_audio_search_cache_key(query: SearchAudioRequest) -> str:
+    """key = sha256(audio_search_v5+{稳定序列化单条 query})。"""
+    return _audio_search_cache_digest(query, AUDIO_SEARCH_KEY_PREFIX)
+
+
+def build_audio_search_fallback_cache_key(query: SearchAudioRequest) -> str:
+    """兜底结果单独成键，避免和主检索、gRPC 共用的缓存混在一起。"""
+    return _audio_search_cache_digest(query, AUDIO_SEARCH_FALLBACK_KEY_PREFIX)
 
 
 class AudioSearchCache:
@@ -94,6 +103,39 @@ class AudioSearchCache:
         await self._prune_ghosts()
         await self._evict_if_needed()
         logger.info("检索缓存已写入，key={} materials={}", key[:12], len(materials))
+
+    async def get_fallback(self, query: SearchAudioRequest) -> tuple[str, list[dict[str, Any]]] | None:
+        key = build_audio_search_fallback_cache_key(query)
+        raw = await self._redis.get(key)
+        if raw is None:
+            await self._redis.zrem(_LRU_INDEX_KEY, key)
+            return None
+        payload = json.loads(raw)
+        reason = payload.get("fallback") if isinstance(payload, dict) else None
+        materials = payload.get("materials") if isinstance(payload, dict) else None
+        if not isinstance(reason, str) or not isinstance(materials, list):
+            return None
+        await self._bump_lru(key)
+        logger.info("检索兜底缓存命中，key={} reason={}", key[:12], reason)
+        return reason, materials
+
+    async def set_fallback(
+        self,
+        query: SearchAudioRequest,
+        reason: str,
+        materials: list[dict[str, Any]],
+    ) -> None:
+        key = build_audio_search_fallback_cache_key(query)
+        payload = json.dumps(
+            {"fallback": reason, "materials": materials},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        await self._redis.set(key, payload, ex=self._ttl_sec)
+        await self._redis.zadd(_LRU_INDEX_KEY, {key: time.time()})
+        await self._prune_ghosts()
+        await self._evict_if_needed()
+        logger.info("检索兜底缓存已写入，key={} reason={} materials={}", key[:12], reason, len(materials))
 
     async def clear_all(self) -> None:
         keys = await self._redis.zrange(_LRU_INDEX_KEY, 0, -1)

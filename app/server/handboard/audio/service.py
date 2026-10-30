@@ -97,6 +97,24 @@ class AudioService:
             await self._set_cached_materials(request, results)
         return SearchAudioData(materials=results)
 
+    async def search_audio_http(self, request: SearchAudioRequest) -> SearchAudioData:
+        """HTTP 检索。主结果为空时走兜底，并单独缓存，避免和 gRPC 共用主缓存。"""
+        cached = await self._get_cached_materials(request)
+        if cached is not None:
+            return SearchAudioData(materials=cached)
+        results = await self._retrieval.search(request)
+        if results:
+            await self._set_cached_materials(request, results)
+            return SearchAudioData(materials=results)
+        cached_fallback = await self._get_cached_fallback(request)
+        if cached_fallback is not None:
+            reason, materials = cached_fallback
+            return SearchAudioData(materials=materials, fallback=reason)
+        fallback = await self._retrieval.fallback_empty_search(request)
+        if fallback.materials and fallback.reason:
+            await self._set_cached_fallback(request, fallback.reason, fallback.materials)
+        return SearchAudioData(materials=fallback.materials, fallback=fallback.reason)
+
     async def _get_cached_materials(
         self, request: SearchAudioRequest
     ) -> list[dict[str, Any]] | None:
@@ -117,6 +135,30 @@ class AudioService:
             await self._search_cache.set(request, materials)
         except Exception as exc:
             logger.warning("检索缓存写入失败：{}", exc)
+
+    async def _get_cached_fallback(
+        self, request: SearchAudioRequest
+    ) -> tuple[str, list[dict[str, Any]]] | None:
+        if self._search_cache is None:
+            return None
+        try:
+            return await self._search_cache.get_fallback(request)
+        except Exception as exc:
+            logger.warning("检索兜底缓存读取失败，重新计算兜底：{}", exc)
+            return None
+
+    async def _set_cached_fallback(
+        self,
+        request: SearchAudioRequest,
+        reason: str,
+        materials: list[dict[str, Any]],
+    ) -> None:
+        if self._search_cache is None:
+            return
+        try:
+            await self._search_cache.set_fallback(request, reason, materials)
+        except Exception as exc:
+            logger.warning("检索兜底缓存写入失败：{}", exc)
 
     async def _clear_search_cache(self) -> None:
         if self._search_cache is None:

@@ -118,10 +118,15 @@ def _service(
         get_audio_root_tag_sim_threshold=0.75,
         somni_audio_catalog_cache_ttl_sec=cache_ttl_sec,
     )
-    if es_search is not None and not isinstance(
-        getattr(es_search, "search_get_audio_bm25", None), AsyncMock
-    ):
-        es_search.search_get_audio_bm25 = AsyncMock(return_value=[])
+    if es_search is None:
+        es_search = _es_catalog_from_collection(collection)
+    else:
+        if not isinstance(getattr(es_search, "list_audio_catalog_docs", None), AsyncMock):
+            es_search.list_audio_catalog_docs = _es_catalog_from_collection(
+                collection
+            ).list_audio_catalog_docs
+        if not isinstance(getattr(es_search, "search_get_audio_bm25", None), AsyncMock):
+            es_search.search_get_audio_bm25 = AsyncMock(return_value=[])
     return AudioCatalogService(
         client,
         settings,
@@ -131,6 +136,20 @@ def _service(
         hot=hot,
         redis=redis if redis is not None else _CatalogRedis(),
     )
+
+
+def _es_catalog_from_collection(collection: MagicMock) -> MagicMock:
+    """测试夹具里的目录文档经 ES 列表接口返回，和 GetAudio 的读路径一致。"""
+    es_search = MagicMock()
+
+    async def _list(*, size: int, language: str) -> list:
+        cursor = collection.find({"language": language})
+        docs = [doc async for doc in cursor]
+        return docs[:size]
+
+    es_search.list_audio_catalog_docs = AsyncMock(side_effect=_list)
+    es_search.search_get_audio_bm25 = AsyncMock(return_value=[])
+    return es_search
 
 
 def _mongo_collection(docs: list) -> MagicMock:
@@ -383,7 +402,7 @@ async def test_get_audio_cache_stays_resident() -> None:
 
     assert collection.find.call_count == 1
     from app.cache.somni_audio_catalog_cache import catalog_cache_key
-    assert catalog_cache_key(from_es=False, language="zh") in redis.store
+    assert catalog_cache_key(from_es=True, language="zh") in redis.store
 
 
 @pytest.mark.asyncio

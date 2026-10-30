@@ -61,8 +61,8 @@ jobs:
             # -f 必须：否则工作区有改动（如 docker-compose.yml）时 checkout 会直接失败
             git checkout -f -B "$DEPLOY_BRANCH" "origin/$DEPLOY_BRANCH"
             git reset --hard "origin/$DEPLOY_BRANCH"
-            # 清理会挡住检出的未跟踪文件；保留 .env / logs / models（本地配置、日志、已上传 ONNX）
-            git clean -fd -e .env -e .env.* -e logs -e logs/ -e models -e models/
+            # 清理会挡住检出的未跟踪文件；保留 .env / logs / data / models（本地配置、日志、同步备份、已上传 ONNX）
+            git clean -fd -e .env -e .env.* -e logs -e logs/ -e data -e data/ -e models -e models/
 
             if [ ! -f .env ]; then
               echo "缺少 $DEPLOY_DIR/.env，请从 .env.example 复制并填写后重试"

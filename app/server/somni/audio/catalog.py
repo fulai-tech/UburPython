@@ -146,7 +146,8 @@ class AudioCatalogService:
             codes = []
             pref = ""
             dislike = ""
-        docs = await self._load_audios(from_es=bool(text), language=language)
+        # 列表、标签筛选和搜索词都读量产 ES，避免 Mongo 与 ES 各看一批音频。
+        docs = await self._load_audios(from_es=True, language=language)
         hot_tag_codes: set[str] = set()
         if code:
             docs = [doc for doc in docs if _has_content_form_code(doc, code)]
@@ -539,7 +540,7 @@ class AudioCatalogService:
     async def _fetch_audios_es(self, language: str) -> list[dict[str, Any]]:
         if self._es_search is None:
             raise AppError(
-                message="Elasticsearch 未就绪，无法按搜索词查询音频",
+                message="Elasticsearch 未就绪，无法查询音频",
                 status_code=HttpStatus.SERVICE_UNAVAILABLE,
             )
         docs = await self._es_search.list_audio_catalog_docs(

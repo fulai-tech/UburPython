@@ -218,9 +218,10 @@ class SearchAudioRequest(BaseModel):
 
 
 class SearchAudioData(BaseModel):
-    """检索成功时写入 ApiResponse.data。"""
+    """检索成功时写入 ApiResponse.data。fallback 仅 HTTP 兜底时出现。"""
 
     materials: list[dict[str, Any]] = Field(default_factory=list)
+    fallback: str | None = None
 
 
 class AudioMetaDataOut(BaseModel):
