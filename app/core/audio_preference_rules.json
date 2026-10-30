@@ -1,5 +1,5 @@
 {
-  "version": "audio_preference_rules_v2",
+  "version": "audio_preference_rules_v3",
   "groups": [
     {
       "aliases": [
@@ -18,22 +18,23 @@
         "steady_light_rain",
         "steady_rain",
         "heavy_rain",
-        "surface_rain",
-        "scene_rain",
-        "rainforest_light_rain",
-        "storm_ambience"
+        "rain_on_window",
+        "thunder"
       ],
-      "rationale": "Broad rain exclusion conservatively covers the combined thunderstorm/strong-storm category."
+      "rationale": "Broad rain terms include current rain-on-window and thunder categories; removed categories are not invented."
     },
     {
       "aliases": [
         "鸟鸣",
         "鸟叫",
         "birdsong",
-        "bird sounds"
+        "bird sounds",
+        "bird_calls",
+        "bird calls",
+        "鸟类叫声"
       ],
       "codes": [
-        "bird_calls",
+        "birdsong",
         "dawn_chorus"
       ]
     },
@@ -68,39 +69,6 @@
     },
     {
       "aliases": [
-        "竖琴",
-        "竖琴声",
-        "harp",
-        "harp sounds"
-      ],
-      "codes": [
-        "harp_music"
-      ]
-    },
-    {
-      "aliases": [
-        "手碟",
-        "手碟声",
-        "handpan",
-        "handpan sounds"
-      ],
-      "codes": [
-        "handpan_music"
-      ]
-    },
-    {
-      "aliases": [
-        "颂钵",
-        "颂钵声",
-        "singing bowl",
-        "singing bowls"
-      ],
-      "codes": [
-        "singing_bowl"
-      ]
-    },
-    {
-      "aliases": [
         "弦乐",
         "弦乐声",
         "strings",
@@ -117,10 +85,13 @@
         "鸟鸣声",
         "bird calls",
         "birds chirping",
-        "bird chirping"
+        "bird chirping",
+        "bird_calls",
+        "bird calls",
+        "鸟类叫声"
       ],
       "codes": [
-        "bird_calls",
+        "birdsong",
         "dawn_chorus"
       ]
     },
@@ -131,10 +102,11 @@
         "海水声",
         "ocean waves",
         "sea waves",
-        "wave sounds"
+        "wave sounds",
+        "ocean_wave_ambience",
+        "ocean wave ambience"
       ],
       "codes": [
-        "ocean_wave_ambience",
         "gentle_ocean_wave"
       ]
     },
@@ -158,10 +130,12 @@
       "aliases": [
         "风",
         "风声",
-        "wind sounds"
+        "wind sounds",
+        "wind_ambience",
+        "wind ambience"
       ],
       "codes": [
-        "wind_ambience"
+        "gentle_wind"
       ]
     },
     {
@@ -170,10 +144,11 @@
         "虫声",
         "虫叫",
         "insects",
-        "insect sounds"
+        "insect sounds",
+        "insect_calls",
+        "insect calls"
       ],
       "codes": [
-        "insect_calls",
         "crickets_insects"
       ]
     },
@@ -182,7 +157,9 @@
         "蟋蟀",
         "蟋蟀声",
         "crickets",
-        "cricket sounds"
+        "cricket sounds",
+        "insect_calls",
+        "insect calls"
       ],
       "codes": [
         "crickets_insects"
@@ -202,18 +179,6 @@
     },
     {
       "aliases": [
-        "猫咪呼噜",
-        "猫呼噜",
-        "猫咪呼噜声",
-        "cat purr",
-        "purring"
-      ],
-      "codes": [
-        "cat_purring"
-      ]
-    },
-    {
-      "aliases": [
         "火焰声",
         "篝火声",
         "壁炉声",
@@ -229,10 +194,12 @@
       "aliases": [
         "森林",
         "森林声",
-        "forest sounds"
+        "forest sounds",
+        "forest",
+        "forest"
       ],
       "codes": [
-        "forest"
+        "forest_night"
       ]
     },
     {
@@ -243,27 +210,6 @@
       ],
       "codes": [
         "waterfall"
-      ]
-    },
-    {
-      "aliases": [
-        "滴水",
-        "滴水声",
-        "water drops",
-        "dripping water"
-      ],
-      "codes": [
-        "water_dripping"
-      ]
-    },
-    {
-      "aliases": [
-        "喷泉",
-        "喷泉声",
-        "fountain sounds"
-      ],
-      "codes": [
-        "fountain"
       ]
     },
     {
@@ -313,10 +259,12 @@
         "电扇声",
         "fan",
         "fan noise",
-        "fan sounds"
+        "fan sounds",
+        "mechanical_airflow",
+        "mechanical airflow"
       ],
       "codes": [
-        "mechanical_airflow"
+        "fan_sound"
       ]
     },
     {
@@ -351,15 +299,6 @@
       ],
       "codes": [
         "clock_tick"
-      ]
-    },
-    {
-      "aliases": [
-        "洗碗机声",
-        "dishwasher sounds"
-      ],
-      "codes": [
-        "dishwasher"
       ]
     },
     {
@@ -467,10 +406,12 @@
     {
       "aliases": [
         "正念",
-        "mindfulness"
+        "mindfulness",
+        "mindfulness_meditation",
+        "mindfulness meditation",
+        "正念冥想"
       ],
       "codes": [
-        "mindfulness_meditation",
         "mindfulness_sleep"
       ]
     },
@@ -504,6 +445,17 @@
       ],
       "codes": [
         "natural_sound"
+      ]
+    },
+    {
+      "aliases": [
+        "放下念头",
+        "担忧延后",
+        "postponement",
+        "letting go of thoughts"
+      ],
+      "codes": [
+        "worry_postponement"
       ]
     }
   ],

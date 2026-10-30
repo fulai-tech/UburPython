@@ -42,10 +42,14 @@ SEARCH_CANDIDATE_SOURCE_INCLUDES = (
     "cover_url",
     "sleep_stage_tags",
     "content_form_tags",
-    "mechanism_tags",
     "audio_engineering_tags",
-    "medical_risk_tags",
     "evidence_level_tags",
+    "duration_seconds",
+    "acoustic_metrics",
+    "language",
+    "languages",
+    "source",
+    "short_description",
     "recommend_weight",
     "status",
 )
@@ -430,10 +434,10 @@ class EsSearch:
         return AudioTags(
             sleep_stage=_parse_tag_list(raw.get("sleep_stage_tags")),
             content_form=_parse_tag_list(raw.get("content_form_tags")),
-            mechanism=_parse_tag_list(raw.get("mechanism_tags")),
+            mechanism=[],
             audio_feat=_parse_engineering_tags(raw.get("audio_engineering_tags")),
             rhythm=[],
-            risk_control=_parse_tag_list(raw.get("medical_risk_tags")),
+            risk_control=[],
         )
 
     @staticmethod
@@ -480,9 +484,7 @@ class EsSearch:
                             language=language,
                             tag_code=tag_code,
                         ),
-                        "must": [
-                            {"match_phrase": {"description_text": query_text}}
-                        ],
+                        "must": [{"match_phrase": {"description_text": query_text}}],
                     }
                 },
                 "_source": {"includes": list(_GET_AUDIO_BM25_SOURCE)},

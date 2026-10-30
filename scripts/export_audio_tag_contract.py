@@ -33,6 +33,10 @@ def dph_module(source: str) -> str:
             '(get_project_root() / "conf/somni/audio_tag_aliases.json")',
         )
         .replace(
+            'Path(__file__).with_name("audio_tag_aliases_v2.json")',
+            '(get_project_root() / "conf/somni/audio_tag_aliases_v2.json")',
+        )
+        .replace(
             'Path(__file__).with_name("audio_preference_rules.json")',
             '(get_project_root() / "conf/somni/audio_preference_rules.json")',
         )
@@ -51,8 +55,32 @@ def synchronize(mirror: Path, *, write: bool) -> None:
         mirror / "conf/somni/audio_preference_rules.json": (
             CORE / "audio_preference_rules.json"
         ).read_text(),
-        mirror / "src/utils/audio_tags.py": dph_module((CORE / "audio_tags.py").read_text()),
     }
+    outputs[mirror / "conf/somni/audio_tag_aliases_v2.json"] = (
+        CORE / "audio_tag_aliases_v2.json"
+    ).read_text()
+    # Resolver policies for unmatched user prose differ between services. Check
+    # the shared machine identity functions; never overwrite a service policy.
+    local_tree = ast.parse(dph_module((CORE / "audio_tags.py").read_text()))
+    remote_tree = ast.parse((mirror / "src/utils/audio_tags.py").read_text())
+    for name in (
+        "build_dictionary_aliases",
+        "canonical_tag",
+        "validated_audio_tags",
+        "reference_tag",
+    ):
+        local = next(
+            node
+            for node in local_tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == name
+        )
+        remote = next(
+            node
+            for node in remote_tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == name
+        )
+        if ast.dump(local) != ast.dump(remote):
+            raise ValueError(f"audio_identity_resolver_drift:{name}")
     for path, expected in outputs.items():
         if write:
             path.write_text(expected)

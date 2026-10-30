@@ -14,6 +14,7 @@ from bson import ObjectId
 from loguru import logger
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorCollection
 
+from app.cache.somni_audio_catalog_cache import SomniAudioCatalogCache
 from app.core.audio_tags import (
     canonical_disliked_tags,
     canonical_tags,
@@ -23,13 +24,12 @@ from app.core.audio_tags import (
     resolve_audio_preferences,
     validated_audio_tags,
 )
-from app.cache.somni_audio_catalog_cache import SomniAudioCatalogCache
 from app.core.bson_util import bson_to_jsonable
 from app.core.codes import HttpStatus
 from app.core.config import Settings
 from app.core.exceptions import AppError, EncoderNotReadyError
 from app.embedding.encoder import Encoder
-from app.es.search import CONTENT_TAG_TYPES, EsSearch
+from app.es.search import EsSearch
 from app.schemas.audio import SearchAudioRequest
 from app.schemas.search_material import project_search_material
 from app.server.somni.audio.hot import HotTracker, normalize_tag_code
@@ -316,7 +316,7 @@ class AudioCatalogService:
                         allowed_types=(
                             frozenset({"sleep_stage"})
                             if field == "sleep_stage_tags"
-                            else frozenset({"content_form", "mechanism", "audio_engineering"})
+                            else frozenset({"content_form"})
                         ),
                     )
                 )
@@ -337,7 +337,7 @@ class AudioCatalogService:
             cursor = self._tags().find(
                 {
                     "code": {"$in": codes},
-                    "type": {"$in": list(CONTENT_TAG_TYPES)},
+                    "type": "content_form",
                     "status": _TAG_ENABLED,
                 },
                 {"code": 1, "type": 1, "name": 1},
@@ -403,10 +403,10 @@ class AudioCatalogService:
                 "cover_url",
                 "sleep_stage_tags",
                 "content_form_tags",
-                "mechanism_tags",
                 "audio_engineering_tags",
-                "medical_risk_tags",
                 "evidence_level_tags",
+                "duration_seconds", "acoustic_metrics", "language", "languages",
+                "short_description", "source", "created_at", "updated_at",
             )
             cursor = self._materials().find(
                 {"_id": {"$in": ids}, "status": True}, {key: 1 for key in fields}
@@ -421,8 +421,6 @@ class AudioCatalogService:
             "sleep_stage_tags",
             "content_form_tags",
             "audio_engineering_tags",
-            "medical_risk_tags",
-            "mechanism_tags",
         )
         for candidate in candidates:
             identifier = str(candidate.get("_id") or candidate.get("id") or "")

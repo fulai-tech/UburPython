@@ -90,7 +90,6 @@ def _audio_doc(
         "content_form_tags": _tag_entries("cf", content_form or []),
         "mechanism_tags": _tag_entries("mech", mechanism or []),
         "audio_engineering_tags": audio_engineering or [],
-        "medical_risk_tags": [],
     }
     if description_score is not None:
         doc["_description_score"] = description_score
@@ -302,7 +301,7 @@ async def test_search_admits_on_exact_content_intersection() -> None:
     es_search.filter_by_sleep_stage = AsyncMock(
         return_value=[
             _audio_doc(
-                "雨声A", sleep_stage=["unwind"], content_form=["steady_light_rain", "forest"]
+                "雨声A", sleep_stage=["unwind"], content_form=["steady_light_rain", "forest_night"]
             ),
             _audio_doc("雨声B", sleep_stage=["unwind"], content_form=["steady_light_rain"]),
         ]
@@ -310,7 +309,7 @@ async def test_search_admits_on_exact_content_intersection() -> None:
     es_search.parse_tags = EsSearch.parse_tags
     request = SearchAudioRequest(
         sleep_stage_tags=["unwind"],
-        content_tags=["steady_light_rain", "forest"],
+        content_tags=["steady_light_rain", "forest_night"],
         top_k=10,
     )
 
@@ -337,7 +336,7 @@ async def test_search_falls_back_to_vector_when_no_exact_hit() -> None:
     encoder.encode = AsyncMock(return_value=[unit_vec])
     request = SearchAudioRequest(
         sleep_stage_tags=["unwind"],
-        content_tags=["mindfulness_meditation"],
+        content_tags=["mindfulness_sleep"],
         top_k=10,
     )
 
@@ -345,7 +344,7 @@ async def test_search_falls_back_to_vector_when_no_exact_hit() -> None:
 
     assert len(results) == 1
     assert results[0]["audio_name"] == "正念音频"
-    encoder.encode.assert_awaited_once_with(["mindfulness_meditation"])
+    encoder.encode.assert_awaited_once_with(["mindfulness_sleep"])
 
 
 @pytest.mark.parametrize(
@@ -495,7 +494,7 @@ async def test_search_skips_content_admission_when_no_content_tags() -> None:
     service, es_search, encoder = _build_service()
     docs = [
         _audio_doc("音频A", sleep_stage=["unwind"], content_form=["steady_light_rain"]),
-        _audio_doc("音频B", sleep_stage=["unwind"], content_form=["forest"]),
+        _audio_doc("音频B", sleep_stage=["unwind"], content_form=["forest_night"]),
     ]
     es_search.filter_by_sleep_stage = AsyncMock(return_value=docs)
     es_search.parse_tags = EsSearch.parse_tags
@@ -598,7 +597,7 @@ async def test_search_vector_match_count_ranks_by_hit_count() -> None:
     )
     request = SearchAudioRequest(
         sleep_stage_tags=["unwind"],
-        content_tags=["steady_light_rain", "forest"],
+        content_tags=["steady_light_rain", "forest_night"],
         top_k=10,
     )
 
@@ -620,14 +619,14 @@ async def test_search_coarse_rank_orders_by_match_count_desc() -> None:
         return_value=[
             _audio_doc("少命中", sleep_stage=["unwind"], content_form=["steady_light_rain"]),
             _audio_doc(
-                "多命中", sleep_stage=["unwind"], content_form=["steady_light_rain", "forest"]
+                "多命中", sleep_stage=["unwind"], content_form=["steady_light_rain", "forest_night"]
             ),
         ]
     )
     es_search.parse_tags = EsSearch.parse_tags
     request = SearchAudioRequest(
         sleep_stage_tags=["unwind"],
-        content_tags=["steady_light_rain", "forest"],
+        content_tags=["steady_light_rain", "forest_night"],
         top_k=10,
     )
 
@@ -643,10 +642,14 @@ async def test_content_admission_sets_match_count_without_tag_score() -> None:
     es_search.parse_tags = EsSearch.parse_tags
     docs = [
         _audio_doc("少命中", sleep_stage=["unwind"], content_form=["steady_light_rain"]),
-        _audio_doc("多命中", sleep_stage=["unwind"], content_form=["steady_light_rain", "forest"]),
+        _audio_doc(
+            "多命中", sleep_stage=["unwind"], content_form=["steady_light_rain", "forest_night"]
+        ),
     ]
 
-    admitted = await service._apply_content_admission(docs, ["steady_light_rain", "forest"], {})
+    admitted = await service._apply_content_admission(
+        docs, ["steady_light_rain", "forest_night"], {}
+    )
 
     assert [(c.source["audio_name"], c.match_count, c.tag_score) for c in admitted] == [
         ("少命中", 1, 0.0),
@@ -664,7 +667,9 @@ async def test_coarse_rank_runs_after_dislike_filter() -> None:
         return_value=[
             _audio_doc("保留少命中", sleep_stage=["unwind"], content_form=["steady_light_rain"]),
             _audio_doc(
-                "剔除多命中", sleep_stage=["unwind"], content_form=["steady_light_rain", "forest"]
+                "剔除多命中",
+                sleep_stage=["unwind"],
+                content_form=["steady_light_rain", "forest_night"],
             ),
         ]
     )
@@ -673,13 +678,13 @@ async def test_coarse_rank_runs_after_dislike_filter() -> None:
     es_search.get_dictionary_vectors = AsyncMock(
         return_value={
             "cf_steady_light_rain": orthogonal_vec,
-            "cf_forest": unit_vec,
+            "cf_forest_night": unit_vec,
         }
     )
     request = SearchAudioRequest(
         sleep_stage_tags=["unwind"],
-        content_tags=["steady_light_rain", "forest"],
-        disliked_tags=["forest"],
+        content_tags=["steady_light_rain", "forest_night"],
+        disliked_tags=["forest_night"],
         top_k=10,
     )
 
@@ -768,12 +773,15 @@ async def test_search_returns_projected_material() -> None:
         "audio_url": doc["audio_url"],
         "cover_url": "",
         "content_form_tags": [
-            {"code": "steady_light_rain", "name": "steady_light_rain", "parent_tag_id": "p1"}
+            {
+                "tag_id": "cf_steady_light_rain",
+                "code": "steady_light_rain",
+                "name": "steady_light_rain",
+                "parent_tag_id": "p1",
+            }
         ],
         "sleep_stage_tags": [{"tag_id": "ss_unwind", "code": "unwind", "name": "unwind"}],
-        "mechanism_tags": [],
         "audio_engineering_tags": [],
-        "medical_risk_tags": [],
         "evidence_level_tags": [{"tag_id": "ev_B", "code": "B", "name": "B"}],
     }
     assert "status" not in results[0]
@@ -813,12 +821,15 @@ async def test_text_query_can_return_description_only_recall() -> None:
         "audio_url": "https://cdn.example.com/描述命中.mp3",
         "cover_url": "",
         "content_form_tags": [
-            {"code": "gentle_ocean_wave", "name": "gentle_ocean_wave", "parent_tag_id": "p2"}
+            {
+                "tag_id": "cf_gentle_ocean_wave",
+                "code": "gentle_ocean_wave",
+                "name": "gentle_ocean_wave",
+                "parent_tag_id": "p2",
+            }
         ],
         "sleep_stage_tags": [],
-        "mechanism_tags": [],
         "audio_engineering_tags": [],
-        "medical_risk_tags": [],
         "evidence_level_tags": [{"tag_id": "ev_B", "code": "B", "name": "B"}],
     }
     assert "status" not in results[0]

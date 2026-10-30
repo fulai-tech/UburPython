@@ -7,9 +7,7 @@ from typing import Any
 DESCRIPTION_TAG_FIELDS = (
     "sleep_stage_tags",
     "content_form_tags",
-    "mechanism_tags",
     "audio_engineering_tags",
-    "medical_risk_tags",
     "evidence_level_tags",
 )
 

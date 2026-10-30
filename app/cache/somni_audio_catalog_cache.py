@@ -8,6 +8,7 @@ from typing import Any
 
 from loguru import logger
 
+from app.core.audio_tags import audio_tag_contract_version
 from app.core.bson_util import bson_to_jsonable
 
 CATALOG_KEY_PREFIX = "somni:audio:catalog:v1"
@@ -15,7 +16,9 @@ CATALOG_KEY_PREFIX = "somni:audio:catalog:v1"
 
 def catalog_cache_key(*, from_es: bool, language: str) -> str:
     source = "es" if from_es else "mongo"
-    return f"{CATALOG_KEY_PREFIX}:{source}:{language.strip() or 'zh'}"
+    return (
+        f"{CATALOG_KEY_PREFIX}:{audio_tag_contract_version()}:{source}:{language.strip() or 'zh'}"
+    )
 
 
 class SomniAudioCatalogCache:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any
 
 from app.core.audio_tags import reference_tag
@@ -18,8 +19,20 @@ def project_search_material(doc: dict[str, Any]) -> dict[str, Any]:
         "audio_engineering_tags": _project_engineering_tags(doc.get("audio_engineering_tags")),
         "evidence_level_tags": _project_tag_refs(doc.get("evidence_level_tags")),
     }
+    for key in (
+        "short_description",
+        "language",
+        "languages",
+        "source",
+        "duration_seconds",
+        "acoustic_metrics",
+        "created_at",
+        "updated_at",
+    ):
+        if key in doc:
+            result[key] = deepcopy(doc[key])
     if "status" in doc:
-        result["status"] = bool(doc["status"])
+        result["status"] = doc["status"] is True
     return result
 
 
@@ -30,18 +43,10 @@ def _project_content_form_tags(items: object) -> list[dict[str, Any]]:
     for item in items:
         if not isinstance(item, dict):
             continue
-        out.append(
-            {
-                "name": item.get("name"),
-                "parent_tag_id": item.get("parent_tag_id"),
-                **({"code": reference_tag(item)} if reference_tag(item) else {}),
-                **(
-                    {"parent_tag_code": item["parent_tag_code"]}
-                    if item.get("parent_tag_code")
-                    else {}
-                ),
-            }
-        )
+        projected = deepcopy(item)
+        if code := reference_tag(item):
+            projected["code"] = code
+        out.append(projected)
     return out
 
 
@@ -52,11 +57,9 @@ def _project_engineering_tags(items: object) -> list[dict[str, Any]]:
     for item in items:
         if not isinstance(item, dict):
             continue
-        value = item.get("value")
-        value_out = None
-        if isinstance(value, dict):
-            value_out = {"code": value.get("code")}
-        out.append({"code": item.get("code"), "value": value_out})
+        projected = deepcopy(item)
+        projected.setdefault("value", None)
+        out.append(projected)
     return out
 
 
