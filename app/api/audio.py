@@ -64,6 +64,6 @@ async def search_audio(
     body: SearchAudioRequest,
     service: AudioService = Depends(get_audio_service),
 ) -> ApiResponse:
-    """三维度检索：只读 ES，返回 materials 列表。"""
-    result = await service.search_audio(body)
-    return success(data=result.model_dump(), msg="检索成功")
+    """三维度检索：只读 ES，返回 materials 列表。空结果时按内容标签或描述向量兜底。"""
+    result = await service.search_audio_http(body)
+    return success(data=result.model_dump(exclude_none=True), msg="检索成功")

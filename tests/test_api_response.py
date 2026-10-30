@@ -14,7 +14,7 @@ from tests.test_exceptions import _assert_envelope
 
 def test_search_returns_http_200_envelope() -> None:
     mock_service = MagicMock()
-    mock_service.search_audio = AsyncMock(
+    mock_service.search_audio_http = AsyncMock(
         return_value=SearchAudioData(
             materials=[
                 {

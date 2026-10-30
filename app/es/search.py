@@ -42,6 +42,7 @@ SEARCH_CANDIDATE_SOURCE_INCLUDES = (
     "cover_url",
     "sleep_stage_tags",
     "content_form_tags",
+    "mechanism_tags",
     "audio_engineering_tags",
     "evidence_level_tags",
     "duration_seconds",
@@ -122,7 +123,10 @@ def _candidate_from_hit(hit: dict[str, Any]) -> dict[str, Any]:
     return _document_from_hit(hit)
 
 
-def _candidate_search_body(query: dict[str, Any], *, size: int = 1000) -> dict[str, Any]:
+CANDIDATE_QUERY_SIZE = 1000
+
+
+def _candidate_search_body(query: dict[str, Any], *, size: int = CANDIDATE_QUERY_SIZE) -> dict[str, Any]:
     """检索候选查询体：只取流水线必要字段。"""
     active_query = {
         "bool": {
@@ -187,7 +191,13 @@ class EsSearch:
             index=self.audio_index,
             body=_candidate_search_body({"match_all": {}}),
         )
-        return [_candidate_from_hit(hit) for hit in response["hits"]["hits"]]
+        results = [_candidate_from_hit(hit) for hit in response["hits"]["hits"]]
+        if len(results) >= CANDIDATE_QUERY_SIZE:
+            logger.warning(
+                "音频候选达到单次查询上限 {}，超出部分未进入本次结果",
+                CANDIDATE_QUERY_SIZE,
+            )
+        return results
 
     async def find_tag_doc_id_by_name(self, name: str) -> str | None:
         """按标签中文名查词典索引，命中则返回文档 _id。"""

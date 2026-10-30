@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import math
+import random
 import re
 import time
 from collections import OrderedDict
@@ -32,7 +33,7 @@ from app.core.audio_tags import (
 )
 from app.core.config import Settings
 from app.embedding.encoder import Encoder
-from app.es.search import EsSearch
+from app.es.search import CANDIDATE_QUERY_SIZE, EsSearch
 from app.schemas.audio import (
     EVIDENCE_WEIGHT_MAP,
     AudioTags,
@@ -200,6 +201,14 @@ class VectorSimilaritySnapshot:
         return float(np.max(self.scores[np.ix_(rows, columns)]))
 
 
+@dataclass(frozen=True)
+class EmptySearchFallback:
+    """HTTP 空结果兜底。reason 为 similar_tag、description 或 random。"""
+
+    materials: list[dict[str, Any]]
+    reason: str | None = None
+
+
 class RetrievalService:
     """三维度检索：睡眠阶段 → 内容形态 → 厌恶剔除 → 粗排 → 精排。"""
 
@@ -224,6 +233,144 @@ class RetrievalService:
             if query_text:
                 return await self._search_text_multi_route(request, query_text)
             return await self._search_tag_only(request)
+
+    async def fallback_empty_search(self, request: SearchAudioRequest) -> EmptySearchFallback:
+        """主检索为空时的 HTTP 兜底。有内容标签先走相似标签，仍空且有 query_text 再走描述向量。"""
+        async with self._search_semaphore:
+            content_tags = _unique_preserve_order(
+                [
+                    *_normalize_color_noise_aliases(request.content_tags),
+                    *request.content_tag_codes,
+                ]
+            )
+            query_text = (request.query_text or "").strip()
+            audios: list[dict[str, Any]] | None = None
+            if content_tags:
+                audios = await self._es_search.list_all_audio_candidates()
+                matched = await self._fallback_similar_content_tag(request, content_tags, audios)
+                if matched:
+                    return EmptySearchFallback(materials=matched, reason="similar_tag")
+            if query_text:
+                described = await self._fallback_description_vector(request, query_text)
+                if described:
+                    return EmptySearchFallback(materials=described, reason="description")
+                if not content_tags:
+                    return EmptySearchFallback(materials=[])
+            if audios is None:
+                audios = await self._es_search.list_all_audio_candidates()
+            picked = await self._fallback_random_audios(request, audios)
+            if not picked:
+                return EmptySearchFallback(materials=[])
+            return EmptySearchFallback(materials=picked, reason="random")
+
+    async def _fallback_similar_content_tag(
+        self,
+        request: SearchAudioRequest,
+        content_tags: list[str],
+        audios: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        dictionary = [
+            tag
+            for tag in await self._tag_dictionary()
+            if tag.get("vector") and tag.get("label")
+        ]
+        request_codes = set(canonical_tags(content_tags, strict=False))
+        disliked = set(_usable_dislike_tags(request.disliked_tags))
+        candidates = [
+            tag
+            for tag in dictionary
+            if tag["label"] not in request_codes and tag["label"] not in disliked
+        ]
+        if not candidates:
+            return []
+        request_vectors = await self._encode_texts(content_tags)
+        ranked: list[tuple[float, str]] = []
+        for tag in candidates:
+            scores = [
+                score
+                for vector in request_vectors
+                if (score := _safe_cosine(vector, tag["vector"])) is not None
+            ]
+            if not scores:
+                continue
+            ranked.append((max(scores), str(tag["label"])))
+        ranked.sort(key=lambda item: (-item[0], item[1]))
+        for _score, label in ranked:
+            owned = [
+                doc
+                for doc in audios
+                if label in _content_tag_codes(doc)
+                and not _audio_blocked_by_dislike(doc, request.disliked_tags)
+            ]
+            if request.sleep_stage_tags:
+                staged = [
+                    doc for doc in owned if _audio_has_sleep_stage(doc, request.sleep_stage_tags)
+                ]
+                if staged:
+                    owned = staged
+            if not owned:
+                continue
+            if request.top_k is not None:
+                owned = owned[: request.top_k]
+            logger.info("检索兜底命中相似内容标签={}，音频数={}", label, len(owned))
+            return [project_search_material(doc) for doc in owned]
+        return []
+
+    async def _fallback_description_vector(
+        self,
+        request: SearchAudioRequest,
+        query_text: str,
+    ) -> list[dict[str, Any]]:
+        limit = request.top_k if request.top_k is not None else 20
+        query_vector = await self._encode_one(query_text)
+        size = min(CANDIDATE_QUERY_SIZE, max(limit * 20, limit))
+        hits = await self._es_search.search_by_description_vector(
+            query_vector,
+            sleep_stage_tags=[],
+            size=size,
+        )
+        kept = [doc for doc in hits if not _audio_blocked_by_dislike(doc, request.disliked_tags)]
+        if len(kept) < limit and len(hits) >= size and size < CANDIDATE_QUERY_SIZE:
+            hits = await self._es_search.search_by_description_vector(
+                query_vector,
+                sleep_stage_tags=[],
+                size=CANDIDATE_QUERY_SIZE,
+            )
+            kept = [doc for doc in hits if not _audio_blocked_by_dislike(doc, request.disliked_tags)]
+        if request.sleep_stage_tags:
+            staged = [doc for doc in kept if _audio_has_sleep_stage(doc, request.sleep_stage_tags)]
+            if staged:
+                kept = staged
+        if len(kept) < limit:
+            logger.warning(
+                "检索兜底描述向量在过滤后不足，需要={}，实际={}",
+                limit,
+                len(kept),
+            )
+        logger.info(
+            "检索兜底按描述向量召回，请求数={}，返回数={}",
+            limit,
+            min(limit, len(kept)),
+        )
+        return [project_search_material(doc) for doc in kept[:limit]]
+
+    async def _fallback_random_audios(
+        self,
+        request: SearchAudioRequest,
+        audios: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
+        if audios is None:
+            audios = await self._es_search.list_all_audio_candidates()
+        pool = [doc for doc in audios if not _audio_blocked_by_dislike(doc, request.disliked_tags)]
+        if not pool:
+            return []
+        if len(pool) <= 5:
+            picked = pool
+        else:
+            count = random.randint(5, min(10, len(pool)))
+            picked = random.sample(pool, count)
+        logger.info("检索兜底随机返回音频数={}", len(picked))
+        return [project_search_material(doc) for doc in picked]
 
     async def _search_tag_only(self, request: SearchAudioRequest) -> list[dict[str, Any]]:
         top_k_label = request.top_k if request.top_k is not None else "全部"
@@ -1231,6 +1378,54 @@ def _log_tag_pipeline_timing(
     )
 
 
+def _content_tag_codes(doc: dict[str, Any]) -> set[str]:
+    """内容类标签 code：内容形态、机制、音频工程。"""
+    codes: set[str] = set()
+    for field in ("content_form_tags", "mechanism_tags", "audio_engineering_tags"):
+        for item in doc.get(field) or []:
+            if not isinstance(item, dict):
+                continue
+            for key in ("code", "name", "en_name"):
+                if code := canonical_tag(item.get(key), strict=False):
+                    codes.add(code)
+            value = item.get("value")
+            if isinstance(value, dict) and (
+                code := canonical_tag(value.get("code") or value.get("name"), strict=False)
+            ):
+                codes.add(code)
+    return codes
+
+
+def _audio_has_sleep_stage(doc: dict[str, Any], sleep_stage_tags: list[str]) -> bool:
+    wanted = set(canonical_tags(sleep_stage_tags, strict=False))
+    return bool(wanted and wanted & material_tag_codes(doc))
+
+
+def _audio_blocked_by_dislike(doc: dict[str, Any], disliked_tags: list[str]) -> bool:
+    blocked = set(_usable_dislike_tags(disliked_tags))
+    if blocked & (_content_tag_codes(doc) | material_tag_codes(doc)):
+        return True
+    if _tags_mention_voice(disliked_tags) and _voice_value_code(doc) != NO_VOICE_CODE:
+        return True
+    return False
+
+
+def _safe_cosine(left: list[float], right: list[float]) -> float | None:
+    """维度不一致时跳过该标签，避免整次兜底失败。"""
+    if len(left) != len(right):
+        logger.warning(
+            "检索兜底跳过维度不一致的标签向量，请求维度={}，标签维度={}",
+            len(left),
+            len(right),
+        )
+        return None
+    try:
+        return _cosine_similarity(left, right)
+    except ValueError:
+        logger.warning("检索兜底跳过无法计算相似度的标签向量")
+        return None
+
+
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
     """纯函数，便于单测；向量已 normalize 时等价于点积。"""
     dot = sum(x * y for x, y in zip(a, b, strict=True))
@@ -1293,6 +1488,40 @@ def _strip_voice_mention_tags(tags: list[str]) -> list[str]:
 def _usable_dislike_tags(tags: list[str]) -> list[str]:
     """去掉不应参与厌恶的标签（如全库共有的音工维名）。"""
     return [tag for tag in tags if tag not in IGNORED_DISLIKE_LABELS]
+
+
+def _content_tag_codes(doc: dict[str, Any]) -> set[str]:
+    """内容类标签 code：内容形态、作用机制、音频工程。"""
+    codes: set[str] = set()
+    for field in ("content_form_tags", "mechanism_tags", "audio_engineering_tags"):
+        for item in doc.get(field) or []:
+            if not isinstance(item, dict):
+                continue
+            for key in ("code", "name", "en_name"):
+                if code := canonical_tag(item.get(key), strict=False):
+                    codes.add(code)
+            value = item.get("value")
+            if isinstance(value, dict) and (
+                code := canonical_tag(value.get("code") or value.get("name"), strict=False)
+            ):
+                codes.add(code)
+    return codes
+
+
+def _audio_has_sleep_stage(doc: dict[str, Any], sleep_stage_tags: list[str]) -> bool:
+    wanted = set(canonical_tags(sleep_stage_tags, strict=False))
+    present = set(material_tag_codes(doc))
+    for name in doc.get("sleep_stage_names") or []:
+        if code := canonical_tag(name, strict=False):
+            present.add(code)
+    return bool(wanted & present)
+
+
+def _audio_blocked_by_dislike(doc: dict[str, Any], disliked_tags: list[str]) -> bool:
+    blocked = set(_usable_dislike_tags(disliked_tags))
+    if _content_tag_codes(doc) & blocked or material_tag_codes(doc) & blocked:
+        return True
+    return _tags_mention_voice(disliked_tags) and _voice_value_code(doc) != NO_VOICE_CODE
 
 
 def _voice_value_code(source: dict[str, Any]) -> str | None:

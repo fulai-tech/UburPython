@@ -36,6 +36,7 @@ services:
     volumes:
       - hf_cache:/data/huggingface
       - ./logs:/app/logs  # 公共日志与 logs/{handboard|somni}/{服务}/ 分层日志
+      - ./data:/app/data  # 同步备份 data/sync_backup；绑在宿主机，重建容器不丢
     deploy:
       resources:
         limits:
