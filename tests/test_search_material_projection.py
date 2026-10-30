@@ -43,8 +43,8 @@ def test_project_keeps_only_api_fields() -> None:
         "cover_url": "https://cdn/a-cover.jpg",
         "status": True,
         "sleep_stage_tags": [{"tag_id": "s1", "name": "放松"}],
-        "content_form_tags": [{"code": "rain", "name": "雨声", "parent_tag_id": "p1"}],
-        "audio_engineering_tags": [{"code": "event_density", "value": {"code": "low"}}],
+        "content_form_tags": raw["content_form_tags"],
+        "audio_engineering_tags": raw["audio_engineering_tags"],
         "evidence_level_tags": [{"code": "B"}],
     }
 

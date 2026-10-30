@@ -8,10 +8,8 @@ RAIN = {
     "steady_light_rain",
     "steady_rain",
     "heavy_rain",
-    "surface_rain",
-    "scene_rain",
-    "rainforest_light_rain",
-    "storm_ambience",
+    "rain_on_window",
+    "thunder",
 }
 
 
@@ -75,7 +73,7 @@ def test_legacy_rain_input_is_aligned_before_strict_request_validation():
 
     request = SearchAudioRequest(content_tags=["rain sounds"], disliked_tags=["鸟鸣"])
     assert set(request.content_tags) == RAIN
-    assert set(request.disliked_tags) == {"bird_calls", "dawn_chorus"}
+    assert set(request.disliked_tags) == {"birdsong", "dawn_chorus"}
     with pytest.raises(ValueError):
         SearchAudioRequest(content_tag_codes=["rain_sound"])
 
@@ -186,19 +184,19 @@ def test_common_piano_words_resolve_to_existing_code_without_disabling_sound(ter
 @pytest.mark.parametrize(
     "term,expected",
     [
-        ("鸟叫", {"bird_calls", "dawn_chorus"}),
-        ("海浪", {"ocean_wave_ambience", "gentle_ocean_wave"}),
+        ("鸟叫", {"birdsong", "dawn_chorus"}),
+        ("海浪", {"gentle_ocean_wave"}),
         ("溪水声", {"stream"}),
-        ("风扇声", {"mechanical_airflow"}),
+        ("风扇声", {"fan_sound"}),
         ("白噪声", {"white_noise"}),
         ("粉红噪音", {"pink_noise"}),
         ("棕色噪声", {"brown_noise"}),
-        ("竖琴", {"harp_music"}),
-        ("手碟", {"handpan_music"}),
-        ("颂钵", {"singing_bowl"}),
+        ("竖琴", set()),
+        ("手碟", set()),
+        ("颂钵", set()),
     ],
 )
-def test_reviewed_near_synonyms_target_existing_audio_categories(term, expected):
+def test_reviewed_terms_follow_current_catalog_without_guessing(term, expected):
     resolved = tags.resolve_audio_preferences(disliked=[term])
     assert set(resolved["disliked_codes"]) == expected
     assert not resolved["sound_disabled"]
@@ -215,7 +213,7 @@ def test_out_of_catalog_words_are_ignored_without_substring_guessing(term):
 
 def test_mixed_separators_keep_all_known_dislikes_and_ignore_unknown():
     resolved = tags.resolve_audio_preferences(disliked=["不要钢琴/鸟叫；吉他\n雨声"])
-    assert {"slow_piano", "bird_calls", "dawn_chorus"} | RAIN == set(resolved["disliked_codes"])
+    assert {"slow_piano", "birdsong", "dawn_chorus"} | RAIN == set(resolved["disliked_codes"])
     assert not resolved["sound_disabled"]
 
 
@@ -248,8 +246,8 @@ def test_conventional_negative_phrases_keep_reviewed_piano_exclusion(term):
 
 
 def test_dictionary_identity_is_not_broadened_by_a_colloquial_alias():
-    assert tags.canonical_disliked_tags(["bird_calls"]) == ["bird_calls"]
-    assert tags.canonical_disliked_tags(["Bird Calls"]) == ["bird_calls"]
+    assert tags.canonical_disliked_tags(["birdsong"]) == ["birdsong"]
+    assert tags.canonical_disliked_tags(["Bird Calls"]) == ["birdsong", "dawn_chorus"]
 
 
 def test_unknown_legacy_preferences_share_cache_identity_after_ignoring_text():
@@ -281,6 +279,6 @@ def test_negative_text_cannot_become_a_positive_preference():
 def test_full_width_list_separators_keep_known_exclusions():
     assert set(tags.canonical_disliked_tags(["ＰＩＡＮＯ／鸟叫"])) == {
         "slow_piano",
-        "bird_calls",
+        "birdsong",
         "dawn_chorus",
     }

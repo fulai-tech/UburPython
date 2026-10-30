@@ -108,7 +108,7 @@ def test_empty_or_symbol_free_text_is_ignored(tag):
     assert SearchAudioRequest(disliked_tags=[tag]).disliked_tags == []
 
 
-@pytest.mark.parametrize("tag", ["风声", "温和闹铃音乐", "安静无声", "雨声"])
+@pytest.mark.parametrize("tag", ["风声", "不存在的闹铃分类", "安静无声", "雨声"])
 def test_unverified_or_ambiguous_alias_is_rejected(tag):
     with pytest.raises(ValueError):
         canonical_tag(tag)
@@ -185,7 +185,7 @@ def test_alias_asset_is_derived_from_dictionary_fields():
 
     rows = dictionary_records()
     assert tag_aliases() == build_dictionary_aliases(rows)
-    assert len(rows) == 168  # Numeric test-stage codes 213/1321 are explicitly quarantined.
+    assert len(rows) == 125  # Numeric test-stage codes are explicitly quarantined.
     for row in rows:
         assert canonical_tag(row["code"]) == row["code"]
     assert "风声" not in tag_aliases()
@@ -218,7 +218,9 @@ async def test_negative_list_and_long_clause_do_not_leak_into_positive_tags(text
             {"code": "bird_calls", "name": "鸟类叫声", "name_en": "Bird Calls"},
         ],
     )
-    expected = {"bird_calls"} if "very " in text else {"voice", "bird_calls"}
+    expected = (
+        {"birdsong", "dawn_chorus"} if "very " in text else {"voice", "birdsong", "dawn_chorus"}
+    )
     assert set(result.disliked_tags) == expected
     assert result.content_tags == []
 

@@ -52,7 +52,7 @@ def build_sleep_stage_cache_key(stage: str) -> str:
 
 def build_sleep_stage_doc_key(audio_url: str) -> str:
     digest = hashlib.sha256(audio_url.encode("utf-8")).hexdigest()
-    return f"{SLEEP_STAGE_DOC_KEY_PREFIX}{digest}"
+    return f"{SLEEP_STAGE_DOC_KEY_PREFIX}{audio_tag_contract_version()}:{digest}"
 
 
 def merge_urls_preserve_order(groups: list[list[str]]) -> list[str]:

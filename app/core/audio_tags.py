@@ -46,6 +46,12 @@ def dictionary_records() -> list[dict[str, Any]]:
 
 
 @lru_cache(maxsize=1)
+def legacy_dictionary_asset() -> dict[str, Any]:
+    """Resolve surviving legacy labels without restoring retired identities."""
+    return json.loads(Path(__file__).with_name("audio_tag_aliases_v2.json").read_text())
+
+
+@lru_cache(maxsize=1)
 def tag_aliases() -> dict[str, str]:
     return _dictionary_asset()["aliases"]
 
@@ -71,6 +77,12 @@ def canonical_tag(value: Any, *, strict: bool = True) -> str:
             raise ValueError("invalid_audio_tag: empty after normalization")
         return ""
     code = _PHASE_ALIASES.get(text) or tag_aliases().get(text)
+    if not code:
+        legacy_code = legacy_dictionary_asset()["aliases"].get(text)
+        current_codes = {row["code"] for row in dictionary_records()}
+        # Keep old display aliases only when their identity still exists today.
+        if legacy_code in current_codes or legacy_code == "voice":
+            code = legacy_code
     if code:
         return code
     if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", raw):
@@ -128,8 +140,6 @@ def material_tag_codes(material: Mapping[str, Any]) -> set[str]:
     for field in (
         "sleep_stage_tags",
         "content_form_tags",
-        "mechanism_tags",
-        "medical_risk_tags",
         "content_tag_codes",
         "content_tags",
         "tags",
@@ -190,14 +200,17 @@ def audio_tag_contract_version() -> str:
     """Bind caches and preference evidence to the exact dictionary and mapping."""
     import hashlib
 
-    payload = {"dictionary": dictionary_records(), "rules": _preference_rules(), "resolver": 2}
+    payload = {"dictionary": dictionary_records(), "rules": _preference_rules(), "resolver": 3}
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()
     ).hexdigest()
 
 
 def validated_audio_tags(
-    values: Sequence[Any], *, allowed_types: frozenset[str] | None = None
+    values: Sequence[Any],
+    *,
+    allowed_types: frozenset[str] | None = None,
+    allow_safety_tags: bool = False,
 ) -> list[str]:
     """Reject invented, disabled or wrong-dimension machine tags before retrieval."""
     known: dict[str, list[dict[str, Any]]] = {}
@@ -206,11 +219,18 @@ def validated_audio_tags(
             known.setdefault(row["code"], []).append(row)
     codes = canonical_tags(values)
     for code in codes:
+        # Existing protocol exclusion, not a fabricated content-form dictionary row.
+        if allow_safety_tags and code == "voice":
+            continue
         matches = [
             row
             for row in known.get(code, [])
             if allowed_types is None or row["type"] in allowed_types
         ]
+        # Content codes are the default identity for mixed-dimension preference fields.
+        # Explicit engineering-only callers still receive ambiguity checks.
+        if any(row["type"] == "content_form" for row in matches):
+            matches = [row for row in matches if row["type"] == "content_form"]
         if not matches or any(
             row["type"] == "audio_engineering"
             and row.get("parent_tag_id")
@@ -254,15 +274,26 @@ def _preference_term_codes(value: str, *, dislike: bool) -> list[str]:
     )
     if negative_prefix_count and not dislike:
         return []
-    try:
-        return validated_audio_tags(
-            [text], allowed_types=_PREFERENCE_TYPES if dislike else _CONTENT_TYPES
-        )
-    except ValueError:
-        pass
+    if text in {row["code"] for row in dictionary_records()}:
+        try:
+            return validated_audio_tags(
+                [text],
+                allowed_types=_PREFERENCE_TYPES if dislike else _CONTENT_TYPES,
+                allow_safety_tags=dislike,
+            )
+        except ValueError:
+            return []
     for group in _preference_rules()["groups"]:
         if _key(text) in {_key(alias) for alias in group["aliases"]}:
             return list(group["codes"])
+    try:
+        return validated_audio_tags(
+            [text],
+            allowed_types=_PREFERENCE_TYPES if dislike else _CONTENT_TYPES,
+            allow_safety_tags=dislike,
+        )
+    except ValueError:
+        pass
     return []
 
 
@@ -281,7 +312,9 @@ def resolve_audio_preferences(
     }
     # Programmatic safety constraints remain strict; only free text may be ignored.
     result["disliked_codes"].extend(
-        _descendant_codes(validated_audio_tags(blocked, allowed_types=_PREFERENCE_TYPES))
+        _descendant_codes(
+            validated_audio_tags(blocked, allowed_types=_PREFERENCE_TYPES, allow_safety_tags=True)
+        )
     )
     for dislike, values in ((False, preferred), (True, disliked)):
         for value in values:

@@ -2,6 +2,8 @@
 
 **Somni / 功能手板音频检索服务**：三维度检索为核心；HTTP 保留；同进程再对外暴露功能手板与量产两套 gRPC。
 
+新版音频素材字段、标签兼容与联调说明见 [音频读取契约](AUDIO_SCHEMA_CONTRACT.md)。
+
 - **核心**：三维度音频检索（ES 召回 + 标签词典向量 + 精排）
 - **功能手板**：`MONGO_*` + `ES_NODE` + `REDIS_URL`；HTTP `:8080` + gRPC `:50065`
 - **量产**：`SOMNI_MONGO_*` + `SOMNI_ES_*` + `SOMNI_REDIS_URL`（独立 Redis 实例）；gRPC `:50064`

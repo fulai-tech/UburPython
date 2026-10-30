@@ -382,7 +382,8 @@ async def test_get_audio_cache_stays_resident() -> None:
     await svc.get_audio(page=1, page_size=10, fetch_all=False, query_text="", tag_code="")
 
     assert collection.find.call_count == 1
-    assert any(key.startswith("somni:audio:catalog:v1:mongo:") for key in redis.store)
+    from app.cache.somni_audio_catalog_cache import catalog_cache_key
+    assert catalog_cache_key(from_es=False, language="zh") in redis.store
 
 
 @pytest.mark.asyncio

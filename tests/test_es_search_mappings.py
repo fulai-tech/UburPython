@@ -43,9 +43,9 @@ def test_parse_tags_maps_somni_material_structure() -> None:
     assert tags.sleep_stage[0].label == "unwind"
     assert tags.sleep_stage[0].vector_id == "s1"
     assert tags.content_form[0].label == "music"
-    assert tags.mechanism[0].label == "masking"
+    assert tags.mechanism == []
     assert tags.audio_feat[0].label == "event_density"
-    assert tags.risk_control[0].label == "caution"
+    assert tags.risk_control == []
     assert tags.rhythm == []
 
 
@@ -56,4 +56,4 @@ def test_content_tag_ids_collects_three_dimensions() -> None:
         "audio_engineering_tags": [{"tag_id": "a1", "code": "z", "name": "密度"}],
     }
     tags = EsSearch.parse_tags(raw)
-    assert EsSearch.content_tag_ids(tags) == ["c1", "m1", "a1"]
+    assert EsSearch.content_tag_ids(tags) == ["c1", "a1"]
