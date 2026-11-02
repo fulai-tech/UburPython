@@ -205,6 +205,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         settings,
         node=settings.effective_somni_es_node,
     )
+    try:
+        if not await somni_es_client.ping():
+            raise RuntimeError(f"量产 Elasticsearch 连不上：{settings.effective_somni_es_node}")
+    except Exception as exc:
+        if settings.app_debug:
+            logger.warning("量产 Elasticsearch 不可用（调试模式，继续启动）：{}", exc)
+        else:
+            raise
     _app_state.somni_es_client = somni_es_client
     somni_es_search = EsSearch(
         somni_es_client,
@@ -235,6 +243,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         retrieval=somni_retrieval,
         redis=somni_redis,
     )
+    if somni_redis is not None:
+        try:
+            await _app_state.somni_audio_service.warm_audio_catalog()
+        except Exception as exc:
+            if settings.app_debug:
+                logger.warning("启动重建量产 GetAudio 目录缓存失败（调试模式，继续启动）：{}", exc)
+            else:
+                raise
 
     start_sync_scheduler(_app_state, settings)
     _app_state.grpc_servers = await start_grpc_servers(_app_state, settings)

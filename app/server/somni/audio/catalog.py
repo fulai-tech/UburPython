@@ -14,7 +14,11 @@ from bson import ObjectId
 from loguru import logger
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorCollection
 
-from app.cache.somni_audio_catalog_cache import SomniAudioCatalogCache
+from app.cache.somni_audio_catalog_cache import (
+    SomniAudioCatalogCache,
+    catalog_cache_key,
+    clear_somni_audio_catalog_cache,
+)
 from app.core.audio_tags import (
     canonical_disliked_tags,
     canonical_tags,
@@ -508,6 +512,29 @@ class AudioCatalogService:
             except Exception as exc:
                 logger.warning("量产热点后台记账失败：{}", exc)
 
+    async def warm_audio_catalog(self) -> int:
+        """从 ES 覆盖写入 GetAudio 正在使用的目录缓存，并删掉不再读取的目录键。"""
+        if self._catalog_cache is None:
+            logger.info("未配置量产 Redis，跳过 GetAudio 目录缓存")
+            return 0
+        if self._es_search is not None and not await self._es_search.audio_index_exists():
+            raise RuntimeError(
+                f"量产音频索引不存在：{self._es_search.audio_index}，"
+                "请先运行 scripts/sync_es_from_somni.py 同步数据"
+            )
+        language = "zh"
+        raw = await self._fetch_audios_es(language)
+        docs = [_map_material(doc) for doc in raw]
+        written = await self._catalog_cache.set(from_es=True, language=language, docs=docs)
+        if not written:
+            raise RuntimeError("写入量产 GetAudio 目录缓存失败")
+        removed = await clear_somni_audio_catalog_cache(
+            self._catalog_cache._redis,
+            keep=catalog_cache_key(from_es=True, language=language),
+        )
+        logger.info("已重建量产 GetAudio 目录缓存，条数={}，删除过期键={}", len(docs), removed)
+        return len(docs)
+
     async def _load_audios(self, *, from_es: bool, language: str) -> list[dict[str, Any]]:
         if self._catalog_cache is not None:
             cached = await self._catalog_cache.get(from_es=from_es, language=language)
@@ -681,6 +708,7 @@ _AUDIO_LIST_PROJECTION = {
     "short_description": 1,
     "vip": 1,
     "content_form_tags": 1,
+    "acoustic_metrics": 1,
     "created_at": 1,
     "create_time": 1,
 }
@@ -759,6 +787,7 @@ def _map_material(doc: dict[str, Any]) -> dict[str, Any]:
         "short_description": str(doc.get("short_description") or ""),
         "vip": _to_vip(doc.get("vip")),
         "content_form_tags": doc.get("content_form_tags") or [],
+        "acoustic_metrics": _acoustic_metrics(doc.get("acoustic_metrics")),
         "created_at": doc.get("created_at") or doc.get("create_time") or "",
     }
 
@@ -773,6 +802,7 @@ def _to_audio_list_item(doc: dict[str, Any], *, language: str) -> dict[str, Any]
         "description": str(doc.get("short_description") or ""),
         "vip": _to_vip(doc.get("vip")),
         "tag": _map_audio_tags(doc.get("content_form_tags"), language=language),
+        "is_voice": _is_voice(doc.get("acoustic_metrics")),
     }
 
 
@@ -794,6 +824,23 @@ def _tag_display_name(item: dict[str, Any], language: str) -> str:
     if language == "en":
         return name_en or name
     return name
+
+
+def _acoustic_metrics(value: Any) -> dict[str, Any] | None:
+    """只保留对象形态的声学指标；缺失不补字段。"""
+    if isinstance(value, dict):
+        return value
+    return None
+
+
+def _is_voice(metrics: Any) -> bool:
+    """voice_presence_ratio 为 0、缺失或非数值时无人声；其余数值视为有人声。"""
+    if not isinstance(metrics, dict):
+        return False
+    ratio = metrics.get("voice_presence_ratio")
+    if isinstance(ratio, bool) or not isinstance(ratio, (int, float)):
+        return False
+    return ratio != 0
 
 
 def _to_vip(value: Any) -> int:

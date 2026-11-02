@@ -8,7 +8,7 @@
 
 数据源：SOMNI_MONGO_* + SOMNI_ES_NODE + somni_es_* 索引。
 与 scripts/sync_es_from_comm.py（手板）隔离，避免误写手板索引。
-正式同步结束后删除量产 Redis 里的 GetAudio 目录缓存；dry-run 不删。
+正式同步结束后按 ES 重建量产 GetAudio 目录缓存；dry-run 不写 Redis。
 
 用法:
   .venv/bin/python scripts/sync_es_from_somni.py
@@ -20,8 +20,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import re
 import sys
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -32,7 +34,7 @@ if str(_ROOT) not in sys.path:
 from loguru import logger  # noqa: E402
 from motor.motor_asyncio import AsyncIOMotorClient  # noqa: E402
 
-from app.cache.somni_audio_catalog_cache import clear_somni_audio_catalog_cache  # noqa: E402
+from app.server.somni.audio.catalog import AudioCatalogService  # noqa: E402
 from app.core.bson_util import bson_to_jsonable  # noqa: E402
 from app.core.config import Settings, get_settings  # noqa: E402
 from app.core.logging import setup_logging  # noqa: E402
@@ -47,6 +49,7 @@ if TYPE_CHECKING:
 
 TAG_STATUS_ACTIVE = "启用"
 MATERIAL_STATUS_ACTIVE = True
+BACKUP_KEEP = 10
 
 
 @dataclass(frozen=True)
@@ -120,13 +123,45 @@ async def wipe_and_recreate_index(
     return count
 
 
+def _archive_existing_backup(path: Path) -> Path:
+    """把已有备份改名留存，避免下一次同步覆盖上一份数据。"""
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    candidate = path.with_name(f"{path.stem}_{stamp}{path.suffix}")
+    seq = 1
+    while candidate.exists():
+        candidate = path.with_name(f"{path.stem}_{stamp}_{seq}{path.suffix}")
+        seq += 1
+    path.rename(candidate)
+    return candidate
+
+
+def _prune_backup_archives(path: Path, keep: int) -> list[Path]:
+    """只保留最近 keep-1 份归档，加上当前备份共 keep 份；只认 _archive_existing_backup 生成的文件名。"""
+    pattern = re.compile(
+        rf"^{re.escape(path.stem)}_(\d{{8}}_\d{{6}})(?:_(\d+))?{re.escape(path.suffix)}$"
+    )
+    archives: list[tuple[tuple[str, int], Path]] = []
+    for item in path.parent.iterdir():
+        match = pattern.match(item.name)
+        if match and item.is_file():
+            archives.append(((match.group(1), int(match.group(2) or 0)), item))
+    archives.sort()
+    stale = [item for _, item in archives[: max(0, len(archives) - (keep - 1))]]
+    for item in stale:
+        item.unlink()
+    return stale
+
+
 def write_backup(path: Path, records: list[dict[str, Any]]) -> None:
-    if path.is_file():
-        path.unlink()
-        logger.info("已删除上一份备份：{}", path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_file():
+        archived = _archive_existing_backup(path)
+        logger.info("已保留上一份备份：{}", archived)
     path.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
     logger.info("已备份 {} 条记录至 {}", len(records), path)
+    removed = _prune_backup_archives(path, BACKUP_KEEP)
+    if removed:
+        logger.info("已清理过旧备份 {} 份，保留最近 {} 份", len(removed), BACKUP_KEEP)
 
 
 def _redact_mongo_uri(uri: str) -> str:
@@ -409,17 +444,18 @@ class MongoEsSyncJob:
         return result
 
 
-async def _clear_catalog_cache(settings: Settings) -> bool:
+async def _rebuild_catalog_cache(settings: Settings, es_search: EsSearch) -> bool:
     client = await create_somni_redis(settings)
     if client is None:
-        logger.warning("未配置 SOMNI_REDIS_URL，未清理量产 GetAudio 目录缓存")
+        logger.warning("未配置 SOMNI_REDIS_URL，未重建量产 GetAudio 目录缓存")
         return True
     try:
-        deleted = await clear_somni_audio_catalog_cache(client)
-        logger.info("已清理量产 GetAudio 目录缓存，删除 {} 个 key", deleted)
+        await es_search.refresh_audio_index()
+        service = AudioCatalogService(None, settings, es_search=es_search, redis=client)
+        await service.warm_audio_catalog()
         return True
     except Exception as exc:
-        logger.error("清理量产 GetAudio 目录缓存失败：{}", exc)
+        logger.error("重建量产 GetAudio 目录缓存失败：{}", exc)
         return False
     finally:
         await client.aclose()
@@ -441,7 +477,7 @@ async def _run_cli(*, dry_run: bool) -> int:
         )
         job = MongoEsSyncJob(mongo, es_search, es_client, encoder, settings)
         result = await job.run(dry_run=dry_run)
-        cache_cleared = True if dry_run else await _clear_catalog_cache(settings)
+        cache_cleared = True if dry_run else await _rebuild_catalog_cache(settings, es_search)
     finally:
         await mongo.close()
         await es_client.close()

@@ -32,6 +32,7 @@ _GET_AUDIO_BM25_SOURCE = (
     "language",
     "status",
     "created_at",
+    "acoustic_metrics",
 )
 CONTENT_TAG_TYPES = ("content_form", "mechanism", "audio_engineering")
 # 检索候选只取流水线与响应组装需要的字段，避免新增索引字段被默认带回。
@@ -457,6 +458,13 @@ class EsSearch:
         for dim in (tags.content_form, tags.mechanism, tags.audio_feat):
             ids.extend(item.vector_id for item in dim)
         return ids
+
+    async def audio_index_exists(self) -> bool:
+        return bool(await self._client.indices.exists(index=self.audio_index))
+
+    async def refresh_audio_index(self) -> None:
+        """让刚写入的音频立即可搜，避免紧接着的全量查询漏掉末尾几条。"""
+        await self._client.indices.refresh(index=self.audio_index)
 
     async def list_audio_catalog_docs(
         self,
