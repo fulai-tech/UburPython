@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -18,7 +19,46 @@ from scripts.sync_es_from_somni import (
     material_doc_to_es,
     mongo_doc_id,
     wipe_and_recreate_index,
+    write_backup,
 )
+
+
+def test_write_backup_keeps_previous_snapshot(tmp_path) -> None:
+    path = tmp_path / "somni_prod_audio_materials_backup.json"
+    write_backup(path, [{"_id": "old"}])
+    write_backup(path, [{"_id": "new"}])
+
+    assert json.loads(path.read_text(encoding="utf-8")) == [{"_id": "new"}]
+    archived = [item for item in tmp_path.iterdir() if item != path]
+    assert len(archived) == 1
+    assert json.loads(archived[0].read_text(encoding="utf-8")) == [{"_id": "old"}]
+
+
+def test_write_backup_keeps_only_latest_ten(tmp_path) -> None:
+    path = tmp_path / "somni_prod_audio_materials_backup.json"
+    for day in range(1, 13):
+        archived = tmp_path / f"{path.stem}_202610{day:02d}_120000{path.suffix}"
+        archived.write_text("[]", encoding="utf-8")
+    same_second = tmp_path / f"{path.stem}_20261012_120000_1{path.suffix}"
+    same_second.write_text("[]", encoding="utf-8")
+    other = tmp_path / "somni_prod_audio_tag_dictionary_backup_20261001_120000.json"
+    other.write_text("[]", encoding="utf-8")
+    notes = tmp_path / f"{path.stem}_notes{path.suffix}"
+    notes.write_text("[]", encoding="utf-8")
+
+    write_backup(path, [{"_id": "new"}])
+
+    kept = sorted(
+        item.name
+        for item in tmp_path.iterdir()
+        if item.name.startswith(f"{path.stem}_2026")
+    )
+    assert path.is_file()
+    assert len(kept) == 9
+    assert kept[0] == f"{path.stem}_20261005_120000{path.suffix}"
+    assert same_second.is_file()
+    assert other.is_file()
+    assert notes.is_file()
 
 
 def test_redact_mongo_uri_hides_password() -> None:
@@ -366,14 +406,15 @@ async def test_run_cli_clears_catalog_cache_after_real_sync() -> None:
         patch("scripts.sync_es_from_somni.MongoSource", return_value=mongo),
         patch("scripts.sync_es_from_somni.EsSearch"),
         patch("scripts.sync_es_from_somni.MongoEsSyncJob", return_value=job),
-        patch("scripts.sync_es_from_somni._clear_catalog_cache", clear),
+        patch("scripts.sync_es_from_somni._rebuild_catalog_cache", clear),
     ):
         from scripts.sync_es_from_somni import _run_cli
 
         code = await _run_cli(dry_run=False)
 
     assert code == 0
-    clear.assert_awaited_once_with(settings)
+    clear.assert_awaited_once()
+    assert clear.await_args.args[0] is settings
 
 
 @pytest.mark.asyncio
@@ -384,7 +425,7 @@ async def test_clear_catalog_cache_deletes_prefixed_keys() -> None:
         def __init__(self) -> None:
             self.keys = [
                 "somni:audio:catalog:v1:mongo:zh",
-                "somni:audio:catalog:v1:es:en",
+                "somni:audio:catalog:v2:es:en",
                 "somni:audio:hot:v1:query:zh:2026-W35",
             ]
             self.deleted: list[str] = []
@@ -405,5 +446,75 @@ async def test_clear_catalog_cache_deletes_prefixed_keys() -> None:
     assert deleted == 2
     assert redis.deleted == [
         "somni:audio:catalog:v1:mongo:zh",
-        "somni:audio:catalog:v1:es:en",
+        "somni:audio:catalog:v2:es:en",
     ]
+
+
+@pytest.mark.asyncio
+async def test_rebuild_catalog_cache_refreshes_directory_and_keeps_hot_key() -> None:
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from app.cache.somni_audio_catalog_cache import catalog_cache_key
+    from app.core.config import Settings
+    from scripts.sync_es_from_somni import _rebuild_catalog_cache
+    from tests.test_somni_audio_catalog import _CatalogRedis
+
+    redis = _CatalogRedis()
+    redis.store["somni:audio:catalog:v1:oldhash:es:zh"] = ("old-catalog", None)
+    redis.store["somni:audio:hot:v1:query:zh:2026-W45"] = ("hot", None)
+    calls: list[str] = []
+    es_search = MagicMock()
+    es_search.refresh_audio_index = AsyncMock(side_effect=lambda: calls.append("refresh"))
+    es_search.audio_index_exists = AsyncMock(return_value=True)
+
+    async def _list(**_kwargs):
+        calls.append("list")
+        return [
+            {
+                "_id": "a1",
+                "audio_name": "雨夜",
+                "language": "zh",
+                "audio_url": "https://cdn.example/a.mp3",
+                "acoustic_metrics": {"voice_presence_ratio": 0},
+            }
+        ]
+
+    es_search.list_audio_catalog_docs = AsyncMock(side_effect=_list)
+    settings = Settings(somni_redis_url="redis://127.0.0.1:6380/0", fetch_all_hard_limit=50)
+
+    with patch(
+        "scripts.sync_es_from_somni.create_somni_redis",
+        AsyncMock(return_value=redis),
+    ):
+        ok = await _rebuild_catalog_cache(settings, es_search)
+
+    current = catalog_cache_key(from_es=True, language="zh")
+    assert ok is True
+    assert calls == ["refresh", "list"]
+    assert current in redis.store
+    assert '"voice_presence_ratio":0' in redis.store[current][0]
+    assert "somni:audio:catalog:v1:oldhash:es:zh" not in redis.store
+    assert redis.store["somni:audio:hot:v1:query:zh:2026-W45"] == ("hot", None)
+
+
+@pytest.mark.asyncio
+async def test_rebuild_catalog_cache_fails_when_refresh_fails() -> None:
+    from scripts.sync_es_from_somni import _rebuild_catalog_cache
+    from tests.test_somni_audio_catalog import _CatalogRedis
+
+    redis = _CatalogRedis()
+    redis.store["somni:audio:catalog:v1:oldhash:es:zh"] = ("old-catalog", None)
+    es_search = MagicMock()
+    es_search.refresh_audio_index = AsyncMock(side_effect=RuntimeError("es down"))
+    es_search.list_audio_catalog_docs = AsyncMock(return_value=[])
+    settings = Settings(somni_redis_url="redis://127.0.0.1:6380/0")
+
+    with patch(
+        "scripts.sync_es_from_somni.create_somni_redis",
+        AsyncMock(return_value=redis),
+    ):
+        ok = await _rebuild_catalog_cache(settings, es_search)
+
+    assert ok is False
+    es_search.list_audio_catalog_docs.assert_not_awaited()
+    assert redis.store["somni:audio:catalog:v1:oldhash:es:zh"] == ("old-catalog", None)

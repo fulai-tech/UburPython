@@ -70,6 +70,7 @@ async def test_get_audio_passes_page_and_query() -> None:
                     "description": "短描述",
                     "vip": 0,
                     "tag": ["自然声", "中雨/稳定雨声"],
+                    "is_voice": True,
                 }
             ],
             "page": 1,
@@ -97,6 +98,8 @@ async def test_get_audio_passes_page_and_query() -> None:
     assert res.page == 1
     assert res.page_size == 20
     assert list(res.list[0].tag) == ["自然声", "中雨/稳定雨声"]
+    assert res.list[0].HasField("is_voice")
+    assert res.list[0].is_voice is True
 
 
 @pytest.mark.asyncio

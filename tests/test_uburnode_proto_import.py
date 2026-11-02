@@ -64,8 +64,11 @@ def test_audio_list_item_keeps_default_field_presence() -> None:
         cover_url="",
         description="",
         vip=0,
+        is_voice=False,
     )
     assert item.HasField("audio_url")
+    assert item.HasField("is_voice")
+    assert item.is_voice is False
     assert item.HasField("cover_url")
     assert item.HasField("description")
     assert item.HasField("vip")

@@ -11,7 +11,9 @@ from loguru import logger
 from app.core.audio_tags import audio_tag_contract_version
 from app.core.bson_util import bson_to_jsonable
 
-CATALOG_KEY_PREFIX = "somni:audio:catalog:v1"
+# 目录缓存都挂在这个前缀下。写入时覆盖当前键，并删掉其它版本，避免旧键占着内存。
+CATALOG_KEY_ROOT = "somni:audio:catalog"
+CATALOG_KEY_PREFIX = f"{CATALOG_KEY_ROOT}:v1"
 
 
 def catalog_cache_key(*, from_es: bool, language: str) -> str:
@@ -50,7 +52,7 @@ class SomniAudioCatalogCache:
         from_es: bool,
         language: str,
         docs: list[dict[str, Any]],
-    ) -> None:
+    ) -> bool:
         key = catalog_cache_key(from_es=from_es, language=language)
         payload = json.dumps(
             bson_to_jsonable(docs),
@@ -64,13 +66,18 @@ class SomniAudioCatalogCache:
                 await self._redis.set(key, payload, ex=max(1, math.ceil(self._ttl_sec)))
         except Exception as exc:
             logger.warning("写入量产 GetAudio 目录缓存失败：{}", exc)
+            return False
+        return True
 
 
-async def clear_somni_audio_catalog_cache(redis: Any) -> int:
-    """删除全部语言、Mongo/ES 两路目录缓存。"""
+async def clear_somni_audio_catalog_cache(redis: Any, *, keep: str | None = None) -> int:
+    """删除目录缓存。keep 指定的当前键保留，热榜等其它前缀不动。"""
     keys: list[str] = []
-    async for key in redis.scan_iter(match=f"{CATALOG_KEY_PREFIX}:*", count=100):
-        keys.append(str(key))
+    async for key in redis.scan_iter(match=f"{CATALOG_KEY_ROOT}:*", count=100):
+        text = str(key)
+        if keep is not None and text == keep:
+            continue
+        keys.append(text)
     if not keys:
         return 0
     deleted = await redis.delete(*keys)

@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import re
 import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -63,6 +64,7 @@ if TYPE_CHECKING:
 _scheduler: AsyncIOScheduler | None = None
 TAG_STATUS_ACTIVE = "启用"
 MATERIAL_STATUS_ACTIVE = True
+BACKUP_KEEP = 10
 
 
 @dataclass(frozen=True)
@@ -134,13 +136,45 @@ async def wipe_and_recreate_index(
     return count
 
 
+def _archive_existing_backup(path: Path) -> Path:
+    """把已有备份改名留存，避免下一次同步覆盖上一份数据。"""
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    candidate = path.with_name(f"{path.stem}_{stamp}{path.suffix}")
+    seq = 1
+    while candidate.exists():
+        candidate = path.with_name(f"{path.stem}_{stamp}_{seq}{path.suffix}")
+        seq += 1
+    path.rename(candidate)
+    return candidate
+
+
+def _prune_backup_archives(path: Path, keep: int) -> list[Path]:
+    """只保留最近 keep-1 份归档，加上当前备份共 keep 份；只认 _archive_existing_backup 生成的文件名。"""
+    pattern = re.compile(
+        rf"^{re.escape(path.stem)}_(\d{{8}}_\d{{6}})(?:_(\d+))?{re.escape(path.suffix)}$"
+    )
+    archives: list[tuple[tuple[str, int], Path]] = []
+    for item in path.parent.iterdir():
+        match = pattern.match(item.name)
+        if match and item.is_file():
+            archives.append(((match.group(1), int(match.group(2) or 0)), item))
+    archives.sort()
+    stale = [item for _, item in archives[: max(0, len(archives) - (keep - 1))]]
+    for item in stale:
+        item.unlink()
+    return stale
+
+
 def write_backup(path: Path, records: list[dict[str, Any]]) -> None:
-    if path.is_file():
-        path.unlink()
-        logger.info("已删除上一份备份：{}", path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_file():
+        archived = _archive_existing_backup(path)
+        logger.info("已保留上一份备份：{}", archived)
     path.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
     logger.info("已备份 {} 条记录至 {}", len(records), path)
+    removed = _prune_backup_archives(path, BACKUP_KEEP)
+    if removed:
+        logger.info("已清理过旧备份 {} 份，保留最近 {} 份", len(removed), BACKUP_KEEP)
 
 
 def _redact_mongo_uri(uri: str) -> str:

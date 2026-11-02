@@ -77,6 +77,7 @@ class _CatalogRedis:
 
     def __init__(self) -> None:
         self.store: dict[str, tuple[str, float | None]] = {}
+        self.zsets: dict[str, dict[str, float]] = {}
         self.now = 0.0
 
     async def get(self, key: str) -> str | None:
@@ -92,6 +93,33 @@ class _CatalogRedis:
     async def set(self, key: str, value: str, ex: int | None = None) -> None:
         deadline = None if ex is None else self.now + ex
         self.store[key] = (value, deadline)
+
+    async def scan_iter(self, *, match: str, count: int):
+        _ = count
+        prefix = match.removesuffix("*")
+        for key in list(self.store):
+            if key.startswith(prefix):
+                yield key
+
+    async def delete(self, *keys: str) -> int:
+        removed = 0
+        for key in keys:
+            if self.store.pop(key, None) is not None:
+                removed += 1
+        return removed
+
+    async def zrevrange(self, key: str, start: int, end: int, withscores: bool = False):
+        items = sorted(self.zsets.get(key, {}).items(), key=lambda item: (-item[1], item[0]))
+        if end == -1:
+            sliced = items[start:]
+        else:
+            sliced = items[start : end + 1]
+        if withscores:
+            return sliced
+        return [member for member, _score in sliced]
+
+    async def aclose(self) -> None:
+        return None
 
 
 def _service(
@@ -127,6 +155,8 @@ def _service(
             ).list_audio_catalog_docs
         if not isinstance(getattr(es_search, "search_get_audio_bm25", None), AsyncMock):
             es_search.search_get_audio_bm25 = AsyncMock(return_value=[])
+        if not isinstance(getattr(es_search, "audio_index_exists", None), AsyncMock):
+            es_search.audio_index_exists = AsyncMock(return_value=True)
     return AudioCatalogService(
         client,
         settings,
@@ -149,6 +179,7 @@ def _es_catalog_from_collection(collection: MagicMock) -> MagicMock:
 
     es_search.list_audio_catalog_docs = AsyncMock(side_effect=_list)
     es_search.search_get_audio_bm25 = AsyncMock(return_value=[])
+    es_search.audio_index_exists = AsyncMock(return_value=True)
     return es_search
 
 
@@ -244,6 +275,7 @@ async def test_get_audio_filters_content_form_code_then_pages() -> None:
         "description",
         "vip",
         "tag",
+        "is_voice",
     }
     assert payload["list"][0]["vip"] == 0
     assert payload["list"][0]["description"] == ""
@@ -402,7 +434,113 @@ async def test_get_audio_cache_stays_resident() -> None:
 
     assert collection.find.call_count == 1
     from app.cache.somni_audio_catalog_cache import catalog_cache_key
+
     assert catalog_cache_key(from_es=True, language="zh") in redis.store
+
+
+@pytest.mark.asyncio
+async def test_warm_audio_catalog_overwrites_current_key_and_drops_stale_ones() -> None:
+    from app.cache.somni_audio_catalog_cache import catalog_cache_key
+
+    collection = _mongo_collection(
+        [{**_RAIN, "acoustic_metrics": {"voice_presence_ratio": 0.2}}]
+    )
+    redis = _CatalogRedis()
+    redis.store["somni:audio:catalog:v2:old"] = ("stale", None)
+    redis.store["somni:audio:hot:v1:query:zh:2026-W45"] = ("hot", None)
+    svc = _service(collection, redis=redis)
+
+    count = await svc.warm_audio_catalog()
+
+    current = catalog_cache_key(from_es=True, language="zh")
+    assert count == 1
+    assert current in redis.store
+    assert "somni:audio:catalog:v2:old" not in redis.store
+    assert redis.store["somni:audio:hot:v1:query:zh:2026-W45"] == ("hot", None)
+    assert '"voice_presence_ratio":0.2' in redis.store[current][0]
+
+
+@pytest.mark.asyncio
+async def test_warm_audio_catalog_fails_with_hint_when_index_missing() -> None:
+    collection = _mongo_collection([_RAIN])
+    redis = _CatalogRedis()
+    redis.store["somni:audio:catalog:v1:oldhash:es:zh"] = ("old-catalog", None)
+    redis.store["somni:audio:hot:v1:query:zh:2026-W45"] = ("hot", None)
+    before = dict(redis.store)
+    es_search = _es_catalog_from_collection(collection)
+    es_search.audio_index = "somni_audio_materials"
+    es_search.audio_index_exists = AsyncMock(return_value=False)
+    svc = _service(collection, es_search=es_search, redis=redis)
+
+    with pytest.raises(RuntimeError, match="sync_es_from_somni.py"):
+        await svc.warm_audio_catalog()
+
+    es_search.list_audio_catalog_docs.assert_not_awaited()
+    assert redis.store == before
+
+
+@pytest.mark.asyncio
+async def test_get_audio_and_get_hot_after_catalog_key_rebuild() -> None:
+    """目录键重建后，GetAudio 仍能标出人声，GetHot 继续读原来的热榜键。"""
+    from app.server.somni.audio.hot import HotTracker, hot_redis_key
+    from app.server.somni.audio.rpc import AudioRpc
+    from app.uburnode_grpc.grpc_gen import uburnode_somni_pb2
+
+    from app.cache.somni_audio_catalog_cache import catalog_cache_key
+
+    voiced = {
+        **_RAIN,
+        "_id": "voiced",
+        "audio_name": "人声",
+        "acoustic_metrics": {"voice_presence_ratio": 0.4},
+    }
+    silent = {
+        **_MUSIC,
+        "_id": "silent",
+        "language": "zh",
+        "acoustic_metrics": {"voice_presence_ratio": 0},
+    }
+    missing = {**_RAIN, "_id": "missing", "audio_name": "无指标"}
+    collection = _mongo_collection([voiced, silent, missing])
+    redis = _CatalogRedis()
+    redis.store["somni:audio:catalog:v1:oldhash:es:zh"] = ("old-catalog", None)
+    redis.store["sleep_stage_v3_index:old:unwind"] = ("stage", None)
+    hot_key = hot_redis_key(Settings(), "zh", kind="query")
+    redis.store[hot_key] = ("hot-marker", None)
+    redis.zsets[hot_key] = {"雨声": 6.0}
+    svc = _service(
+        collection,
+        redis=redis,
+        hot=HotTracker(redis, None, Settings()),
+        cache_ttl_sec=0,
+    )
+
+    await svc.warm_audio_catalog()
+
+    rpc = AudioRpc(svc)
+    request = uburnode_somni_pb2.GetAudioReq(fetch_all=True)
+    first = await rpc.GetAudio(request, MagicMock())
+    reads_after_first = collection.find.call_count
+    second = await rpc.GetAudio(request, MagicMock())
+
+    assert {item.id: item.is_voice for item in first.list} == {
+        "voiced": True,
+        "silent": False,
+        "missing": False,
+    }
+    assert {item.id: item.is_voice for item in second.list} == {
+        "voiced": True,
+        "silent": False,
+        "missing": False,
+    }
+    assert collection.find.call_count == reads_after_first
+    assert "somni:audio:catalog:v1:oldhash:es:zh" not in redis.store
+    assert catalog_cache_key(from_es=True, language="zh") in redis.store
+    assert redis.store["sleep_stage_v3_index:old:unwind"] == ("stage", None)
+    assert redis.store[hot_key] == ("hot-marker", None)
+
+    hot = await rpc.GetHot(uburnode_somni_pb2.GetHotReq(), MagicMock())
+    assert [(item.keyword, item.score) for item in hot.items] == [("雨声", 6)]
 
 
 @pytest.mark.asyncio
@@ -906,6 +1044,48 @@ async def test_get_audio_query_text_rain_matches_via_code_token() -> None:
         language="en",
     )
     assert [item["id"] for item in payload["list"]] == ["a-rain"]
+
+
+@pytest.mark.parametrize(
+    ("metrics", "expected"),
+    [
+        (None, False),
+        ({}, False),
+        ({"voice_presence_ratio": None}, False),
+        ({"voice_presence_ratio": 0}, False),
+        ({"voice_presence_ratio": 0.0}, False),
+        ({"voice_presence_ratio": 0.01}, True),
+        ({"voice_presence_ratio": 1}, True),
+    ],
+)
+def test_is_voice_follows_voice_presence_ratio(metrics, expected) -> None:
+    assert catalog._is_voice(metrics) is expected
+
+
+@pytest.mark.asyncio
+async def test_get_audio_sets_is_voice_from_acoustic_metrics() -> None:
+    silent = {
+        **_RAIN,
+        "_id": "silent",
+        "acoustic_metrics": {"voice_presence_ratio": 0},
+    }
+    voiced = {
+        **_MUSIC,
+        "_id": "voiced",
+        "acoustic_metrics": {"voice_presence_ratio": 0.4},
+    }
+    missing = {**_RAIN, "_id": "missing", "audio_name": "无指标"}
+    svc = _service(_mongo_collection([silent, voiced, missing]))
+    payload = await svc.get_audio(
+        page=1,
+        page_size=10,
+        fetch_all=True,
+        query_text="",
+        tag_code="",
+    )
+    by_id = {item["id"]: item["is_voice"] for item in payload["list"]}
+    assert by_id == {"silent": False, "voiced": True, "missing": False}
+    assert "acoustic_metrics" not in payload["list"][0]
 
 
 def test_to_vip_normalizes_bool_int_and_string() -> None:
