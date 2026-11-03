@@ -44,3 +44,42 @@ PYTHONPATH=. python scripts/export_audio_tag_contract.py --mirror-root /path/to/
 全量测试 831 项通过、6 项失败；这 6 项在未修改的 dev 上同样失败，分别为 5 项日志断言和 1 项英文词形处理。dev 对照共 11 项失败，本次修复了其中 5 项音频相关失败。
 
 本次没有修改 Proto、数据库数据或部署配置，没有重建向量、刷新用户画像或下发方案。完成代码发布与部署后，再通过真实 `SearchPrescriptionAudio` 核验远端行为。DeepHealth 入站 `DecodeError` 是另一问题，本次不声称已经修复。
+# Enabled content dictionary alignment (2026-11-03)
+
+`app/core/audio_tag_aliases.json` is the versioned export of
+`somni_audio_tag_dictionary` with the exact filter
+`{"type":"content_form","status":"启用"}` (currently 109 records). Do not replace
+it with a smaller manually curated catalogue. Unknown, disabled, retired and
+wrong-dimension machine content codes remain invalid; this repair does not turn
+off request validation. Application sleep-stage values `unwind/soothe/guard/wake`
+are validated separately. `voice` is an existing safety exclusion, not a content
+tag offered as an intervention.
+
+The previous snapshot is archived in `audio_tag_aliases_v5.json` for engineering
+alias compatibility, not for admitting retired content codes. Current code/name
+identities take precedence over broader colloquial preference groups. The shared
+contract revision is 4, so retrieval caches cannot reuse the old identity set.
+Vocal filtering uses valid enabled content tags and their ancestry; materials
+without usable content evidence retain conservative legacy handling. Fresh Mongo
+material content references are checked again after ES retrieval/cache lookup.
+Database status and stage checks remain in force. RPC/Proto fields are unchanged.
+
+Before release, use the explicit Somni connection profile to check both the live
+dictionary and the DPH mirror without writing files or databases:
+
+```bash
+PYTHONPATH=. python scripts/export_audio_tag_contract.py \
+  --mirror-root /path/to/DeepHealth --check-live --env-file /path/to/operator.env
+```
+
+The check fails on live drift or mismatched assets/shared identity functions.
+Updating assets requires an explicit `--refresh --write` and review of preference
+rules and DPH frozen playback policy versions; the exporter never overwrites
+historical assets. It never updates Mongo, embeddings, or ES. Runtime processes
+must restart after an approved asset update because their dictionary is cached.
+
+Restored examples include `mindfulness_meditation`, `deep_slow_river`,
+`postponement`, `imagery_distraction`, `harp_music`, `singing_bowl`,
+`wind_ambience`, and `wuxing_healing_music`. Dictionary validity does not prove
+that an enabled stage-appropriate audio material exists for every tag; an empty
+candidate result remains a legitimate result.

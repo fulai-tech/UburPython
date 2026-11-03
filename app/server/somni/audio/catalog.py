@@ -410,8 +410,14 @@ class AudioCatalogService:
                 "content_form_tags",
                 "audio_engineering_tags",
                 "evidence_level_tags",
-                "duration_seconds", "acoustic_metrics", "language", "languages",
-                "short_description", "source", "created_at", "updated_at",
+                "duration_seconds",
+                "acoustic_metrics",
+                "language",
+                "languages",
+                "short_description",
+                "source",
+                "created_at",
+                "updated_at",
             )
             cursor = self._materials().find(
                 {"_id": {"$in": ids}, "status": True}, {key: 1 for key in fields}
@@ -431,6 +437,12 @@ class AudioCatalogService:
             identifier = str(candidate.get("_id") or candidate.get("id") or "")
             source = current.get(identifier)
             if source is None or source.get("status") is not True or not source.get("audio_url"):
+                continue
+            from app.core.audio_tags import validated_content_references
+
+            try:
+                validated_content_references(source)
+            except ValueError:
                 continue
             projected = project_search_material({**candidate, "_id": identifier})
             if any(projected[key] != source[key] for key in keys):
@@ -588,9 +600,7 @@ class AudioCatalogService:
         if not self._settings.get_audio_bm25_enabled or self._es_search is None:
             return []
         size = (
-            self._settings.fetch_all_hard_limit
-            if fetch_all
-            else self._settings.get_audio_bm25_size
+            self._settings.fetch_all_hard_limit if fetch_all else self._settings.get_audio_bm25_size
         )
         raw = await self._es_search.search_get_audio_bm25(
             text,

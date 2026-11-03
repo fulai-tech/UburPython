@@ -19,6 +19,11 @@ def _key(value: Any) -> str:
 @lru_cache(maxsize=1)
 def _dictionary_asset() -> dict[str, Any]:
     asset = json.loads(Path(__file__).with_name("audio_tag_aliases.json").read_text())
+    if any(
+        row.get("type") != "content_form" or row.get("status") != "启用"
+        for row in asset["dictionary"]
+    ):
+        raise ValueError("audio_content_dictionary_filter_invalid")
     if asset["aliases"] != build_dictionary_aliases(asset["dictionary"]):
         raise ValueError("audio_tag_aliases_must_be_derived_from_dictionary")
     return asset
@@ -52,6 +57,12 @@ def legacy_dictionary_asset() -> dict[str, Any]:
 
 
 @lru_cache(maxsize=1)
+def previous_dictionary_asset() -> dict[str, Any]:
+    """Preserve engineering aliases without admitting them as content tags."""
+    return json.loads(Path(__file__).with_name("audio_tag_aliases_v5.json").read_text())
+
+
+@lru_cache(maxsize=1)
 def tag_aliases() -> dict[str, str]:
     return _dictionary_asset()["aliases"]
 
@@ -81,7 +92,16 @@ def canonical_tag(value: Any, *, strict: bool = True) -> str:
         legacy_code = legacy_dictionary_asset()["aliases"].get(text)
         current_codes = {row["code"] for row in dictionary_records()}
         # Keep old display aliases only when their identity still exists today.
-        if legacy_code in current_codes or legacy_code == "voice":
+        engineering_codes = {
+            row["code"]
+            for row in previous_dictionary_asset()["dictionary"]
+            if row.get("type") != "content_form"
+        }
+        if (
+            legacy_code in current_codes
+            or legacy_code in engineering_codes
+            or legacy_code == "voice"
+        ):
             code = legacy_code
     if code:
         return code
@@ -110,6 +130,27 @@ def reference_tag(item: Mapping[str, Any]) -> str:
         if value and _key(value) in tag_aliases():
             return canonical_tag(value)
     return canonical_tag(code, strict=False)
+
+
+def validated_content_references(material: Mapping[str, Any]) -> list[str]:
+    """Validate new structured content refs against enabled content-form records."""
+    refs = material.get("content_form_tags")
+    if refs is None:
+        return []
+    if not isinstance(refs, list):
+        raise ValueError("audio_content_references_invalid")
+    codes = []
+    for ref in refs:
+        if isinstance(ref, Mapping):
+            if ref.get("type", "content_form") != "content_form":
+                raise ValueError("audio_content_reference_wrong_type")
+            code = reference_tag(ref)
+        elif isinstance(ref, str):
+            code = ref
+        else:
+            raise ValueError("audio_content_references_invalid")
+        codes.append(code)
+    return validated_audio_tags(codes, allowed_types=frozenset({"content_form"}))
 
 
 def material_tag_codes(material: Mapping[str, Any]) -> set[str]:
@@ -184,8 +225,8 @@ def canonical_disliked_tags(values: Sequence[Any], *, strict: bool = True) -> li
     return resolved["disliked_codes"]
 
 
-_PREFERENCE_TYPES = frozenset({"content_form", "mechanism", "audio_engineering"})
-_CONTENT_TYPES = frozenset({"content_form", "mechanism"})
+_CONTENT_TYPES = frozenset({"content_form"})
+_PREFERENCE_TYPES = _CONTENT_TYPES
 
 
 @lru_cache(maxsize=1)
@@ -200,7 +241,7 @@ def audio_tag_contract_version() -> str:
     """Bind caches and preference evidence to the exact dictionary and mapping."""
     import hashlib
 
-    payload = {"dictionary": dictionary_records(), "rules": _preference_rules(), "resolver": 3}
+    payload = {"dictionary": dictionary_records(), "rules": _preference_rules(), "resolver": 4}
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()
     ).hexdigest()
@@ -213,11 +254,19 @@ def validated_audio_tags(
     allow_safety_tags: bool = False,
 ) -> list[str]:
     """Reject invented, disabled or wrong-dimension machine tags before retrieval."""
+    if allowed_types is None:
+        allowed_types = _CONTENT_TYPES
     known: dict[str, list[dict[str, Any]]] = {}
     for row in dictionary_records():
         if row.get("status") == "启用":
             known.setdefault(row["code"], []).append(row)
     codes = canonical_tags(values)
+    if allowed_types == frozenset({"sleep_stage"}):
+        # Application protocol phases are a separate dimension, never content
+        # candidates. Numeric/testing stage dictionary entries are not accepted.
+        if any(code not in {"unwind", "soothe", "guard", "wake"} for code in codes):
+            raise ValueError("unknown_audio_tag: invalid protocol sleep stage")
+        return codes
     for code in codes:
         # Existing protocol exclusion, not a fabricated content-form dictionary row.
         if allow_safety_tags and code == "voice":
@@ -274,7 +323,7 @@ def _preference_term_codes(value: str, *, dislike: bool) -> list[str]:
     )
     if negative_prefix_count and not dislike:
         return []
-    if text in {row["code"] for row in dictionary_records()}:
+    if _key(text) in tag_aliases():
         try:
             return validated_audio_tags(
                 [text],
@@ -417,16 +466,23 @@ def validate_audio_tag_contract(
 
 
 def material_is_excluded(material: Mapping[str, Any], disliked: Sequence[Any]) -> bool:
-    """Recheck fresh material metadata after retrieval/cache lookup, including voice values."""
+    """Content exclusions use current source tags; unknown voice identity fails closed."""
+    from app.core.audio_voice_policy import content_voice_state
+
     excluded = set(canonical_disliked_tags(disliked))
     if (excluded - {"voice"}) & material_tag_codes(material):
         return True
-    if "voice" in excluded:
-        values = []
-        for row in material.get("audio_engineering_tags") or []:
-            if isinstance(row, Mapping) and reference_tag(row) in {"voice", "voice_position"}:
-                value = row.get("value")
-                values.append(value.get("code") if isinstance(value, Mapping) else None)
-        if not values or any(value != "none" for value in values):
-            return True
-    return False
+    if "voice" not in excluded:
+        return False
+    state = content_voice_state(material)
+    if state is not None:
+        return state
+    # Empty legacy metadata retains the previous conservative engineering check.
+    if material.get("content_form_tags"):
+        return True
+    values = []
+    for row in material.get("audio_engineering_tags") or []:
+        if isinstance(row, Mapping) and reference_tag(row) in {"voice", "voice_position"}:
+            value = row.get("value")
+            values.append(value.get("code") if isinstance(value, Mapping) else None)
+    return not values or any(value != "none" for value in values)

@@ -1,5 +1,5 @@
 {
-  "version": "audio_preference_rules_v3",
+  "version": "audio_preference_rules_v4",
   "groups": [
     {
       "aliases": [
@@ -18,10 +18,8 @@
         "steady_light_rain",
         "steady_rain",
         "heavy_rain",
-        "rain_on_window",
-        "thunder"
-      ],
-      "rationale": "Broad rain terms include current rain-on-window and thunder categories; removed categories are not invented."
+        "surface_rain"
+      ]
     },
     {
       "aliases": [
@@ -34,7 +32,7 @@
         "鸟类叫声"
       ],
       "codes": [
-        "birdsong",
+        "bird_calls",
         "dawn_chorus"
       ]
     },
@@ -91,7 +89,7 @@
         "鸟类叫声"
       ],
       "codes": [
-        "birdsong",
+        "bird_calls",
         "dawn_chorus"
       ]
     },
@@ -102,9 +100,7 @@
         "海水声",
         "ocean waves",
         "sea waves",
-        "wave sounds",
-        "ocean_wave_ambience",
-        "ocean wave ambience"
+        "wave sounds"
       ],
       "codes": [
         "gentle_ocean_wave"
@@ -135,7 +131,7 @@
         "wind ambience"
       ],
       "codes": [
-        "gentle_wind"
+        "wind_ambience"
       ]
     },
     {
@@ -144,9 +140,7 @@
         "虫声",
         "虫叫",
         "insects",
-        "insect sounds",
-        "insect_calls",
-        "insect calls"
+        "insect sounds"
       ],
       "codes": [
         "crickets_insects"
@@ -157,9 +151,7 @@
         "蟋蟀",
         "蟋蟀声",
         "crickets",
-        "cricket sounds",
-        "insect_calls",
-        "insect calls"
+        "cricket sounds"
       ],
       "codes": [
         "crickets_insects"
@@ -199,7 +191,7 @@
         "forest"
       ],
       "codes": [
-        "forest_night"
+        "forest"
       ]
     },
     {
@@ -264,7 +256,7 @@
         "mechanical airflow"
       ],
       "codes": [
-        "fan_sound"
+        "mechanical_airflow"
       ]
     },
     {
@@ -399,17 +391,13 @@
         "breathing exercises"
       ],
       "codes": [
-        "breathing_guidance",
-        "breathing_pacing"
+        "breathing_guidance"
       ]
     },
     {
       "aliases": [
         "正念",
-        "mindfulness",
-        "mindfulness_meditation",
-        "mindfulness meditation",
-        "正念冥想"
+        "mindfulness"
       ],
       "codes": [
         "mindfulness_sleep"
@@ -455,7 +443,35 @@
         "letting go of thoughts"
       ],
       "codes": [
-        "worry_postponement"
+        "postponement"
+      ]
+    },
+    {
+      "aliases": [
+        "ocean_wave_ambience",
+        "ocean wave ambience"
+      ],
+      "codes": [
+        "ocean_wave_ambience"
+      ]
+    },
+    {
+      "aliases": [
+        "insect_calls",
+        "insect calls"
+      ],
+      "codes": [
+        "insect_calls"
+      ]
+    },
+    {
+      "aliases": [
+        "mindfulness_meditation",
+        "mindfulness meditation",
+        "正念冥想"
+      ],
+      "codes": [
+        "mindfulness_meditation"
       ]
     }
   ],

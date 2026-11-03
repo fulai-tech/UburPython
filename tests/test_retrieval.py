@@ -301,7 +301,7 @@ async def test_search_admits_on_exact_content_intersection() -> None:
     es_search.filter_by_sleep_stage = AsyncMock(
         return_value=[
             _audio_doc(
-                "雨声A", sleep_stage=["unwind"], content_form=["steady_light_rain", "forest_night"]
+                "雨声A", sleep_stage=["unwind"], content_form=["steady_light_rain", "forest"]
             ),
             _audio_doc("雨声B", sleep_stage=["unwind"], content_form=["steady_light_rain"]),
         ]
@@ -309,7 +309,7 @@ async def test_search_admits_on_exact_content_intersection() -> None:
     es_search.parse_tags = EsSearch.parse_tags
     request = SearchAudioRequest(
         sleep_stage_tags=["unwind"],
-        content_tags=["steady_light_rain", "forest_night"],
+        content_tags=["steady_light_rain", "forest"],
         top_k=10,
     )
 
@@ -494,7 +494,7 @@ async def test_search_skips_content_admission_when_no_content_tags() -> None:
     service, es_search, encoder = _build_service()
     docs = [
         _audio_doc("音频A", sleep_stage=["unwind"], content_form=["steady_light_rain"]),
-        _audio_doc("音频B", sleep_stage=["unwind"], content_form=["forest_night"]),
+        _audio_doc("音频B", sleep_stage=["unwind"], content_form=["forest"]),
     ]
     es_search.filter_by_sleep_stage = AsyncMock(return_value=docs)
     es_search.parse_tags = EsSearch.parse_tags
@@ -597,7 +597,7 @@ async def test_search_vector_match_count_ranks_by_hit_count() -> None:
     )
     request = SearchAudioRequest(
         sleep_stage_tags=["unwind"],
-        content_tags=["steady_light_rain", "forest_night"],
+        content_tags=["steady_light_rain", "forest"],
         top_k=10,
     )
 
@@ -619,14 +619,14 @@ async def test_search_coarse_rank_orders_by_match_count_desc() -> None:
         return_value=[
             _audio_doc("少命中", sleep_stage=["unwind"], content_form=["steady_light_rain"]),
             _audio_doc(
-                "多命中", sleep_stage=["unwind"], content_form=["steady_light_rain", "forest_night"]
+                "多命中", sleep_stage=["unwind"], content_form=["steady_light_rain", "forest"]
             ),
         ]
     )
     es_search.parse_tags = EsSearch.parse_tags
     request = SearchAudioRequest(
         sleep_stage_tags=["unwind"],
-        content_tags=["steady_light_rain", "forest_night"],
+        content_tags=["steady_light_rain", "forest"],
         top_k=10,
     )
 
@@ -642,14 +642,10 @@ async def test_content_admission_sets_match_count_without_tag_score() -> None:
     es_search.parse_tags = EsSearch.parse_tags
     docs = [
         _audio_doc("少命中", sleep_stage=["unwind"], content_form=["steady_light_rain"]),
-        _audio_doc(
-            "多命中", sleep_stage=["unwind"], content_form=["steady_light_rain", "forest_night"]
-        ),
+        _audio_doc("多命中", sleep_stage=["unwind"], content_form=["steady_light_rain", "forest"]),
     ]
 
-    admitted = await service._apply_content_admission(
-        docs, ["steady_light_rain", "forest_night"], {}
-    )
+    admitted = await service._apply_content_admission(docs, ["steady_light_rain", "forest"], {})
 
     assert [(c.source["audio_name"], c.match_count, c.tag_score) for c in admitted] == [
         ("少命中", 1, 0.0),
@@ -669,7 +665,7 @@ async def test_coarse_rank_runs_after_dislike_filter() -> None:
             _audio_doc(
                 "剔除多命中",
                 sleep_stage=["unwind"],
-                content_form=["steady_light_rain", "forest_night"],
+                content_form=["steady_light_rain", "forest"],
             ),
         ]
     )
@@ -678,13 +674,13 @@ async def test_coarse_rank_runs_after_dislike_filter() -> None:
     es_search.get_dictionary_vectors = AsyncMock(
         return_value={
             "cf_steady_light_rain": orthogonal_vec,
-            "cf_forest_night": unit_vec,
+            "cf_forest": unit_vec,
         }
     )
     request = SearchAudioRequest(
         sleep_stage_tags=["unwind"],
-        content_tags=["steady_light_rain", "forest_night"],
-        disliked_tags=["forest_night"],
+        content_tags=["steady_light_rain", "forest"],
+        disliked_tags=["forest"],
         top_k=10,
     )
 
@@ -1277,7 +1273,7 @@ def test_voice_value_code_reads_nested_value() -> None:
     assert _voice_value_code(_audio_doc("无字段")) is None
 
 
-def test_voice_code_filter_dislike_keeps_none_only() -> None:
+def test_voice_code_filter_uses_enabled_content_and_allows_missing_old_engineering() -> None:
     none_doc = _audio_doc(
         "无人声",
         content_form=["steady_light_rain"],
@@ -1285,7 +1281,7 @@ def test_voice_code_filter_dislike_keeps_none_only() -> None:
     )
     voice_doc = _audio_doc(
         "有人声",
-        content_form=["steady_light_rain"],
+        content_form=["breathing_guidance"],
         audio_engineering=_voice_position("intermittent", "人声间歇出现"),
     )
     missing_doc = _audio_doc("缺字段", content_form=["steady_light_rain"])
@@ -1298,7 +1294,7 @@ def test_voice_code_filter_dislike_keeps_none_only() -> None:
         candidates,
         disliked_tags=["voice"],
     )
-    assert [c.source["audio_name"] for c in kept] == ["无人声"]
+    assert [c.source["audio_name"] for c in kept] == ["无人声", "缺字段"]
 
 
 def test_voice_code_filter_skips_when_dislike_has_no_voice() -> None:
@@ -1323,7 +1319,7 @@ def test_voice_code_filter_skips_when_dislike_has_no_voice() -> None:
 
 @pytest.mark.asyncio
 async def test_tag_search_dislike_voice_uses_code_not_vector() -> None:
-    """dislike 含人声时按 value.code 留无人声，且不对人声做向量厌恶。"""
+    """dislike 含人声时按启用内容标签排除人声，且不对人声做向量厌恶。"""
     unit_vec = _unit(0)
     service, es_search, encoder = _build_service()
     es_search.filter_by_sleep_stage = AsyncMock(
@@ -1337,7 +1333,7 @@ async def test_tag_search_dislike_voice_uses_code_not_vector() -> None:
             _audio_doc(
                 "有人声雨",
                 sleep_stage=["unwind"],
-                content_form=["steady_light_rain"],
+                content_form=["steady_light_rain", "voice_guidance"],
                 audio_engineering=_voice_position("continuous", "人声贯穿大部分音频"),
             ),
         ]

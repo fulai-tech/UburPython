@@ -65,7 +65,7 @@ def test_future_code_wins_over_display_name():
 
 
 @pytest.mark.parametrize("code", ["none", "continuous", None])
-def test_voice_engineering_filter_uses_dictionary_voice_code(code):
+def test_enabled_content_identity_overrides_retired_voice_position(code):
     from app.services.retrieval import ScoredCandidate, _apply_voice_code_filter
 
     source = {
@@ -74,7 +74,7 @@ def test_voice_engineering_filter_uses_dictionary_voice_code(code):
     if code is not None:
         source["audio_engineering_tags"] = [{"code": "voice", "value": {"code": code}}]
     candidate = ScoredCandidate(source=source, tags=EsSearch.parse_tags(source))
-    assert bool(_apply_voice_code_filter([candidate], disliked_tags=["voice"])) is (code == "none")
+    assert _apply_voice_code_filter([candidate], disliked_tags=["voice"]) == [candidate]
 
 
 @pytest.mark.asyncio
