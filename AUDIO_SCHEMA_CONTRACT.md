@@ -1,10 +1,56 @@
-# 新版音频素材读取契约
+# 音频素材读取与启用内容标签契约
 
-本次开发以 `origin/dev` 的 `2ef51fc` 为基线。代码完成本地验证，尚未部署。
+本次修复从远端最新 `origin/dev` `ef4416da5b51d73acf7b066b15c18e09ae8d4014` 开始。代码提交与部署验收分开；尚未声称开发中间件已升级。
+
+## Enabled content dictionary alignment (2026-11-03)
+
+`app/core/audio_tag_aliases.json` is the versioned export of
+`somni_audio_tag_dictionary` with the exact filter
+`{"type":"content_form","status":"启用"}` (currently 109 records). Do not replace
+it with a smaller manually curated catalogue. Unknown, disabled, retired and
+wrong-dimension machine content codes remain invalid; this repair does not turn
+off request validation. Application sleep-stage values `unwind/soothe/guard/wake`
+are validated separately. `voice` is an existing safety exclusion, not a content
+tag offered as an intervention.
+
+The previous snapshot is archived in `audio_tag_aliases_v5.json` for engineering
+alias compatibility, not for admitting retired content codes. Current code/name
+identities take precedence over broader colloquial preference groups. The shared
+contract revision is 4, so retrieval caches cannot reuse the old identity set.
+Vocal filtering uses valid enabled content tags and their ancestry; materials
+without usable content evidence retain conservative legacy handling. Fresh Mongo
+material content references are checked again after ES retrieval/cache lookup.
+Database status and stage checks remain in force. RPC/Proto fields are unchanged.
+
+Before release, use the explicit Somni connection profile to check both the live
+dictionary and the DPH mirror without writing files or databases:
+
+```bash
+PYTHONPATH=. python scripts/export_audio_tag_contract.py \
+  --mirror-root /path/to/DeepHealth --check-live --env-file /path/to/operator.env
+```
+
+The check fails on live drift or mismatched assets/shared identity functions.
+Updating assets requires an explicit `--refresh --write` and review of preference
+rules and DPH frozen playback policy versions; the exporter never overwrites
+historical assets. It never updates Mongo, embeddings, or ES. Runtime processes
+must restart after an approved asset update because their dictionary is cached.
+
+Restored examples include `mindfulness_meditation`, `deep_slow_river`,
+`postponement`, `imagery_distraction`, `harp_music`, `singing_bowl`,
+`wind_ambience`, and `wuxing_healing_music`. Dictionary validity does not prove
+that an enabled stage-appropriate audio material exists for every tag; an empty
+candidate result remains a legitimate result.
+
+---
+
+# 2026-10-30 历史记录（标签快照已被本次修复替代）
+
+以下记录属于2026-10-30的开发，基线为当时的 `origin/dev` `2ef51fc`，不代表本次分支基线。标签数量、旧编码及工程人声判定均为历史状态，当前以本文前半部分为准。
 
 ## 标签与检索
 
-`app/core/audio_tag_aliases.json` 对应当前数据库词典：127 条中保留 125 条有效记录，2 条数字测试阶段不作为有效机器代码。`worry_postponement`、`birdsong`、`fan_sound` 等新代码可用于对应维度的查询；不能把工程标签当作内容形态传入 `content_tag_codes`。
+当时打包的 `app/core/audio_tag_aliases.json` 快照保留125条记录；后续确认其遗漏了数据库中的启用内容编码，因此不能继续作为当前权威字典。`worry_postponement`、`birdsong`、`fan_sound` 等新代码可用于对应维度的查询；不能把工程标签当作内容形态传入 `content_tag_codes`。
 
 `audio_tag_aliases_v2.json` 只提供仍有效身份的旧显示名兼容；已取消类别不能靠旧字典重新变成有效的新查询代码。`voice` 保留为应用层人声排除条件，不虚构词典记录。
 
@@ -44,42 +90,3 @@ PYTHONPATH=. python scripts/export_audio_tag_contract.py --mirror-root /path/to/
 全量测试 831 项通过、6 项失败；这 6 项在未修改的 dev 上同样失败，分别为 5 项日志断言和 1 项英文词形处理。dev 对照共 11 项失败，本次修复了其中 5 项音频相关失败。
 
 本次没有修改 Proto、数据库数据或部署配置，没有重建向量、刷新用户画像或下发方案。完成代码发布与部署后，再通过真实 `SearchPrescriptionAudio` 核验远端行为。DeepHealth 入站 `DecodeError` 是另一问题，本次不声称已经修复。
-# Enabled content dictionary alignment (2026-11-03)
-
-`app/core/audio_tag_aliases.json` is the versioned export of
-`somni_audio_tag_dictionary` with the exact filter
-`{"type":"content_form","status":"启用"}` (currently 109 records). Do not replace
-it with a smaller manually curated catalogue. Unknown, disabled, retired and
-wrong-dimension machine content codes remain invalid; this repair does not turn
-off request validation. Application sleep-stage values `unwind/soothe/guard/wake`
-are validated separately. `voice` is an existing safety exclusion, not a content
-tag offered as an intervention.
-
-The previous snapshot is archived in `audio_tag_aliases_v5.json` for engineering
-alias compatibility, not for admitting retired content codes. Current code/name
-identities take precedence over broader colloquial preference groups. The shared
-contract revision is 4, so retrieval caches cannot reuse the old identity set.
-Vocal filtering uses valid enabled content tags and their ancestry; materials
-without usable content evidence retain conservative legacy handling. Fresh Mongo
-material content references are checked again after ES retrieval/cache lookup.
-Database status and stage checks remain in force. RPC/Proto fields are unchanged.
-
-Before release, use the explicit Somni connection profile to check both the live
-dictionary and the DPH mirror without writing files or databases:
-
-```bash
-PYTHONPATH=. python scripts/export_audio_tag_contract.py \
-  --mirror-root /path/to/DeepHealth --check-live --env-file /path/to/operator.env
-```
-
-The check fails on live drift or mismatched assets/shared identity functions.
-Updating assets requires an explicit `--refresh --write` and review of preference
-rules and DPH frozen playback policy versions; the exporter never overwrites
-historical assets. It never updates Mongo, embeddings, or ES. Runtime processes
-must restart after an approved asset update because their dictionary is cached.
-
-Restored examples include `mindfulness_meditation`, `deep_slow_river`,
-`postponement`, `imagery_distraction`, `harp_music`, `singing_bowl`,
-`wind_ambience`, and `wuxing_healing_music`. Dictionary validity does not prove
-that an enabled stage-appropriate audio material exists for every tag; an empty
-candidate result remains a legitimate result.
