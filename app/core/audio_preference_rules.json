@@ -1,5 +1,5 @@
 {
-  "version": "audio_preference_rules_v4",
+  "version": "audio_preference_rules_v5",
   "groups": [
     {
       "aliases": [
@@ -18,7 +18,9 @@
         "steady_light_rain",
         "steady_rain",
         "heavy_rain",
-        "surface_rain"
+        "surface_rain",
+        "scene_rain",
+        "rainforest_light_rain"
       ]
     },
     {
@@ -85,7 +87,6 @@
         "birds chirping",
         "bird chirping",
         "bird_calls",
-        "bird calls",
         "鸟类叫声"
       ],
       "codes": [
@@ -187,7 +188,6 @@
         "森林",
         "森林声",
         "forest sounds",
-        "forest",
         "forest"
       ],
       "codes": [

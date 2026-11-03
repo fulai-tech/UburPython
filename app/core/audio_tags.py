@@ -79,6 +79,19 @@ _PHASE_ALIASES = {
 }
 
 
+@lru_cache(maxsize=1)
+def _canonical_identity_codes() -> tuple[frozenset[str], frozenset[str]]:
+    """Cache immutable current content and historical non-content identities."""
+    return (
+        frozenset(row["code"] for row in dictionary_records()),
+        frozenset(
+            row["code"]
+            for row in previous_dictionary_asset()["dictionary"]
+            if row.get("type") != "content_form"
+        ),
+    )
+
+
 def canonical_tag(value: Any, *, strict: bool = True) -> str:
     """Resolve audited aliases, accepting forward-compatible English snake-case codes."""
     raw = unicodedata.normalize("NFKC", str(value or "")).strip()
@@ -90,16 +103,11 @@ def canonical_tag(value: Any, *, strict: bool = True) -> str:
     code = _PHASE_ALIASES.get(text) or tag_aliases().get(text)
     if not code:
         legacy_code = legacy_dictionary_asset()["aliases"].get(text)
-        current_codes = {row["code"] for row in dictionary_records()}
+        current_codes, non_content_codes = _canonical_identity_codes()
         # Keep old display aliases only when their identity still exists today.
-        engineering_codes = {
-            row["code"]
-            for row in previous_dictionary_asset()["dictionary"]
-            if row.get("type") != "content_form"
-        }
         if (
             legacy_code in current_codes
-            or legacy_code in engineering_codes
+            or legacy_code in non_content_codes
             or legacy_code == "voice"
         ):
             code = legacy_code
@@ -241,7 +249,7 @@ def audio_tag_contract_version() -> str:
     """Bind caches and preference evidence to the exact dictionary and mapping."""
     import hashlib
 
-    payload = {"dictionary": dictionary_records(), "rules": _preference_rules(), "resolver": 4}
+    payload = {"dictionary": dictionary_records(), "rules": _preference_rules(), "resolver": 5}
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()
     ).hexdigest()
@@ -323,18 +331,28 @@ def _preference_term_codes(value: str, *, dislike: bool) -> list[str]:
     )
     if negative_prefix_count and not dislike:
         return []
+    official_codes: list[str] = []
     if _key(text) in tag_aliases():
         try:
-            return validated_audio_tags(
+            official_codes = validated_audio_tags(
                 [text],
                 allowed_types=_PREFERENCE_TYPES if dislike else _CONTENT_TYPES,
                 allow_safety_tags=dislike,
             )
         except ValueError:
-            return []
-    for group in _preference_rules()["groups"]:
-        if _key(text) in {_key(alias) for alias in group["aliases"]}:
-            return list(group["codes"])
+            pass
+    # Positive preferences keep the exact identity; negative preferences include
+    # every reviewed whole-term group, never fuzzy or substring matches.
+    if official_codes and not dislike:
+        return official_codes
+    group_codes = {
+        code
+        for group in _preference_rules()["groups"]
+        if _key(text) in {_key(alias) for alias in group["aliases"]}
+        for code in group["codes"]
+    }
+    if official_codes or group_codes:
+        return sorted(set(official_codes) | group_codes)
     try:
         return validated_audio_tags(
             [text],
@@ -465,24 +483,32 @@ def validate_audio_tag_contract(
             aliases[key] = codes
 
 
-def material_is_excluded(material: Mapping[str, Any], disliked: Sequence[Any]) -> bool:
-    """Content exclusions use current source tags; unknown voice identity fails closed."""
-    from app.core.audio_voice_policy import content_voice_state
+# These are current dictionary roots, not the protocol safety token "voice".
+_VOCAL_CONTENT_ROOTS = frozenset({"voice_guidance", "lyrical_song", "non_lexical_vocal"})
 
+
+def content_voice_state(material: Mapping[str, Any]) -> bool | None:
+    """Classify current content refs; absent/invalid refs remain unknown.
+
+    Lullaby-style music is not proof of singing. Acoustic detection is a
+    separate descriptive metric exposed by GetAudio, not a semantic tag.
+    """
+    try:
+        codes = validated_content_references(material)
+    except ValueError:
+        return None
+    if not codes:
+        return None
+    return bool(set(codes) & set(_descendant_codes(sorted(_VOCAL_CONTENT_ROOTS))))
+
+
+def material_is_excluded(material: Mapping[str, Any], disliked: Sequence[Any]) -> bool:
+    """Recheck exclusions; missing vocal content evidence fails closed.
+
+    Retired engineering voice/voice_position fields do not authorize material
+    when a user explicitly excludes vocals.
+    """
     excluded = set(canonical_disliked_tags(disliked))
     if (excluded - {"voice"}) & material_tag_codes(material):
         return True
-    if "voice" not in excluded:
-        return False
-    state = content_voice_state(material)
-    if state is not None:
-        return state
-    # Empty legacy metadata retains the previous conservative engineering check.
-    if material.get("content_form_tags"):
-        return True
-    values = []
-    for row in material.get("audio_engineering_tags") or []:
-        if isinstance(row, Mapping) and reference_tag(row) in {"voice", "voice_position"}:
-            value = row.get("value")
-            values.append(value.get("code") if isinstance(value, Mapping) else None)
-    return not values or any(value != "none" for value in values)
+    return "voice" in excluded and content_voice_state(material) is not False

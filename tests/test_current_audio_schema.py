@@ -69,7 +69,6 @@ def material():
         "surface_rain",
         "water_dripping",
         "gentle_wake_music",
-        "gentle_wake_music",
     ],
 )
 def test_current_content_codes_are_valid(code):

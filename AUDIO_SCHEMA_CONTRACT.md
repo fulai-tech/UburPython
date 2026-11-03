@@ -6,7 +6,7 @@
 
 `app/core/audio_tag_aliases.json` is the versioned export of
 `somni_audio_tag_dictionary` with the exact filter
-`{"type":"content_form","status":"启用"}` (currently 109 records). Do not replace
+`{"type":"content_form","status":"启用"}` (currently 106 records). Do not replace
 it with a smaller manually curated catalogue. Unknown, disabled, retired and
 wrong-dimension machine content codes remain invalid; this repair does not turn
 off request validation. Application sleep-stage values `unwind/soothe/guard/wake`
@@ -14,11 +14,12 @@ are validated separately. `voice` is an existing safety exclusion, not a content
 tag offered as an intervention.
 
 The previous snapshot is archived in `audio_tag_aliases_v5.json` for engineering
-alias compatibility, not for admitting retired content codes. Current code/name
-identities take precedence over broader colloquial preference groups. The shared
-contract revision is 4, so retrieval caches cannot reuse the old identity set.
+alias compatibility, not for admitting retired content codes. Positive preferences keep exact current code/name identities. Negative preferences
+union the exact identity with reviewed whole-term groups. The shared
+contract revision is 5, so retrieval caches cannot reuse the old identity set.
 Vocal filtering uses valid enabled content tags and their ancestry; materials
-without usable content evidence retain conservative legacy handling. Fresh Mongo
+without usable content evidence fail closed for a no-voice request; retired
+engineering voice/voice_position values are no longer read. Fresh Mongo
 material content references are checked again after ES retrieval/cache lookup.
 Database status and stage checks remain in force. RPC/Proto fields are unchanged.
 
@@ -41,6 +42,16 @@ Restored examples include `mindfulness_meditation`, `deep_slow_river`,
 `wind_ambience`, and `wuxing_healing_music`. Dictionary validity does not prove
 that an enabled stage-appropriate audio material exists for every tag; an empty
 candidate result remains a legitimate result.
+
+## 审查修复与只读对账（2026-11-03）
+
+- 雨声组覆盖 steady_light_rain、steady_rain、heavy_rain、surface_rain、scene_rain、rainforest_light_rain。负向“鸟类叫声/Bird Calls/bird_calls”覆盖 bird_calls 与 dawn_chorus；正向正式标签仍精确匹配。只扩展经审核的完整词，不做任意子串、模糊或模型推断。
+- 实时库106项；相对109项移出了 storm_ambience、shore_water、sleep_education。97条启用素材中，原13个退役码引用为0、storm_ambience引用为0，但2条素材仍带 shore_water。它们会被严格拒绝；应先修复数据引用，再重建索引/缓存。此代码不删除标签、不改素材、不补造对应关系。
+- `_verify_prescription_materials`拒绝非法内容引用时记录 warning：仅素材ID、稳定原因、内容code；不记录用户偏好、标题、URL或完整素材。不能为了召回而静默丢弃非法标签后放行整条素材。
+- `/api/audio/search` 属于手板 AudioService、使用其独立检索与兜底缓存；量产 SearchPrescriptionAudio 属于 Somni AudioCatalogService，额外对照量产Mongo真值做状态/引用/阶段复核。这两条接口职责和数据源不同，不把手板HTTP结果当作可下发的处方准入结果；本次不将手板HTTP改连量产Mongo。共享检索的偏好排除仍共用修正后的解析规则。
+- 人声内容分类合并到 audio_tags，依据 voice_guidance 的当前子树、lyrical_song、non_lexical_vocal；缺失/非法内容证据返回unknown，“不要人声”时保守排除。GetAudio 的 is_voice 保持既有声学指标 voice_presence_ratio>0 的显示语义，与“内容类别属于人声”是不同证据，**不能用该显示字段授权人声禁忌过滤**。本次不改变公开字段语义；声学检测误报/与内容标签冲突应另行核对素材。lullaby_style仅描述风格，不能证明含人声；是否需重新标注由素材/产品确认，不自动增加或去掉人声标签。
+- 导出脚本使用 SOMNI_MONGO_DB（默认Somni），与应用一致；连接URI可不带库名。优先明确Somni URI，绝不回退Fullive。
+- canonical_tag缓存当前内容和历史非内容身份集合；历史播放v6所用109项分类另存 audio_tag_aliases_v6.json，仅用于历史冻结语义，不作为新素材准入白名单。词典变更需重启服务；此次未部署。
 
 ---
 

@@ -7,11 +7,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.core.audio_tags import (
+    content_voice_state,
     dictionary_records,
     validated_audio_tags,
     validated_content_references,
 )
-from app.core.audio_voice_policy import content_voice_state
 from app.core.config import Settings
 from app.server.somni.audio.catalog import AudioCatalogService
 from scripts.export_audio_tag_contract import CONTENT_FILTER, normalize_rows
@@ -51,6 +51,9 @@ def test_protocol_stages_are_independent_of_content_dictionary(phase):
 )
 def test_current_vocal_tags_do_not_need_retired_engineering_voice_position(code):
     assert content_voice_state({"content_form_tags": [{"code": code}]}) is True
+
+
+def test_non_vocal_and_unknown_content_identity():
     assert content_voice_state({"content_form_tags": [{"code": "steady_light_rain"}]}) is False
     assert content_voice_state({"content_form_tags": [{"code": "unreviewed"}]}) is None
 
@@ -143,3 +146,43 @@ def test_sync_refuses_to_overwrite_existing_historical_mirror(tmp_path):
         exporter.synchronize(mirror, write=True)
     assert frozen.read_text() == '{"frozen":"different-history"}'
     assert (assets / "audio_tag_aliases.json").read_bytes() == current
+
+
+@pytest.mark.parametrize("database", ["Somni", "SomniTest"])
+def test_export_uses_application_database_even_when_uri_has_no_database(
+    tmp_path, monkeypatch, database
+):
+    import pymongo
+
+    from scripts import export_audio_tag_contract as exporter
+
+    profile = tmp_path / "operator.env"
+    profile.write_text("SOMNI_MONGO_URI=mongodb://localhost:27017\nSOMNI_MONGO_DB=" + database)
+    collection = MagicMock()
+    collection.find.return_value = dictionary_records()
+    client = MagicMock()
+    client.__enter__.return_value = client
+    client.__getitem__.return_value.somni_audio_tag_dictionary = collection
+    factory = MagicMock(return_value=client)
+    monkeypatch.setattr(pymongo, "MongoClient", factory)
+    assert exporter.read_dictionary(profile)
+    client.__getitem__.assert_called_once_with(database)
+    client.get_default_database.assert_not_called()
+    collection.find.assert_called_once_with(CONTENT_FILTER)
+
+
+def test_missing_content_never_uses_retired_voice_position_to_allow_material():
+    from app.core.audio_tags import material_is_excluded
+
+    for value in ["none", "continuous", None]:
+        material = {
+            "audio_engineering_tags": [{"code": "voice_position", "value": {"code": value}}]
+        }
+        assert content_voice_state(material) is None
+        assert material_is_excluded(material, ["voice"])
+
+
+@pytest.mark.parametrize("code", ["storm_ambience", "shore_water", "sleep_education"])
+def test_removed_live_content_codes_are_not_admitted(code):
+    with pytest.raises(ValueError):
+        validated_audio_tags([code])

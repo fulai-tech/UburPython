@@ -9,6 +9,8 @@ RAIN = {
     "steady_rain",
     "heavy_rain",
     "surface_rain",
+    "scene_rain",
+    "rainforest_light_rain",
 }
 
 
@@ -142,11 +144,9 @@ async def test_negative_rain_query_aligns_all_codes_before_candidate_recall():
 
 
 @pytest.mark.parametrize(
-    "voice_value,excluded", [("none", False), ("continuous", True), (None, True)]
+    "voice_value,excluded", [("none", True), ("continuous", True), (None, True)]
 )
-def test_authoritative_material_voice_check_does_not_confuse_field_name_with_value(
-    voice_value, excluded
-):
+def test_retired_engineering_fields_do_not_authorize_missing_content(voice_value, excluded):
     material = {"audio_engineering_tags": [{"code": "voice", "value": {"code": voice_value}}]}
     assert tags.material_is_excluded(material, ["voice"]) is excluded
 
@@ -244,9 +244,9 @@ def test_conventional_negative_phrases_keep_reviewed_piano_exclusion(term):
     assert tags.canonical_disliked_tags([term]) == ["slow_piano"]
 
 
-def test_dictionary_identity_is_not_broadened_by_a_colloquial_alias():
-    assert tags.canonical_disliked_tags(["bird_calls"]) == ["bird_calls"]
-    assert tags.canonical_disliked_tags(["Bird Calls"]) == ["bird_calls"]
+def test_dislikes_union_official_identity_and_reviewed_colloquial_group():
+    assert tags.canonical_disliked_tags(["bird_calls"]) == ["bird_calls", "dawn_chorus"]
+    assert tags.canonical_disliked_tags(["Bird Calls"]) == ["bird_calls", "dawn_chorus"]
 
 
 def test_unknown_legacy_preferences_share_cache_identity_after_ignoring_text():
@@ -281,3 +281,18 @@ def test_full_width_list_separators_keep_known_exclusions():
         "bird_calls",
         "dawn_chorus",
     }
+
+
+@pytest.mark.parametrize("label", ["鸟类叫声", "Bird Calls", "bird_calls", "不喜欢鸟类叫声"])
+def test_negative_bird_group_includes_dawn_but_positive_identity_is_precise(label):
+    assert set(tags.canonical_disliked_tags([label])) == {"bird_calls", "dawn_chorus"}
+    assert tags.resolve_audio_preferences(preferred=["Bird Calls"])["preferred_codes"] == [
+        "bird_calls"
+    ]
+
+
+@pytest.mark.parametrize("code", sorted(RAIN))
+@pytest.mark.parametrize("label", ["雨声", "rain sounds", "不要雨声"])
+def test_all_current_rain_materials_are_rejected_by_rain_dislike(code, label):
+    assert tags.material_is_excluded({"content_form_tags": [{"code": code}]}, [label])
+    assert not tags.material_is_excluded({"content_form_tags": [{"code": "stream"}]}, [label])

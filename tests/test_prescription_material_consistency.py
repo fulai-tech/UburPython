@@ -96,3 +96,32 @@ async def test_changed_eligibility_cannot_be_reused_from_stale_cache():
     service._materials = lambda: collection
     cached = project_search_material({**row, "content_form_tags": [{"code": "steady_light_rain"}]})
     assert await service._verify_prescription_materials([cached]) == []
+
+
+async def test_retired_reference_rejects_whole_material_with_auditable_warning(monkeypatch):
+    from app.server.somni.audio import catalog
+
+    valid = {
+        "_id": "good",
+        "status": True,
+        "audio_url": "https://example.test/good.mp3",
+        "content_form_tags": [{"code": "steady_rain"}],
+    }
+    invalid = {
+        **valid,
+        "_id": "legacy",
+        "content_form_tags": [{"code": "steady_rain"}, {"code": "birdsong"}],
+    }
+    service = AudioCatalogService(None, Settings())
+    collection = MagicMock()
+    collection.find.return_value = Cursor([invalid, valid])
+    service._materials = lambda: collection
+    warning = MagicMock()
+    monkeypatch.setattr(catalog.logger, "warning", warning)
+    result = await service._verify_prescription_materials(
+        [project_search_material(invalid), project_search_material(valid)]
+    )
+    assert [row["_id"] for row in result] == ["good"]
+    args = warning.call_args.args
+    assert args[1] == "legacy" and "birdsong" in args[3]
+    assert "https://" not in repr(args)

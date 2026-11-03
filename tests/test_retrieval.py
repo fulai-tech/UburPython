@@ -1262,14 +1262,14 @@ def test_usable_dislike_tags_ignores_event_density() -> None:
     ]
 
 
-def test_voice_value_code_reads_nested_value() -> None:
+def test_voice_value_code_requires_current_content_evidence() -> None:
     doc = _audio_doc("无人声轨", audio_engineering=_voice_position("none", "无人声"))
-    assert _voice_value_code(doc) == "none"
+    assert _voice_value_code(doc) is None
     doc2 = _audio_doc(
         "有人声轨",
         audio_engineering=_voice_position("continuous", "人声贯穿大部分音频"),
     )
-    assert _voice_value_code(doc2) == "continuous"
+    assert _voice_value_code(doc2) is None
     assert _voice_value_code(_audio_doc("无字段")) is None
 
 

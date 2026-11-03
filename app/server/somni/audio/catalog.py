@@ -27,6 +27,7 @@ from app.core.audio_tags import (
     reference_tag,
     resolve_audio_preferences,
     validated_audio_tags,
+    validated_content_references,
 )
 from app.core.bson_util import bson_to_jsonable
 from app.core.codes import HttpStatus
@@ -438,11 +439,18 @@ class AudioCatalogService:
             source = current.get(identifier)
             if source is None or source.get("status") is not True or not source.get("audio_url"):
                 continue
-            from app.core.audio_tags import validated_content_references
-
             try:
                 validated_content_references(source)
-            except ValueError:
+            except ValueError as exc:
+                # IDs/codes only: never log URLs, titles or user preferences.
+                refs = source.get("content_form_tags") or []
+                codes = [str(ref.get("code") or "") for ref in refs if isinstance(ref, dict)]
+                logger.warning(
+                    "prescription_material_rejected audio_id={} reason={} content_codes={}",
+                    identifier,
+                    str(exc).split(":", 1)[0],
+                    codes,
+                )
                 continue
             projected = project_search_material({**candidate, "_id": identifier})
             if any(projected[key] != source[key] for key in keys):

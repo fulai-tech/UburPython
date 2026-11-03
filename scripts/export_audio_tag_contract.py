@@ -66,6 +66,9 @@ def synchronize(mirror: Path, *, write: bool) -> None:
     outputs[mirror / "conf/somni/audio_tag_aliases_v5.json"] = (
         CORE / "audio_tag_aliases_v5.json"
     ).read_text()
+    outputs[mirror / "conf/somni/audio_tag_aliases_v6.json"] = (
+        CORE / "audio_tag_aliases_v6.json"
+    ).read_text()
     # Resolver policies for unmatched user prose differ between services. Check
     # the shared machine identity functions; never overwrite a service policy.
     local_tree = ast.parse(dph_module((CORE / "audio_tags.py").read_text()))
@@ -73,6 +76,8 @@ def synchronize(mirror: Path, *, write: bool) -> None:
     for name in (
         "build_dictionary_aliases",
         "canonical_tag",
+        "_canonical_identity_codes",
+        "_preference_term_codes",
         "validated_audio_tags",
         "reference_tag",
     ):
@@ -91,7 +96,11 @@ def synchronize(mirror: Path, *, write: bool) -> None:
     # Validate every frozen mirror before writing any asset. A refresh may add
     # an archive but must never replace an existing history with another one.
     for path, expected in outputs.items():
-        if path.name in {"audio_tag_aliases_v2.json", "audio_tag_aliases_v5.json"}:
+        if path.name in {
+            "audio_tag_aliases_v2.json",
+            "audio_tag_aliases_v5.json",
+            "audio_tag_aliases_v6.json",
+        }:
             if path.exists() and json.loads(path.read_text()) != json.loads(expected):
                 raise ValueError("audio_historical_dictionary_mirror_drift")
     for path, expected in outputs.items():
@@ -135,7 +144,11 @@ def read_dictionary(env_file: Path) -> list[dict]:
         raise ValueError("missing_somni_mongodb_uri")
     with MongoClient(uri, serverSelectionTimeoutMS=8000) as client:
         rows = normalize_rows(
-            list(client.get_default_database().somni_audio_tag_dictionary.find(CONTENT_FILTER))
+            list(
+                client[values.get("SOMNI_MONGO_DB") or "Somni"].somni_audio_tag_dictionary.find(
+                    CONTENT_FILTER
+                )
+            )
         )
     if not rows or any(not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", row["code"]) for row in rows):
         raise ValueError("invalid_or_empty_content_dictionary")

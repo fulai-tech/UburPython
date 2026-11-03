@@ -26,6 +26,7 @@ from app.core.audio_tags import (
     audio_tag_contract_version,
     canonical_tag,
     canonical_tags,
+    content_voice_state,
     dictionary_records,
     material_tag_codes,
     resolve_audio_preferences,
@@ -1525,31 +1526,9 @@ def _audio_blocked_by_dislike(doc: dict[str, Any], disliked_tags: list[str]) -> 
 
 
 def _voice_value_code(source: dict[str, Any]) -> str | None:
-    """Use enabled content identity; retain conservative legacy engineering fallback."""
-    from app.core.audio_voice_policy import content_voice_state
-
+    """Use current content identity; absent/invalid refs stay unknown."""
     state = content_voice_state(source)
-    if state is not None:
-        return "continuous" if state else "none"
-    if source.get("content_form_tags"):
-        return None
-    values: set[str] = set()
-    for item in source.get("audio_engineering_tags") or []:
-        if not isinstance(item, dict):
-            continue
-        name = str(item.get("name") or "")
-        if item.get("code") not in {"voice", "voice_position"} and canonical_tag(
-            name, strict=False
-        ) not in {"voice", "voice_position"}:
-            continue
-        value = item.get("value")
-        if not isinstance(value, dict):
-            return None
-        code = value.get("code")
-        if code is None:
-            return None
-        values.add(str(code))
-    return next(iter(values)) if len(values) == 1 else None
+    return None if state is None else "continuous" if state else "none"
 
 
 def _apply_voice_code_filter(
@@ -1557,7 +1536,7 @@ def _apply_voice_code_filter(
     *,
     disliked_tags: list[str],
 ) -> list[ScoredCandidate]:
-    """优先用启用内容标签判别人声；缺内容证据时保留旧工程字段保守校验。"""
+    """用启用内容标签判别人声；无有效内容证据时保守排除。"""
     if not _tags_mention_voice(disliked_tags):
         return candidates
 

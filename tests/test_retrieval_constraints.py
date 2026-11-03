@@ -185,7 +185,7 @@ def test_alias_asset_is_derived_from_dictionary_fields():
 
     rows = dictionary_records()
     assert tag_aliases() == build_dictionary_aliases(rows)
-    assert len(rows) == 109
+    assert len(rows) == 106
     assert all(row["type"] == "content_form" and row["status"] == "启用" for row in rows)
     for row in rows:
         assert canonical_tag(row["code"]) == row["code"]
@@ -219,7 +219,9 @@ async def test_negative_list_and_long_clause_do_not_leak_into_positive_tags(text
             {"code": "bird_calls", "name": "鸟类叫声", "name_en": "Bird Calls"},
         ],
     )
-    expected = {"bird_calls"} if "very " in text else {"voice", "bird_calls"}
+    expected = (
+        {"bird_calls", "dawn_chorus"} if "very " in text else {"voice", "bird_calls", "dawn_chorus"}
+    )
     assert set(result.disliked_tags) == expected
     assert result.content_tags == []
 
