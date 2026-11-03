@@ -26,6 +26,7 @@ from app.core.audio_tags import (
     audio_tag_contract_version,
     canonical_tag,
     canonical_tags,
+    content_voice_state,
     dictionary_records,
     material_tag_codes,
     resolve_audio_preferences,
@@ -270,9 +271,7 @@ class RetrievalService:
         audios: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         dictionary = [
-            tag
-            for tag in await self._tag_dictionary()
-            if tag.get("vector") and tag.get("label")
+            tag for tag in await self._tag_dictionary() if tag.get("vector") and tag.get("label")
         ]
         request_codes = set(canonical_tags(content_tags, strict=False))
         disliked = set(_usable_dislike_tags(request.disliked_tags))
@@ -336,7 +335,9 @@ class RetrievalService:
                 sleep_stage_tags=[],
                 size=CANDIDATE_QUERY_SIZE,
             )
-            kept = [doc for doc in hits if not _audio_blocked_by_dislike(doc, request.disliked_tags)]
+            kept = [
+                doc for doc in hits if not _audio_blocked_by_dislike(doc, request.disliked_tags)
+            ]
         if request.sleep_stage_tags:
             staged = [doc for doc in kept if _audio_has_sleep_stage(doc, request.sleep_stage_tags)]
             if staged:
@@ -1525,24 +1526,9 @@ def _audio_blocked_by_dislike(doc: dict[str, Any], disliked_tags: list[str]) -> 
 
 
 def _voice_value_code(source: dict[str, Any]) -> str | None:
-    """读取音工「人声*」条目的 value.code；找不到返回 None。"""
-    values: set[str] = set()
-    for item in source.get("audio_engineering_tags") or []:
-        if not isinstance(item, dict):
-            continue
-        name = str(item.get("name") or "")
-        if item.get("code") not in {"voice", "voice_position"} and canonical_tag(
-            name, strict=False
-        ) not in {"voice", "voice_position"}:
-            continue
-        value = item.get("value")
-        if not isinstance(value, dict):
-            return None
-        code = value.get("code")
-        if code is None:
-            return None
-        values.add(str(code))
-    return next(iter(values)) if len(values) == 1 else None
+    """Use current content identity; absent/invalid refs stay unknown."""
+    state = content_voice_state(source)
+    return None if state is None else "continuous" if state else "none"
 
 
 def _apply_voice_code_filter(
@@ -1550,7 +1536,7 @@ def _apply_voice_code_filter(
     *,
     disliked_tags: list[str],
 ) -> list[ScoredCandidate]:
-    """dislike 含人声时只留 value.code=none（无人声）；缺字段也不放行。"""
+    """用启用内容标签判别人声；无有效内容证据时保守排除。"""
     if not _tags_mention_voice(disliked_tags):
         return candidates
 

@@ -35,7 +35,7 @@ def material():
         "audio_name": "Current material",
         "audio_url": "https://example.test/audio.mp3",
         "sleep_stage_tags": [{"code": "unwind", "tag_id": "stage-id"}],
-        "content_form_tags": [{"code": "worry_postponement", "tag_id": "content-id"}],
+        "content_form_tags": [{"code": "postponement", "tag_id": "content-id"}],
         "audio_engineering_tags": [
             {"code": "voice_position", "value": {"code": "none", "name": "无"}},
             {"code": "loopable", "value": {"code": "conditional"}},
@@ -62,14 +62,13 @@ def material():
 @pytest.mark.parametrize(
     "code",
     [
-        "worry_postponement",
-        "birdsong",
-        "fan_sound",
-        "forest_night",
-        "rain_on_window",
-        "thunder",
-        "gradual_wake_music",
-        "melodic_alarm_music",
+        "postponement",
+        "bird_calls",
+        "mechanical_airflow",
+        "forest",
+        "surface_rain",
+        "water_dripping",
+        "gentle_wake_music",
     ],
 )
 def test_current_content_codes_are_valid(code):
@@ -111,13 +110,15 @@ def test_only_boolean_true_is_enabled(status):
 
 def test_retired_fields_do_not_change_material_classification():
     row = material()
-    row["mechanism_tags"] = [{"code": "birdsong"}]
-    row["medical_risk_tags"] = [{"code": "birdsong"}]
-    assert not material_is_excluded(row, ["birdsong"])
+    row["mechanism_tags"] = [{"code": "bird_calls"}]
+    row["medical_risk_tags"] = [{"code": "bird_calls"}]
+    assert not material_is_excluded(row, ["bird_calls"])
     assert not {"mechanism_tags", "medical_risk_tags"} & project_search_material(row).keys()
-    assert not material_is_excluded(row, ["voice"])
+    assert material_is_excluded(row, ["voice"])
     row["audio_engineering_tags"][0]["value"]["code"] = "continuous"
     assert material_is_excluded(row, ["voice"])
+    row["content_form_tags"] = [{"code": "steady_light_rain"}]
+    assert not material_is_excluded(row, ["voice"])
 
 
 async def test_current_tag_batch_reaches_retrieval_and_preserves_struct_metadata():
@@ -129,7 +130,7 @@ async def test_current_tag_batch_reaches_retrieval_and_preserves_struct_metadata
     materials.find.side_effect = lambda *args: Cursor([row])
     tags = MagicMock()
     tags.find.side_effect = lambda *args: Cursor(
-        [{"code": "worry_postponement", "type": "content_form", "name": "担忧延后"}]
+        [{"code": "postponement", "type": "content_form", "name": "担忧延后"}]
     )
     service._materials = lambda: materials
     service._tags = lambda: tags
@@ -138,8 +139,8 @@ async def test_current_tag_batch_reaches_retrieval_and_preserves_struct_metadata
             uburnode_somni_pb2.PrescriptionAudioSearchTask(
                 task_id=f"task-{index}",
                 sleep_stage_tags=["unwind"],
-                content_tag_codes=["worry_postponement"],
-                disliked_tags=["voice"],
+                content_tag_codes=["postponement"],
+                disliked_tags=["bird_calls"],
                 top_k=1,
             )
             for index in range(34)

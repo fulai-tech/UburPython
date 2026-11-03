@@ -27,6 +27,7 @@ from app.core.audio_tags import (
     reference_tag,
     resolve_audio_preferences,
     validated_audio_tags,
+    validated_content_references,
 )
 from app.core.bson_util import bson_to_jsonable
 from app.core.codes import HttpStatus
@@ -410,8 +411,14 @@ class AudioCatalogService:
                 "content_form_tags",
                 "audio_engineering_tags",
                 "evidence_level_tags",
-                "duration_seconds", "acoustic_metrics", "language", "languages",
-                "short_description", "source", "created_at", "updated_at",
+                "duration_seconds",
+                "acoustic_metrics",
+                "language",
+                "languages",
+                "short_description",
+                "source",
+                "created_at",
+                "updated_at",
             )
             cursor = self._materials().find(
                 {"_id": {"$in": ids}, "status": True}, {key: 1 for key in fields}
@@ -431,6 +438,19 @@ class AudioCatalogService:
             identifier = str(candidate.get("_id") or candidate.get("id") or "")
             source = current.get(identifier)
             if source is None or source.get("status") is not True or not source.get("audio_url"):
+                continue
+            try:
+                validated_content_references(source)
+            except ValueError as exc:
+                # IDs/codes only: never log URLs, titles or user preferences.
+                refs = source.get("content_form_tags") or []
+                codes = [str(ref.get("code") or "") for ref in refs if isinstance(ref, dict)]
+                logger.warning(
+                    "prescription_material_rejected audio_id={} reason={} content_codes={}",
+                    identifier,
+                    str(exc).split(":", 1)[0],
+                    codes,
+                )
                 continue
             projected = project_search_material({**candidate, "_id": identifier})
             if any(projected[key] != source[key] for key in keys):
@@ -588,9 +608,7 @@ class AudioCatalogService:
         if not self._settings.get_audio_bm25_enabled or self._es_search is None:
             return []
         size = (
-            self._settings.fetch_all_hard_limit
-            if fetch_all
-            else self._settings.get_audio_bm25_size
+            self._settings.fetch_all_hard_limit if fetch_all else self._settings.get_audio_bm25_size
         )
         raw = await self._es_search.search_get_audio_bm25(
             text,
