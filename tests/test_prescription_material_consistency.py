@@ -1,4 +1,4 @@
-"""Stale ES/cache rows cannot authorize absent or changed Mongo materials."""
+"""Prescription results use ES metadata without Mongo identity refresh."""
 
 from unittest.mock import AsyncMock, MagicMock
 
@@ -21,7 +21,7 @@ class Cursor:
             raise StopAsyncIteration
 
 
-async def test_missing_material_is_removed_and_changed_url_is_refreshed_from_mongo():
+async def test_es_ids_and_urls_are_not_replaced_or_removed_by_mongo():
     current = {
         "_id": "ok",
         "status": True,
@@ -44,11 +44,9 @@ async def test_missing_material_is_removed_and_changed_url_is_refreshed_from_mon
     collection.find.return_value = Cursor([current, {**current, "_id": "changed"}])
     service._materials = lambda: collection
     result = await service.search_prescription_audio({"sleep_stage_tags": ["unwind"], "top_k": 2})
-    assert [x["_id"] for x in result] == ["changed", "ok"]
-    assert result[0]["audio_url"] == current["audio_url"]
-    assert collection.find.call_args.args[0]["status"] is True
-    assert "audio_url" in collection.find.call_args.args[1]
-    assert "description_vector" not in collection.find.call_args.args[1]
+    assert [x["_id"] for x in result] == ["missing", "changed"]
+    assert result[1]["audio_url"] == stale["audio_url"]
+    collection.find.assert_not_called()
 
 
 async def test_no_dislike_answer_is_not_forwarded_as_none_tag():
@@ -59,43 +57,24 @@ async def test_no_dislike_answer_is_not_forwarded_as_none_tag():
     ]
 
 
-async def test_authority_snapshot_is_reused_only_within_one_rpc():
-    from app.server.somni.audio.catalog import prescription_material_scope
-
+async def test_repeated_search_does_not_create_mongo_authority_snapshot():
     row = {
         "_id": "one",
         "status": True,
         "audio_url": "https://example.test/one.mp3",
         "sleep_stage_tags": [{"code": "unwind"}],
     }
-    service = AudioCatalogService(None, Settings())
+    retrieval = MagicMock()
+    retrieval.search = AsyncMock(return_value=[project_search_material(row)])
+    service = AudioCatalogService(None, Settings(), retrieval=retrieval)
     collection = MagicMock()
-    collection.find.side_effect = lambda *args: Cursor([row])
+    collection.find.side_effect = AssertionError("no material Mongo reads")
     service._materials = lambda: collection
-    candidate = project_search_material(row)
-    with prescription_material_scope():
-        assert await service._verify_prescription_materials([candidate])
-        assert await service._verify_prescription_materials([candidate])
-        assert collection.find.call_count == 1
-    row["status"] = False
-    with prescription_material_scope():
-        assert await service._verify_prescription_materials([candidate]) == []
-    assert collection.find.call_count == 2
-
-
-async def test_changed_eligibility_cannot_be_reused_from_stale_cache():
-    row = {
-        "_id": "one",
-        "status": True,
-        "audio_url": "https://example.test/one.mp3",
-        "content_form_tags": [{"code": "breathing_guidance"}],
-    }
-    service = AudioCatalogService(None, Settings())
-    collection = MagicMock()
-    collection.find.return_value = Cursor([row])
-    service._materials = lambda: collection
-    cached = project_search_material({**row, "content_form_tags": [{"code": "steady_light_rain"}]})
-    assert await service._verify_prescription_materials([cached]) == []
+    task = {"sleep_stage_tags": ["unwind"], "top_k": 1}
+    assert await service.search_prescription_audio(task)
+    assert await service.search_prescription_audio(task)
+    collection.find.assert_not_called()
+    assert retrieval.search.await_count == 2
 
 
 async def test_retired_reference_rejects_whole_material_with_auditable_warning(monkeypatch):
@@ -118,7 +97,7 @@ async def test_retired_reference_rejects_whole_material_with_auditable_warning(m
     service._materials = lambda: collection
     warning = MagicMock()
     monkeypatch.setattr(catalog.logger, "warning", warning)
-    result = await service._verify_prescription_materials(
+    result = service._filter_prescription_materials(
         [project_search_material(invalid), project_search_material(valid)]
     )
     assert [row["_id"] for row in result] == ["good"]
