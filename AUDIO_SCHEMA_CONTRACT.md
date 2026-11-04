@@ -19,9 +19,8 @@ union the exact identity with reviewed whole-term groups. The shared
 contract revision is 5, so retrieval caches cannot reuse the old identity set.
 Vocal filtering uses valid enabled content tags and their ancestry; materials
 without usable content evidence fail closed for a no-voice request; retired
-engineering voice/voice_position values are no longer read. Fresh Mongo
-material content references are checked again after ES retrieval/cache lookup.
-Database status and stage checks remain in force. RPC/Proto fields are unchanged.
+engineering voice/voice_position values are no longer read. ES/cache material content references are checked locally after retrieval.
+Returned enabled status and stage checks remain in force; there is no per-result Mongo read. RPC/Proto fields are unchanged.
 
 Before release, use the explicit Somni connection profile to check both the live
 dictionary and the DPH mirror without writing files or databases:
@@ -47,8 +46,8 @@ candidate result remains a legitimate result.
 
 - 雨声组覆盖 steady_light_rain、steady_rain、heavy_rain、surface_rain、scene_rain、rainforest_light_rain。负向“鸟类叫声/Bird Calls/bird_calls”覆盖 bird_calls 与 dawn_chorus；正向正式标签仍精确匹配。只扩展经审核的完整词，不做任意子串、模糊或模型推断。
 - 实时库106项；相对109项移出了 storm_ambience、shore_water、sleep_education。97条启用素材中，原13个退役码引用为0、storm_ambience引用为0，但2条素材仍带 shore_water。它们会被严格拒绝；应先修复数据引用，再重建索引/缓存。此代码不删除标签、不改素材、不补造对应关系。
-- `_verify_prescription_materials`拒绝非法内容引用时记录 warning：仅素材ID、稳定原因、内容code；不记录用户偏好、标题、URL或完整素材。不能为了召回而静默丢弃非法标签后放行整条素材。
-- `/api/audio/search` 属于手板 AudioService、使用其独立检索与兜底缓存；量产 SearchPrescriptionAudio 属于 Somni AudioCatalogService，额外对照量产Mongo真值做状态/引用/阶段复核。这两条接口职责和数据源不同，不把手板HTTP结果当作可下发的处方准入结果；本次不将手板HTTP改连量产Mongo。共享检索的偏好排除仍共用修正后的解析规则。
+- `_filter_prescription_materials`拒绝非法内容引用时记录 warning：仅素材ID、稳定原因、内容code；不记录用户偏好、标题、URL或完整素材。不能为了召回而静默丢弃非法标签后放行整条素材。
+- `/api/audio/search` 属于手板 AudioService、使用其独立检索与兜底缓存；量产 SearchPrescriptionAudio 属于 Somni AudioCatalogService，使用ES/缓存返回字段做状态/引用/阶段复核，不按结果ID回查Mongo。这两条接口职责和数据源不同，不把手板HTTP结果当作可下发的处方准入结果；本次不将手板HTTP改连量产Mongo。共享检索的偏好排除仍共用修正后的解析规则。
 - 人声内容分类合并到 audio_tags，依据 voice_guidance 的当前子树、lyrical_song、non_lexical_vocal；缺失/非法内容证据返回unknown，“不要人声”时保守排除。GetAudio 的 is_voice 保持既有声学指标 voice_presence_ratio>0 的显示语义，与“内容类别属于人声”是不同证据，**不能用该显示字段授权人声禁忌过滤**。本次不改变公开字段语义；声学检测误报/与内容标签冲突应另行核对素材。lullaby_style仅描述风格，不能证明含人声；是否需重新标注由素材/产品确认，不自动增加或去掉人声标签。
 - 导出脚本使用 SOMNI_MONGO_DB（默认Somni），与应用一致；连接URI可不带库名。优先明确Somni URI，绝不回退Fullive。
 - canonical_tag缓存当前内容和历史非内容身份集合；历史播放v6所用109项分类另存 audio_tag_aliases_v6.json，仅用于历史冻结语义，不作为新素材准入白名单。词典变更需重启服务；此次未部署。
@@ -78,7 +77,9 @@ candidate result remains a legitimate result.
 - 实际存在的语言、来源、描述、封面、时间及时长。
 - `acoustic_metrics` 原值，包括 `duration_seconds`、`tempo_bpm`、`transient_ratio`、`transient_max_delta_db`、`voice_presence_ratio`。BPM 可以是 null；缺失指标不补零，不新增筛选阈值。
 
-处方检索从 ES/缓存召回后，以 Mongo 中的当前启用状态、链接和标签为准。停用、缺失或标签已经变化的素材不放行；不再比较已废弃字段。工程标签变化仍会使旧候选失效。人声排除继续检查工程标签的具体值，不能把维度名称当作“有人声”。
+2026-11-04按产品要求，处方检索从ES/缓存召回后不再按候选ID回查Mongo，不比较或覆盖Mongo素材元数据，也不维护批次Mongo素材快照。ES结果里的ID、链接、标签、工程及声学元数据保持原样；仍拒绝非布尔true的启用状态、空ID/链接、非法内容引用、不适用阶段及用户明确排除。请求中的content_tag_codes仍通过启用字典解析，此处字典读取不属于已移除的素材回查。
+
+Mongo与ES发生ID漂移时不再仅因Mongo查不到ID而删除候选；相应地，Mongo最新停用/标签/链接变更不会在此路径被实时发现，依赖索引及缓存同步。返回排序、top_k、任务边界和Proto不变，不在运行时自动重建索引或清缓存。
 
 本次实际数据库只读检查得到 200 条素材，均未提供 `acoustic_metrics`；对应代码已通过含完整指标和缺失指标的样例验证。当前真实数据缺失的数值不会凭空出现。
 
