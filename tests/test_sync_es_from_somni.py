@@ -488,7 +488,7 @@ async def test_rebuild_catalog_cache_refreshes_directory_and_keeps_hot_key() -> 
     ):
         ok = await _rebuild_catalog_cache(settings, es_search)
 
-    current = catalog_cache_key(from_es=True, language="zh")
+    current = catalog_cache_key(from_es=True, language="all")
     assert ok is True
     assert calls == ["refresh", "list"]
     assert current in redis.store

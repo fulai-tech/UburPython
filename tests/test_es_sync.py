@@ -96,6 +96,31 @@ async def test_upsert_somni_material_indexes_when_audio_url_present() -> None:
 
 
 @pytest.mark.asyncio
+async def test_upsert_somni_material_omits_empty_en_vector() -> None:
+    client = MagicMock()
+    client.index = AsyncMock()
+    encoder = MagicMock(spec=Encoder)
+    encoder.encode_one = AsyncMock(return_value=[0.2] * 512)
+    es_sync = EsSync(client, encoder, Settings())
+
+    await es_sync.upsert_somni_material(
+        "audio_001",
+        {
+            "id": "audio_001",
+            "audio_name": "深夜雨声",
+            "audio_url": "https://cdn.example.com/a.mp3",
+            "description": "适合睡前放松",
+        },
+    )
+
+    document = client.index.await_args.kwargs["document"]
+    assert "description_vector" in document
+    assert "description_vector_en" not in document
+    encoder.encode_one.assert_awaited_once()
+    assert encoder.encode_one.await_args.kwargs["language"] == "zh"
+
+
+@pytest.mark.asyncio
 async def test_upsert_somni_material_skips_when_audio_url_missing() -> None:
     client = MagicMock()
     client.index = AsyncMock()

@@ -305,6 +305,8 @@ message AudioListItem {
   optional int32 vip = 6;  // 库无该字段时显式返回 0
   repeated string tag = 7;  // 内容形态标签名；zh 取 name，en 取 name_en（缺省回退 name）
   optional bool is_voice = 8;  // voice_presence_ratio 为 0 或缺失时 false，其余数值为 true
+  optional string audio_name_en = 9;  // 英文名；前端按 language 切换展示
+  optional string description_en = 10;  // 英文短描述（库字段 short_description_en）；前端按 language 切换展示
 }
 
 message GetAudioRes {

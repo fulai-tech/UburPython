@@ -219,6 +219,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         settings,
         audio_index=settings.somni_es_audio_index,
         tag_dictionary_index=settings.somni_es_tag_vectors_index,
+        index_profile="somni",
     )
     somni_sleep_stage_cache = await create_sleep_stage_candidate_cache(
         settings,

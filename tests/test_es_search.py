@@ -341,6 +341,7 @@ async def test_search_by_description_vector_includes_pipeline_fields() -> None:
         "bool": {
             "filter": [
                 {"term": {"status": True}},
+                {"exists": {"field": "description_vector"}},
                 {
                     "nested": {
                         "path": "sleep_stage_tags",
@@ -350,6 +351,29 @@ async def test_search_by_description_vector_includes_pipeline_fields() -> None:
             ]
         }
     }
+
+
+@pytest.mark.asyncio
+async def test_search_by_description_vector_routes_field_by_language() -> None:
+    client = MagicMock()
+    client.search = AsyncMock(return_value={"hits": {"hits": []}})
+    search = EsSearch(client, Settings())
+
+    await search.search_by_description_vector(
+        [0.1, 0.2],
+        sleep_stage_tags=[],
+        size=5,
+        language="en",
+        include_source=False,
+    )
+
+    body = client.search.await_args.kwargs["body"]
+    assert body["knn"]["field"] == "description_vector_en"
+    assert {"exists": {"field": "description_vector_en"}} in body["knn"]["filter"]["bool"]["filter"]
+    assert not any(
+        isinstance(item, dict) and item.get("term", {}).get("language")
+        for item in body["knn"]["filter"]["bool"]["filter"]
+    )
 
 
 @pytest.mark.asyncio

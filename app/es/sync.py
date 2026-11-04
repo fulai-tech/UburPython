@@ -40,9 +40,27 @@ class EsSync:
         if payload is None:
             logger.info("跳过 ES upsert：audio_url 缺失，id={}", doc_id)
             return
-        payload["description_vector"] = await self._encoder.encode_one(
-            str(payload.get("description_text", ""))
-        )
+        zh_text = str(payload.get("description_text", "")).strip()
+        en_text = str(payload.get("description_text_en", "")).strip()
+        # cosine 字段不能写零向量，缺文本/缺模型时省略字段
+        if zh_text:
+            payload["description_vector"] = await self._encoder.encode_one(
+                zh_text, language="zh"
+            )
+        else:
+            payload.pop("description_vector", None)
+        try:
+            if en_text:
+                payload["description_vector_en"] = await self._encoder.encode_one(
+                    en_text, language="en"
+                )
+            else:
+                payload.pop("description_vector_en", None)
+        except FileNotFoundError:
+            payload.pop("description_vector_en", None)
+            logger.warning(
+                "英文 ONNX 不可用，跳过 description_vector_en，id={}", doc_id
+            )
         await self._client.index(index=self.audio_index, id=doc_id, document=payload)
         logger.info("ES 已 upsert 原料，id={}", doc_id)
 

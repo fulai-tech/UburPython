@@ -5,15 +5,14 @@ from __future__ import annotations
 import pytest
 
 from app.core.config import Settings
-from app.embedding.encoder import create_encoder
-from app.embedding.onnx_encoder import OnnxEncoder
+from app.embedding.encoder import LanguageRouterEncoder, create_encoder
 from app.embedding.qwen_api_encoder import QwenApiEncoder
 from app.embedding.torch_encoder import TorchEncoder
 
 
-def test_create_encoder_returns_onnx_by_default() -> None:
+def test_create_encoder_returns_language_router_for_onnx() -> None:
     encoder = create_encoder(Settings(embedding_backend="onnx"))
-    assert isinstance(encoder, OnnxEncoder)
+    assert isinstance(encoder, LanguageRouterEncoder)
 
 
 def test_create_encoder_returns_torch_when_configured() -> None:

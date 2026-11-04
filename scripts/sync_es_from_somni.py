@@ -226,7 +226,6 @@ class TagDictionarySyncJob:
         self._client = es_client
         self._encoder = encoder
         self._settings = settings
-        self._dim = settings.embedding_dim
 
     async def run(self, *, dry_run: bool) -> dict[str, int]:
         stats = {
@@ -274,11 +273,17 @@ class TagDictionarySyncJob:
 
     async def _insert_one(self, doc_id: str, es_doc: dict[str, Any]) -> str:
         try:
-            es_doc["name_vector"] = await self._encoder.encode_one(str(es_doc.get("name", "")))
-            name_en = str(es_doc.get("name_en", "")).strip()
-            es_doc["name_en_vector"] = (
-                await self._encoder.encode_one(name_en) if name_en else zero_vector(self._dim)
+            es_doc["name_vector"] = await self._encoder.encode_one(
+                str(es_doc.get("name", "")), language="zh"
             )
+            name_en = str(es_doc.get("name_en", "")).strip()
+            # cosine 字段不能写零向量；英文名用英文模型
+            if name_en:
+                es_doc["name_en_vector"] = await self._encoder.encode_one(
+                    name_en, language="en"
+                )
+            else:
+                es_doc.pop("name_en_vector", None)
             await self._client.index(
                 index=self._es_search.tag_dictionary_index,
                 id=doc_id,
@@ -357,9 +362,28 @@ class MaterialsSyncJob:
 
     async def _insert_one(self, doc_id: str, es_doc: dict[str, Any]) -> str:
         try:
-            es_doc["description_vector"] = await self._encoder.encode_one(
-                str(es_doc.get("description_text", ""))
-            )
+            zh_text = str(es_doc.get("description_text", "")).strip()
+            en_text = str(es_doc.get("description_text_en", "")).strip()
+            # cosine 字段不能写零向量，缺文本/缺模型时省略字段
+            if zh_text:
+                es_doc["description_vector"] = await self._encoder.encode_one(
+                    zh_text, language="zh"
+                )
+            else:
+                es_doc.pop("description_vector", None)
+            try:
+                if en_text:
+                    es_doc["description_vector_en"] = await self._encoder.encode_one(
+                        en_text, language="en"
+                    )
+                else:
+                    es_doc.pop("description_vector_en", None)
+            except FileNotFoundError:
+                es_doc.pop("description_vector_en", None)
+                logger.warning(
+                    "英文 ONNX 不可用，跳过 description_vector_en，id={}",
+                    doc_id,
+                )
             await self._client.index(
                 index=self._es_search.audio_index,
                 id=doc_id,
@@ -396,6 +420,12 @@ class MongoEsSyncJob:
     async def run(self, *, dry_run: bool = False) -> SyncJobResult:
         logger.info("开始量产 Mongo → ES 全量重建同步，dry_run={}", dry_run)
         await self._es_search.migrate_legacy_indices()
+        if not dry_run:
+            # name_en_vector dims 变更时 put_mapping 会失败；标签任务本来就会全量重建
+            tag_index = self._es_search.tag_dictionary_index
+            if await self._client.indices.exists(index=tag_index):
+                await self._client.indices.delete(index=tag_index)
+                logger.info("已删除标签词典索引以便按新 dims 重建：{}", tag_index)
         await self._es_search.ensure_indices()
 
         tag_job = TagDictionarySyncJob(
@@ -474,6 +504,7 @@ async def _run_cli(*, dry_run: bool) -> int:
             settings,
             audio_index=settings.somni_es_audio_index,
             tag_dictionary_index=settings.somni_es_tag_vectors_index,
+            index_profile="somni",
         )
         job = MongoEsSyncJob(mongo, es_search, es_client, encoder, settings)
         result = await job.run(dry_run=dry_run)
