@@ -1,5 +1,10 @@
-# 服务器构建（跳过 ONNX 在线导出）：需先将 models/onnx/bge-small-zh-v1.5 放到构建上下文
-# 本机导出后上传：scp -r models/onnx/bge-small-zh-v1.5 root@服务器:/opt/uburnode/models/onnx/
+# 服务器构建（跳过 ONNX 在线导出）：
+# 运行时由 docker-compose 挂载 INT8 双语模型，宿主机需先准备：
+#   models/onnx/bge-small-zh-v1.5-int8
+#   models/onnx/bge-small-en-v1.5-int8
+# 本机上传示例：
+#   scp -r models/onnx/bge-small-zh-v1.5-int8 models/onnx/bge-small-en-v1.5-int8 \
+#     root@服务器:/opt/uburpython/models/onnx/
 # 构建：docker compose -f docker-compose.yml -f docker-compose.prebuilt.yml up -d --build
 
 FROM python:3.12-slim-bookworm AS builder
