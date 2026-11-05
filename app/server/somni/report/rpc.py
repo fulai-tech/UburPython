@@ -24,7 +24,20 @@ class ReportRpc(uburnode_somni_pb2_grpc.ReportServiceServicer):
         return await self._call(request, context, "get_summary", _to_summary_res)
 
     async def GetEvents(self, request, context):
-        return await self._call(request, context, "get_events", _to_events_res)
+        uid = request.uid.strip()
+        record_date = request.record_date.strip()
+        session_id = request.session_id.strip()
+        if not uid or not record_date or not session_id:
+            await abort_invalid(
+                context, "uid、record_date、session_id 均不能为空"
+            )
+        service = await self._require(context)
+
+        async def _do():
+            payload = await service.get_events(uid, record_date, session_id)
+            return _to_events_res(payload)
+
+        return await run_rpc_call(context, _do)
 
     async def GetEnvironment(self, request, context):
         return await self._call(request, context, "get_environment", _to_environment_res)
@@ -33,6 +46,9 @@ class ReportRpc(uburnode_somni_pb2_grpc.ReportServiceServicer):
         uid = request.uid.strip()
         if not uid:
             await abort_invalid(context, "uid 不能为空")
+        session_id = request.session_id.strip()
+        if not session_id:
+            await abort_invalid(context, "session_id 不能为空")
         record_date = request.record_date.strip()
         start_date = request.start_date.strip()
         end_date = request.end_date.strip()
@@ -47,6 +63,7 @@ class ReportRpc(uburnode_somni_pb2_grpc.ReportServiceServicer):
                 record_date=record_date,
                 start_date=start_date,
                 end_date=end_date,
+                session_id=session_id,
             )
             return _to_structure_res(payload)
 
@@ -89,12 +106,18 @@ class ReportRpc(uburnode_somni_pb2_grpc.ReportServiceServicer):
     async def _call(self, request, context, method_name: str, to_res):
         if not request.uid.strip() or not request.record_date.strip():
             await abort_invalid(context, "uid 与 record_date 均不能为空")
+        needs_session = method_name != "get_profile"
+        session_id = request.session_id.strip()
+        if needs_session and not session_id:
+            await abort_invalid(context, "session_id 不能为空")
         service = await self._require(context)
 
         async def _do():
-            payload = await getattr(service, method_name)(
-                request.uid, request.record_date
-            )
+            method = getattr(service, method_name)
+            if needs_session:
+                payload = await method(request.uid, request.record_date, session_id)
+            else:
+                payload = await method(request.uid, request.record_date)
             return to_res(payload)
 
         return await run_rpc_call(context, _do)

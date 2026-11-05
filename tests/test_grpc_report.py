@@ -115,7 +115,6 @@ async def test_report_requires_uid_and_record_date() -> None:
     ("method_name", "service_name"),
     [
         ("GetSummary", "get_summary"),
-        ("GetEvents", "get_events"),
         ("GetEnvironment", "get_environment"),
         ("GetSleepQuality", "get_sleep_quality"),
         ("GetProfile", "get_profile"),
@@ -126,6 +125,28 @@ async def test_report_rpcs_call_service(method_name: str, service_name: str) -> 
     req = uburnode_somni_pb2.ReportDateReq(uid="u1", record_date="2026-08-24")
     res = await getattr(rpc, method_name)(req, _context())
     getattr(service, service_name).assert_awaited_once_with("u1", "2026-08-24")
+    assert res is not None
+
+
+@pytest.mark.asyncio
+async def test_get_events_requires_session_id() -> None:
+    rpc, service = _make_rpc()
+    with pytest.raises(grpc.aio.AbortError):
+        await rpc.GetEvents(
+            uburnode_somni_pb2.ReportDateReq(uid="u1", record_date="2026-08-24"),
+            _context(),
+        )
+    service.get_events.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_events_calls_service_with_session() -> None:
+    rpc, service = _make_rpc()
+    req = uburnode_somni_pb2.ReportDateReq(
+        uid="u1", record_date="2026-08-24", session_id="sess-1"
+    )
+    res = await rpc.GetEvents(req, _context())
+    service.get_events.assert_awaited_once_with("u1", "2026-08-24", "sess-1")
     assert res is not None
 
 

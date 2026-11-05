@@ -27,6 +27,7 @@ message ReportDateReq {
   string record_date = 2;  // GetStructure 可选（有则填单日 sleep_structure）；其它报告 RPC 必填
   string start_date = 3;   // 可选：报告周起始日 YYYY-MM-DD；仅 GetStructure
   string end_date = 4;     // 可选：报告周结束日 YYYY-MM-DD；仅 GetStructure；可与 record_date 同传
+  string session_id = 5;   // 报告 RPC 必填（GetProfile 除外）：session 包 / telemetry 查询键
 }
 
 message SleepSummary {

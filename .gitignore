@@ -17,9 +17,13 @@ data/sync_backup/
 .idea/
 .vscode/
 .cursor/
+.worktrees/
 
 # 本地文档与测试数据快照（不提交远程）
 docs/
+
+# 报告联调造数脚本（本地用，不提交）
+scripts/seed_report_session/
 
 # 模型缓存（sentence-transformers / HuggingFace）
 .cache/

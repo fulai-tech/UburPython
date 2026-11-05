@@ -134,24 +134,23 @@ async def test_get_events_attaches_intervention() -> None:
     store.find_record = AsyncMock(
         return_value={"idf_data": [{"stage": "deep", "start": "01:00", "end": "02:20"}]}
     )
-    store.find_device_id = AsyncMock(return_value="dev_1")
-    store.list_telemetry = AsyncMock(
-        side_effect=[
-            [
+    store.list_telemetry_by_filter = AsyncMock(
+        side_effect=lambda query: {
+            "sleep": [
                 {
                     "ts": datetime(2026, 8, 9, 18, 15, tzinfo=UTC),
                     "data": {"hr": 68.2, "br": 16.1},
                 }
             ],
-            [
+            "env": [
                 {
                     "ts": datetime(2026, 8, 9, 18, 15, tzinfo=UTC),
                     "data": {"temp": 23.2, "humi": 52.9, "lux": 1.2, "noise_db": 28.4},
                 }
             ],
-        ]
+        }.get(query.get("metric"), [])
     )
-    payload = await _service(store).get_events("u1", "2026-08-10")
+    payload = await _service(store).get_events("u1", "2026-08-10", "sess-1")
     assert payload["event_count"] == 1
     assert payload["abnormal_count"] == 1
     assert payload["intervention_count"] == 1
@@ -160,65 +159,78 @@ async def test_get_events_attaches_intervention() -> None:
     assert payload["idf_data"][0]["stage"] == "deep"
     assert payload["physio_data"][0]["metrics"]["heart_rate"] == 68
     assert payload["env_data"][0]["noise"] == 28
+    queries = [call.args[0] for call in store.list_telemetry_by_filter.await_args_list]
+    assert {"session_id": "sess-1", "metric": "sleep"} in queries
+    assert {"session_id": "sess-1", "metric": "env"} in queries
+    store.find_device_id.assert_not_called()
+    store.list_telemetry.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_get_events_half_hour_physio_and_env() -> None:
+async def test_get_events_percent_bucket_physio_and_env() -> None:
+    """总时长 100 分钟、分桶 10% → 桶宽 10 分钟。"""
     store = MagicMock()
     store.list_events = AsyncMock(return_value=[])
     store.find_record = AsyncMock(return_value=None)
-    store.find_device_id = AsyncMock(return_value="dev_1")
-    anchor = datetime(2026, 8, 9, 18, 7, tzinfo=UTC)
-    store.list_telemetry = AsyncMock(
-        side_effect=[
-            [
+    anchor = datetime(2026, 8, 9, 18, 0, tzinfo=UTC)
+    store.list_telemetry_by_filter = AsyncMock(
+        side_effect=lambda query: {
+            "sleep": [
                 {"ts": anchor, "data": {"hr": 60.4, "br": 14.5}},
                 {
-                    "ts": anchor + timedelta(minutes=10),
+                    "ts": anchor + timedelta(minutes=5),
                     "data": {"hr": 61.4, "br": 15.5},
                 },
                 {
-                    "ts": anchor + timedelta(minutes=30),
+                    "ts": anchor + timedelta(minutes=50),
                     "data": {"hr": 70.2, "br": 16.2},
                 },
+                {
+                    "ts": anchor + timedelta(minutes=100),
+                    "data": {"hr": 80.0, "br": 17.0},
+                },
             ],
-            [
+            "env": [
                 {
                     "ts": anchor,
                     "data": {"temp": 23.2, "humi": 50.4, "lux": 1.2, "noise_db": 28.5},
                 },
                 {
-                    "ts": anchor + timedelta(minutes=12),
+                    "ts": anchor + timedelta(minutes=5),
                     "data": {"temp": 24.2, "humi": 51.4, "lux": 1.4, "noise_db": 29.5},
                 },
                 {
-                    "ts": anchor + timedelta(minutes=70),
+                    "ts": anchor + timedelta(minutes=100),
                     "data": {"temp": 22.2, "humi": 48.2, "lux": 0.4, "noise_db": 30.2},
                 },
             ],
-        ]
+        }.get(query.get("metric"), [])
     )
-    payload = await _service(store).get_events("u1", "2026-08-10")
+    payload = await _service(store).get_events("u1", "2026-08-10", "sess-1")
     assert payload["physio_data"] == [
         {
-            "collected_at": "2026-08-10T02:07:00+08:00",
+            "collected_at": "2026-08-10T02:00:00+08:00",
             "metrics": {"heart_rate": 61, "respiration_rate": 15},
         },
         {
-            "collected_at": "2026-08-10T02:37:00+08:00",
+            "collected_at": "2026-08-10T02:50:00+08:00",
             "metrics": {"heart_rate": 70, "respiration_rate": 16},
+        },
+        {
+            "collected_at": "2026-08-10T03:30:00+08:00",
+            "metrics": {"heart_rate": 80, "respiration_rate": 17},
         },
     ]
     assert payload["env_data"] == [
         {
-            "collected_at": "2026-08-10T02:07:00+08:00",
+            "collected_at": "2026-08-10T02:00:00+08:00",
             "temperature": 24,
             "humidity": 51,
             "illuminance": 1,
             "noise": 29,
         },
         {
-            "collected_at": "2026-08-10T03:07:00+08:00",
+            "collected_at": "2026-08-10T03:30:00+08:00",
             "temperature": 22,
             "humidity": 48,
             "illuminance": 0,

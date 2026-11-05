@@ -13,6 +13,7 @@ from app.server.somni.report.calc import (
     floor_metric_stats,
     format_collected_at,
     format_hhmm,
+    idf_from_segments,
     local_day_utc_range,
     minutes_between,
     resolve_report_timezone_name,
@@ -168,3 +169,29 @@ def test_weekly_day_metric_tolerates_bad_time_string() -> None:
     assert metric["bed_time"] == ""
     assert metric["wake_up_time"] == ""
     assert metric["total_sleep_minutes"] == 0
+
+
+def test_idf_last_end_padded_to_on_bed_to() -> None:
+    bed_from = int(datetime(2026, 11, 4, 22, 45, tzinfo=UTC).timestamp() * 1000)
+    bed_to = int(datetime(2026, 11, 5, 7, 15, tzinfo=UTC).timestamp() * 1000)
+    on_bed = [{"from": bed_from, "to": bed_to, "duration_ms": bed_to - bed_from}]
+    segments = [
+        {
+            "stage": 2,
+            "stage_name": "LIGHT",
+            "duration_ms": 60 * 60_000,
+            "start_ts_ms": bed_from,
+        },
+        {
+            "stage": 1,
+            "stage_name": "AWAKE",
+            "duration_ms": 14 * 60_000,
+            "start_ts_ms": bed_from + 8 * 3600_000,
+        },
+    ]
+    idf = idf_from_segments(segments, on_bed)
+    assert idf[-1]["start"] == "06:45"
+    assert idf[-1]["end"] == "07:15"
+    # 不传 on_bed 时仍按 duration
+    raw = idf_from_segments(segments)
+    assert raw[-1]["end"] == "06:59"
