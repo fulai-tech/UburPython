@@ -34,7 +34,10 @@ class TorchEncoder(EncoderBase):
     def is_loaded(self) -> bool:
         return self._model is not None
 
-    async def encode(self, texts: list[str]) -> list[list[float]]:
+    async def encode(
+        self, texts: list[str], *, language: str = "zh"
+    ) -> list[list[float]]:
+        del language
         if not texts:
             return []
         if self._model is None:
@@ -46,6 +49,6 @@ class TorchEncoder(EncoderBase):
         vectors = self._model.encode(texts, normalize_embeddings=True)
         return [v.tolist() for v in vectors]
 
-    async def encode_one(self, text: str) -> list[float]:
-        results = await self.encode([text])
+    async def encode_one(self, text: str, *, language: str = "zh") -> list[float]:
+        results = await self.encode([text], language=language)
         return results[0]

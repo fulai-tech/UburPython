@@ -226,7 +226,6 @@ class TagDictionarySyncJob:
         self._client = es_client
         self._encoder = encoder
         self._settings = settings
-        self._dim = settings.embedding_dim
 
     async def run(self, *, dry_run: bool) -> dict[str, int]:
         stats = {
@@ -260,6 +259,9 @@ class TagDictionarySyncJob:
             stats["created"] = len(payloads)
             return stats
 
+        # 清库前先确认中文编码器可用；失败则保留原索引
+        await self._preflight_zh_encoder()
+
         stats["deleted"] = await wipe_and_recreate_index(
             self._client,
             self._es_search,
@@ -272,13 +274,32 @@ class TagDictionarySyncJob:
         self._es_search.clear_content_tag_vectors_cache()
         return stats
 
+    async def _preflight_zh_encoder(self) -> None:
+        """清库前探测 zh 编码；失败则抛错，避免空索引。"""
+        await self._encoder.encode_one("同步预检", language="zh")
+
     async def _insert_one(self, doc_id: str, es_doc: dict[str, Any]) -> str:
         try:
-            es_doc["name_vector"] = await self._encoder.encode_one(str(es_doc.get("name", "")))
-            name_en = str(es_doc.get("name_en", "")).strip()
-            es_doc["name_en_vector"] = (
-                await self._encoder.encode_one(name_en) if name_en else zero_vector(self._dim)
+            es_doc["name_vector"] = await self._encoder.encode_one(
+                str(es_doc.get("name", "")), language="zh"
             )
+            name_en = str(es_doc.get("name_en", "")).strip()
+            # cosine 字段不能写零向量；英文失败时仍保留中文标签
+            if name_en:
+                try:
+                    es_doc["name_en_vector"] = await self._encoder.encode_one(
+                        name_en, language="en"
+                    )
+                except Exception as exc:
+                    es_doc.pop("name_en_vector", None)
+                    logger.warning(
+                        "量产同步标签跳过 name_en_vector，id={}，name={}，原因：{}",
+                        doc_id,
+                        es_doc.get("name"),
+                        exc,
+                    )
+            else:
+                es_doc.pop("name_en_vector", None)
             await self._client.index(
                 index=self._es_search.tag_dictionary_index,
                 id=doc_id,
@@ -344,6 +365,9 @@ class MaterialsSyncJob:
             stats["created"] = len(payloads)
             return stats
 
+        # 清库前先确认中文编码器可用；失败则保留原索引
+        await self._preflight_zh_encoder()
+
         stats["deleted"] = await wipe_and_recreate_index(
             self._client,
             self._es_search,
@@ -355,11 +379,34 @@ class MaterialsSyncJob:
 
         return stats
 
+    async def _preflight_zh_encoder(self) -> None:
+        """清库前探测 zh 编码；失败则抛错，避免空索引。"""
+        await self._encoder.encode_one("同步预检", language="zh")
+
     async def _insert_one(self, doc_id: str, es_doc: dict[str, Any]) -> str:
         try:
-            es_doc["description_vector"] = await self._encoder.encode_one(
-                str(es_doc.get("description_text", ""))
-            )
+            zh_text = str(es_doc.get("description_text", "")).strip()
+            en_text = str(es_doc.get("description_text_en", "")).strip()
+            # cosine 字段不能写零向量，缺文本/缺模型时省略字段
+            if zh_text:
+                es_doc["description_vector"] = await self._encoder.encode_one(
+                    zh_text, language="zh"
+                )
+            else:
+                es_doc.pop("description_vector", None)
+            try:
+                if en_text:
+                    es_doc["description_vector_en"] = await self._encoder.encode_one(
+                        en_text, language="en"
+                    )
+                else:
+                    es_doc.pop("description_vector_en", None)
+            except FileNotFoundError:
+                es_doc.pop("description_vector_en", None)
+                logger.warning(
+                    "英文 ONNX 不可用，跳过 description_vector_en，id={}",
+                    doc_id,
+                )
             await self._client.index(
                 index=self._es_search.audio_index,
                 id=doc_id,
@@ -396,6 +443,8 @@ class MongoEsSyncJob:
     async def run(self, *, dry_run: bool = False) -> SyncJobResult:
         logger.info("开始量产 Mongo → ES 全量重建同步，dry_run={}", dry_run)
         await self._es_search.migrate_legacy_indices()
+        # 不在拉 Mongo / 编码预检前删索引；标签清库改由 TagDictionarySyncJob
+        # 在 fetch + 编码器预检成功后再 wipe（避免同步失败留下空索引）
         await self._es_search.ensure_indices()
 
         tag_job = TagDictionarySyncJob(
@@ -474,6 +523,7 @@ async def _run_cli(*, dry_run: bool) -> int:
             settings,
             audio_index=settings.somni_es_audio_index,
             tag_dictionary_index=settings.somni_es_tag_vectors_index,
+            index_profile="somni",
         )
         job = MongoEsSyncJob(mongo, es_search, es_client, encoder, settings)
         result = await job.run(dry_run=dry_run)

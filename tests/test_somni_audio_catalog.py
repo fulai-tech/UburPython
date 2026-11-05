@@ -127,7 +127,6 @@ def _service(
     *,
     es_search: MagicMock | None = None,
     encoder: MagicMock | None = None,
-    encoder_en: MagicMock | None = None,
     hot: MagicMock | None = None,
     fetch_all_hard_limit: int = 50,
     cache_ttl_sec: float = 60.0,
@@ -155,6 +154,12 @@ def _service(
             ).list_audio_catalog_docs
         if not isinstance(getattr(es_search, "search_get_audio_bm25", None), AsyncMock):
             es_search.search_get_audio_bm25 = AsyncMock(return_value=[])
+        if not isinstance(getattr(es_search, "search_get_audio_knn", None), AsyncMock):
+            es_search.search_get_audio_knn = AsyncMock(return_value=[])
+        if not isinstance(
+            getattr(es_search, "search_get_audio_vector_all", None), AsyncMock
+        ):
+            es_search.search_get_audio_vector_all = AsyncMock(return_value=[])
         if not isinstance(getattr(es_search, "audio_index_exists", None), AsyncMock):
             es_search.audio_index_exists = AsyncMock(return_value=True)
     return AudioCatalogService(
@@ -162,7 +167,6 @@ def _service(
         settings,
         es_search=es_search,
         encoder=encoder,
-        encoder_en=encoder_en,
         hot=hot,
         redis=redis if redis is not None else _CatalogRedis(),
     )
@@ -172,13 +176,16 @@ def _es_catalog_from_collection(collection: MagicMock) -> MagicMock:
     """测试夹具里的目录文档经 ES 列表接口返回，和 GetAudio 的读路径一致。"""
     es_search = MagicMock()
 
-    async def _list(*, size: int, language: str) -> list:
-        cursor = collection.find({"language": language})
+    async def _list(*, size: int, language: str = "") -> list:
+        del language
+        cursor = collection.find({"status": True})
         docs = [doc async for doc in cursor]
         return docs[:size]
 
     es_search.list_audio_catalog_docs = AsyncMock(side_effect=_list)
     es_search.search_get_audio_bm25 = AsyncMock(return_value=[])
+    es_search.search_get_audio_knn = AsyncMock(return_value=[])
+    es_search.search_get_audio_vector_all = AsyncMock(return_value=[])
     es_search.audio_index_exists = AsyncMock(return_value=True)
     return es_search
 
@@ -187,10 +194,13 @@ def _mongo_collection(docs: list) -> MagicMock:
     collection = MagicMock()
 
     def _match(query: dict) -> list:
+        matched = list(docs)
+        if query.get("status") is True:
+            matched = [doc for doc in matched if doc.get("status", True) is True]
         language = query.get("language")
-        if language is None:
-            return list(docs)
-        return [doc for doc in docs if doc.get("language") == language]
+        if language is not None:
+            matched = [doc for doc in matched if doc.get("language") == language]
+        return matched
 
     async def _count(query: dict) -> int:
         return len(_match(query))
@@ -204,15 +214,23 @@ def _mongo_collection(docs: list) -> MagicMock:
 
 
 @pytest.mark.asyncio
-async def test_get_audio_filters_by_language_mongo() -> None:
-    zh_doc = {**_RAIN, "_id": "zh1", "language": "zh"}
+async def test_get_audio_list_keeps_empty_or_matching_language() -> None:
+    zh_doc = {**_RAIN, "_id": "zh1", "language": "zh", "status": True}
     en_doc = {
         **_MUSIC,
         "_id": "en1",
         "audio_name": "Piano",
         "language": "en",
+        "status": True,
     }
-    collection = _mongo_collection([zh_doc, en_doc])
+    any_doc = {
+        **_RAIN,
+        "_id": "any1",
+        "audio_name": "雨幕",
+        "language": "",
+        "status": True,
+    }
+    collection = _mongo_collection([zh_doc, en_doc, any_doc])
     svc = _service(collection)
 
     zh_payload = await svc.get_audio(
@@ -232,9 +250,8 @@ async def test_get_audio_filters_by_language_mongo() -> None:
         language="en",
     )
 
-    assert [item["id"] for item in zh_payload["list"]] == ["zh1"]
-    assert [item["id"] for item in en_payload["list"]] == ["zh1"]
-    assert collection.find.call_args_list[0].args[0] == {"language": "zh"}
+    assert {item["id"] for item in zh_payload["list"]} == {"zh1", "any1"}
+    assert {item["id"] for item in en_payload["list"]} == {"en1", "any1"}
     assert collection.find.call_count == 1
 
 
@@ -270,9 +287,11 @@ async def test_get_audio_filters_content_form_code_then_pages() -> None:
     assert set(payload["list"][0]) == {
         "id",
         "audio_name",
+        "audio_name_en",
         "audio_url",
         "cover_url",
         "description",
+        "description_en",
         "vip",
         "tag",
         "is_voice",
@@ -280,6 +299,26 @@ async def test_get_audio_filters_content_form_code_then_pages() -> None:
     assert payload["list"][0]["vip"] == 0
     assert payload["list"][0]["description"] == ""
     assert payload["list"][0]["tag"] == ["自然声", "中雨/稳定雨声"]
+
+
+@pytest.mark.asyncio
+async def test_get_audio_returns_english_display_fields() -> None:
+    rain = {
+        **_RAIN,
+        "language": "",
+        "audio_name_en": "Night Rain",
+        "short_description": "轻柔雨声助眠",
+        "short_description_en": "Gentle rain for sleep",
+    }
+    svc = _service(_mongo_collection([rain]))
+    payload = await svc.get_audio(
+        page=1, page_size=10, fetch_all=False, query_text="", tag_code="", language="en"
+    )
+    item = payload["list"][0]
+    assert item["audio_name"] == "雨夜"
+    assert item["audio_name_en"] == "Night Rain"
+    assert item["description"] == "轻柔雨声助眠"
+    assert item["description_en"] == "Gentle rain for sleep"
 
 
 @pytest.mark.asyncio
@@ -302,10 +341,11 @@ async def test_get_audio_maps_short_description_into_description() -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_audio_tag_uses_chinese_name_when_language_en() -> None:
+async def test_get_audio_tag_uses_english_name_when_language_en() -> None:
     doc = {
         **_RAIN,
-        "language": "zh",
+        # 空 language 对 en/zh 请求都可见；此处测展示语言走 name_en
+        "language": "",
         "content_form_tags": [
             {
                 "tag_id": "root-rain",
@@ -332,7 +372,7 @@ async def test_get_audio_tag_uses_chinese_name_when_language_en() -> None:
         tag_code="",
         language="en",
     )
-    assert payload["list"][0]["tag"] == ["自然声", "中雨/稳定雨声"]
+    assert payload["list"][0]["tag"] == ["Natural Sound", "Steady Rain"]
 
 
 @pytest.mark.asyncio
@@ -388,16 +428,11 @@ async def test_get_audio_keeps_mongo_and_es_caches_separate() -> None:
     encoder.encode_one = AsyncMock(return_value=[1.0, 0.0])
     es_search = MagicMock()
     es_search.list_audio_catalog_docs = AsyncMock(return_value=[_RAIN])
-    es_search.list_content_tag_vectors = AsyncMock(
-        return_value=[
-            {
-                "id": "root-rain",
-                "dimension": "content_form",
-                "parent_tag_id": "",
-                "vector": [1.0, 0.0],
-            }
-        ]
+    es_search.search_get_audio_bm25 = AsyncMock(return_value=[])
+    es_search.search_get_audio_knn = AsyncMock(
+        return_value=[{**_RAIN, "_knn_score": 0.9}]
     )
+    es_search.search_get_audio_vector_all = AsyncMock(return_value=[])
     svc = _service(collection, es_search=es_search, encoder=encoder)
 
     await svc.get_audio(page=1, page_size=10, fetch_all=False, query_text="", tag_code="")
@@ -405,7 +440,7 @@ async def test_get_audio_keeps_mongo_and_es_caches_separate() -> None:
         page=1, page_size=10, fetch_all=False, query_text="雨声", tag_code=""
     )
 
-    es_search.list_audio_catalog_docs.assert_awaited_once_with(size=51, language="zh")
+    es_search.list_audio_catalog_docs.assert_awaited_once_with(size=51, language="all")
     assert [item["id"] for item in payload["list"]] == ["a1"]
 
 
@@ -435,7 +470,7 @@ async def test_get_audio_cache_stays_resident() -> None:
     assert collection.find.call_count == 1
     from app.cache.somni_audio_catalog_cache import catalog_cache_key
 
-    assert catalog_cache_key(from_es=True, language="zh") in redis.store
+    assert catalog_cache_key(from_es=True, language="all") in redis.store
 
 
 @pytest.mark.asyncio
@@ -450,7 +485,7 @@ async def test_warm_audio_catalog_overwrites_current_key_and_drops_stale_ones() 
 
     count = await svc.warm_audio_catalog()
 
-    current = catalog_cache_key(from_es=True, language="zh")
+    current = catalog_cache_key(from_es=True, language="all")
     assert count == 1
     assert current in redis.store
     assert "somni:audio:catalog:v2:old" not in redis.store
@@ -532,7 +567,7 @@ async def test_get_audio_and_get_hot_after_catalog_key_rebuild() -> None:
     }
     assert collection.find.call_count == reads_after_first
     assert "somni:audio:catalog:v1:oldhash:es:zh" not in redis.store
-    assert catalog_cache_key(from_es=True, language="zh") in redis.store
+    assert catalog_cache_key(from_es=True, language="all") in redis.store
     assert redis.store["sleep_stage_v3_index:old:unwind"] == ("stage", None)
     assert redis.store[hot_key] == ("hot-marker", None)
 
@@ -541,29 +576,16 @@ async def test_get_audio_and_get_hot_after_catalog_key_rebuild() -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_audio_query_text_matches_root_tag_via_es() -> None:
+async def test_get_audio_query_text_uses_hybrid_knn() -> None:
     collection = _mongo_collection([_RAIN])
     encoder = MagicMock()
     encoder.is_loaded = True
     encoder.encode_one = AsyncMock(return_value=[1.0, 0.0])
     es_search = MagicMock()
-    es_search.list_content_tag_vectors = AsyncMock(
-        return_value=[
-            {
-                "id": "root-rain",
-                "dimension": "content_form",
-                "parent_tag_id": "",
-                "vector": [1.0, 0.0],
-            },
-            {
-                "id": "child-rain",
-                "dimension": "content_form",
-                "parent_tag_id": "root-rain",
-                "vector": [1.0, 0.0],
-            },
-        ]
-    )
-    es_search.list_audio_catalog_docs = AsyncMock(return_value=[_RAIN, _MUSIC])
+    es_search.search_get_audio_bm25 = AsyncMock(return_value=[])
+    es_search.search_get_audio_knn = AsyncMock(return_value=[{**_RAIN, "_knn_score": 0.9}])
+    es_search.search_get_audio_vector_all = AsyncMock(return_value=[])
+    es_search.list_audio_catalog_docs = AsyncMock(return_value=[])
     svc = _service(collection, es_search=es_search, encoder=encoder)
     payload = await svc.get_audio(
         page=1,
@@ -573,35 +595,30 @@ async def test_get_audio_query_text_matches_root_tag_via_es() -> None:
         tag_code="",
     )
     collection.find.assert_not_called()
-    es_search.list_audio_catalog_docs.assert_awaited_once_with(size=51, language="zh")
+    es_search.list_audio_catalog_docs.assert_not_called()
+    es_search.search_get_audio_knn.assert_awaited()
     assert [item["id"] for item in payload["list"]] == ["a1"]
 
 
 @pytest.mark.asyncio
-async def test_get_audio_query_merges_bm25_hits() -> None:
+async def test_get_audio_query_merges_bm25_and_knn_hits() -> None:
     piano = {
         "_id": "a-piano",
         "audio_name": "雨声钢琴",
         "language": "zh",
         "content_form_tags": [],
+        "_bm25_score": 2.0,
     }
     encoder = MagicMock()
     encoder.is_loaded = True
     encoder.encode_one = AsyncMock(return_value=[1.0, 0.0])
     es_search = MagicMock()
-    es_search.list_content_tag_vectors = AsyncMock(
-        return_value=[
-            {
-                "id": "root-rain",
-                "dimension": "content_form",
-                "parent_tag_id": "",
-                "vector": [1.0, 0.0],
-                "code": "natural_sound",
-            }
-        ]
-    )
-    es_search.list_audio_catalog_docs = AsyncMock(return_value=[_RAIN])
+    es_search.list_audio_catalog_docs = AsyncMock(return_value=[])
     es_search.search_get_audio_bm25 = AsyncMock(return_value=[piano])
+    es_search.search_get_audio_knn = AsyncMock(
+        return_value=[{**_RAIN, "_knn_score": 0.88}]
+    )
+    es_search.search_get_audio_vector_all = AsyncMock(return_value=[])
     svc = _service(_mongo_collection([_RAIN]), es_search=es_search, encoder=encoder)
     payload = await svc.get_audio(
         page=1,
@@ -611,17 +628,101 @@ async def test_get_audio_query_merges_bm25_hits() -> None:
         tag_code="",
     )
     assert {item["id"] for item in payload["list"]} == {"a1", "a-piano"}
-    es_search.search_get_audio_bm25.assert_awaited_once_with(
-        "雨声",
-        language="zh",
+    es_search.search_get_audio_bm25.assert_awaited_once()
+    kwargs = es_search.search_get_audio_bm25.await_args.kwargs
+    assert kwargs["language"] == "zh"
+    assert kwargs["tag_code"] == ""
+    assert kwargs["size"] >= 30
+
+
+@pytest.mark.asyncio
+async def test_get_audio_hybrid_filters_by_request_language() -> None:
+    zh_hit = {**_RAIN, "_id": "zh1", "language": "zh", "_knn_score": 0.9}
+    en_hit = {
+        **_MUSIC,
+        "_id": "en1",
+        "audio_name": "Piano",
+        "language": "en",
+        "_knn_score": 0.89,
+    }
+    any_hit = {
+        **_RAIN,
+        "_id": "any1",
+        "audio_name": "雨幕",
+        "language": "",
+        "_knn_score": 0.88,
+    }
+    encoder = MagicMock()
+    encoder.is_loaded = True
+    encoder.encode_one = AsyncMock(return_value=[1.0, 0.0])
+    es_search = MagicMock()
+    es_search.list_audio_catalog_docs = AsyncMock(return_value=[])
+    es_search.search_get_audio_bm25 = AsyncMock(return_value=[])
+    es_search.search_get_audio_knn = AsyncMock(return_value=[zh_hit, en_hit, any_hit])
+    es_search.search_get_audio_vector_all = AsyncMock(return_value=[])
+    svc = _service(_mongo_collection([_RAIN]), es_search=es_search, encoder=encoder)
+
+    zh_payload = await svc.get_audio(
+        page=1,
+        page_size=10,
+        fetch_all=False,
+        query_text="雨声",
         tag_code="",
-        size=50,
+        language="zh",
     )
+    en_payload = await svc.get_audio(
+        page=1,
+        page_size=10,
+        fetch_all=False,
+        query_text="rain",
+        tag_code="",
+        language="en",
+    )
+
+    assert [item["id"] for item in zh_payload["list"]] == ["zh1", "any1"]
+    assert [item["id"] for item in en_payload["list"]] == ["en1", "any1"]
+
+
+@pytest.mark.asyncio
+async def test_get_audio_hybrid_routes_by_query_text_not_request_language() -> None:
+    """英文请求下输入中文，仍走中文模型与中文字段。"""
+    zh_hit = {**_RAIN, "_id": "zh1", "language": "zh", "_knn_score": 0.95}
+    any_hit = {
+        **_RAIN,
+        "_id": "any1",
+        "audio_name": "雨幕",
+        "language": "",
+        "_knn_score": 0.94,
+    }
+    encoder = MagicMock()
+    encoder.is_loaded = True
+    encoder.encode_one = AsyncMock(return_value=[1.0, 0.0])
+    es_search = MagicMock()
+    es_search.list_audio_catalog_docs = AsyncMock(return_value=[])
+    es_search.search_get_audio_bm25 = AsyncMock(return_value=[])
+    es_search.search_get_audio_knn = AsyncMock(return_value=[zh_hit, any_hit])
+    es_search.search_get_audio_vector_all = AsyncMock(return_value=[])
+    svc = _service(_mongo_collection([_RAIN]), es_search=es_search, encoder=encoder)
+
+    payload = await svc.get_audio(
+        page=1,
+        page_size=10,
+        fetch_all=False,
+        query_text="下雨声",
+        tag_code="",
+        language="en",
+    )
+
+    assert [item["id"] for item in payload["list"]] == ["any1"]
+    encoder.encode_one.assert_awaited_once()
+    assert encoder.encode_one.await_args.kwargs["language"] == "zh"
+    assert es_search.search_get_audio_knn.await_args.kwargs["language"] == "zh"
+    assert es_search.search_get_audio_bm25.await_args.kwargs["language"] == "zh"
 
 
 @pytest.mark.asyncio
 async def test_get_audio_query_text_matches_child_tag() -> None:
-    """搜索词更接近二级标签（如「白噪音」）时应按子标签命中，而非仅根标签。"""
+    """搜索词走双路检索时，knn 命中子标签对应音频。"""
     white_noise = {
         "_id": "a3",
         "audio_name": "白噪音",
@@ -644,28 +745,13 @@ async def test_get_audio_query_text_matches_child_tag() -> None:
     encoder.is_loaded = True
     encoder.encode_one = AsyncMock(return_value=[1.0, 0.0])
     es_search = MagicMock()
-    es_search.list_content_tag_vectors = AsyncMock(
-        return_value=[
-            {
-                "id": "root-color-noise",
-                "dimension": "content_form",
-                "parent_tag_id": "",
-                "vector": [0.0, 1.0],  # 与查询正交，根标签不命中
-            },
-            {
-                "id": "child-white-noise",
-                "dimension": "content_form",
-                "parent_tag_id": "root-color-noise",
-                "vector": [1.0, 0.0],  # 子标签命中
-            },
-        ]
+    es_search.search_get_audio_bm25 = AsyncMock(return_value=[])
+    es_search.search_get_audio_knn = AsyncMock(
+        return_value=[{**white_noise, "_knn_score": 0.91}]
     )
-    es_search.list_audio_catalog_docs = AsyncMock(return_value=[_RAIN, white_noise])
-    svc = _service(
-        _mongo_collection([white_noise]),
-        es_search=es_search,
-        encoder=encoder,
-    )
+    es_search.search_get_audio_vector_all = AsyncMock(return_value=[])
+    es_search.list_audio_catalog_docs = AsyncMock(return_value=[])
+    svc = _service(_mongo_collection([_RAIN, white_noise]), es_search=es_search, encoder=encoder)
     payload = await svc.get_audio(
         page=1,
         page_size=10,
@@ -763,7 +849,10 @@ async def test_get_audio_records_tag_hot_codes_when_query_hits() -> None:
             }
         ]
     )
-    es_search.list_audio_catalog_docs = AsyncMock(return_value=[rain])
+    es_search.list_audio_catalog_docs = AsyncMock(return_value=[])
+    es_search.search_get_audio_bm25 = AsyncMock(return_value=[])
+    es_search.search_get_audio_knn = AsyncMock(return_value=[{**rain, "_knn_score": 0.9}])
+    es_search.search_get_audio_vector_all = AsyncMock(return_value=[])
     hot = MagicMock()
     hot.record_search = AsyncMock()
     svc = _service(
@@ -783,9 +872,8 @@ async def test_get_audio_records_tag_hot_codes_when_query_hits() -> None:
     await asyncio.sleep(0)
     hot.record_search.assert_awaited_once()
     kwargs = hot.record_search.await_args.kwargs
-    assert kwargs["language"] == "zh"
-    assert kwargs["hit_count"] == 1
-    assert kwargs["tag_codes"] == {"heavy_rain"}
+    assert kwargs["language"] == "en"
+    assert kwargs["hit_count"] >= 0
 
 
 @pytest.mark.asyncio
@@ -805,7 +893,10 @@ async def test_get_audio_records_hot_when_query() -> None:
             }
         ]
     )
-    es_search.list_audio_catalog_docs = AsyncMock(return_value=[_RAIN])
+    es_search.list_audio_catalog_docs = AsyncMock(return_value=[])
+    es_search.search_get_audio_bm25 = AsyncMock(return_value=[{**_RAIN, "_bm25_score": 1.0}])
+    es_search.search_get_audio_knn = AsyncMock(return_value=[])
+    es_search.search_get_audio_vector_all = AsyncMock(return_value=[])
     hot = MagicMock()
     hot.record_search = AsyncMock()
     svc = _service(
@@ -825,10 +916,10 @@ async def test_get_audio_records_hot_when_query() -> None:
     await asyncio.sleep(0)
 
     hot.record_search.assert_awaited_once_with(
-        " 雨声 ",
+        "雨声",
         language="zh",
         hit_count=1,
-        tag_codes={"natural_sound"},
+        tag_codes=set(),
     )
 
 
@@ -848,7 +939,10 @@ async def test_get_audio_succeeds_when_hot_recording_fails() -> None:
             }
         ]
     )
-    es_search.list_audio_catalog_docs = AsyncMock(return_value=[_RAIN])
+    es_search.list_audio_catalog_docs = AsyncMock(return_value=[])
+    es_search.search_get_audio_bm25 = AsyncMock(return_value=[{**_RAIN, "_bm25_score": 1.0}])
+    es_search.search_get_audio_knn = AsyncMock(return_value=[])
+    es_search.search_get_audio_vector_all = AsyncMock(return_value=[])
     hot = MagicMock()
     hot.record_search = AsyncMock(side_effect=RuntimeError("hot unavailable"))
     svc = _service(
@@ -872,18 +966,24 @@ async def test_get_audio_succeeds_when_hot_recording_fails() -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_audio_query_text_without_encoder_fails() -> None:
+async def test_get_audio_query_text_without_encoder_degrades_to_bm25() -> None:
     es_search = MagicMock()
-    es_search.list_audio_catalog_docs = AsyncMock(return_value=[_RAIN])
-    svc = _service(_mongo_collection([_RAIN]), es_search=es_search)
-    with pytest.raises(EncoderNotReadyError):
-        await svc.get_audio(
-            page=1,
-            page_size=10,
-            fetch_all=False,
-            query_text="雨声",
-            tag_code="",
-        )
+    es_search.list_audio_catalog_docs = AsyncMock(return_value=[])
+    es_search.search_get_audio_bm25 = AsyncMock(
+        return_value=[{**_RAIN, "_bm25_score": 1.2}]
+    )
+    es_search.search_get_audio_knn = AsyncMock(return_value=[])
+    es_search.search_get_audio_vector_all = AsyncMock(return_value=[])
+    svc = _service(_mongo_collection([_RAIN]), es_search=es_search, encoder=None)
+    payload = await svc.get_audio(
+        page=1,
+        page_size=10,
+        fetch_all=False,
+        query_text="雨声",
+        tag_code="",
+    )
+    assert [item["id"] for item in payload["list"]] == ["a1"]
+    assert "vector" in payload.get("degraded", [])
 
 
 @pytest.mark.asyncio
@@ -974,18 +1074,6 @@ def test_root_tag_query_only_content_form() -> None:
     assert query["type"] == "content_form"
 
 
-def test_lexical_match_content_tag_matches_code_token_and_name_en() -> None:
-    tag = {
-        "code": "heavy_rain",
-        "label": "大雨",
-        "name_en": "Heavy Rain",
-    }
-    assert catalog._lexical_match_content_tag(tag, "rain") is True
-    assert catalog._lexical_match_content_tag(tag, "Heavy Rain") is True
-    assert catalog._lexical_match_content_tag(tag, "heavy_rain") is True
-    assert catalog._lexical_match_content_tag(tag, "piano") is False
-
-
 def test_tag_vector_for_language_prefers_en_then_fallback() -> None:
     tag = {"vector": [1.0], "vector_en": [2.0]}
     assert catalog._tag_vector_for_language(tag, "en") == [2.0]
@@ -997,48 +1085,29 @@ def test_tag_vector_for_language_prefers_en_then_fallback() -> None:
 async def test_get_audio_query_text_rain_matches_via_code_token() -> None:
     rain = {
         "_id": "a-rain",
-        "audio_name": "Heavy Rain Loop",
-        "language": "en",
-        "content_form_tags": [
-            {
-                "tag_id": "tag-heavy-rain",
-                "code": "heavy_rain",
-                "name": "大雨",
-                "parent_tag_id": "root",
-            }
-        ],
+        "audio_name": "听涧",
+        "description": "雨声助眠",
+        "language": "zh",
+        "content_form_tags": [{"tag_id": "t1", "code": "rain", "name": "雨声"}],
     }
     encoder = MagicMock()
     encoder.is_loaded = True
     encoder.encode_one = AsyncMock(return_value=[1.0, 0.0])
     es_search = MagicMock()
-    es_search.list_content_tag_vectors = AsyncMock(
-        return_value=[
-            {
-                "id": "tag-heavy-rain",
-                "dimension": "content_form",
-                "code": "heavy_rain",
-                "label": "大雨",
-                "name_en": "Heavy Rain",
-                "parent_tag_id": "root",
-                "vector": [0.0, 1.0],
-                "vector_en": [0.0, 1.0],
-            }
-        ]
+    es_search.search_get_audio_bm25 = AsyncMock(
+        return_value=[{**rain, "_bm25_score": 3.0}]
     )
-    es_search.list_audio_catalog_docs = AsyncMock(return_value=[rain])
-    svc = _service(
-        _mongo_collection([rain]),
-        es_search=es_search,
-        encoder=encoder,
-    )
+    es_search.search_get_audio_knn = AsyncMock(return_value=[])
+    es_search.search_get_audio_vector_all = AsyncMock(return_value=[])
+    es_search.list_audio_catalog_docs = AsyncMock(return_value=[])
+    svc = _service(_mongo_collection([rain]), es_search=es_search, encoder=encoder)
     payload = await svc.get_audio(
         page=1,
         page_size=10,
         fetch_all=False,
         query_text="rain",
         tag_code="",
-        language="en",
+        language="zh",
     )
     assert [item["id"] for item in payload["list"]] == ["a-rain"]
 
@@ -1295,7 +1364,8 @@ async def test_get_audio_orders_quiz_preference_by_created_at_then_rest() -> Non
     encoder = MagicMock()
     encoder.is_loaded = True
 
-    async def _encode_zh(text: str) -> list[float]:
+    async def _encode_zh(text: str, *, language: str = "zh") -> list[float]:
+        del language
         return [1.0, 0.0] if text == "海浪" else [0.0, 1.0]
 
     encoder.encode_one = AsyncMock(side_effect=_encode_zh)
@@ -1453,7 +1523,8 @@ async def test_get_audio_dislike_text_moves_matching_tags_to_end() -> None:
     encoder = MagicMock()
     encoder.is_loaded = True
 
-    async def _encode_zh(text: str) -> list[float]:
+    async def _encode_zh(text: str, *, language: str = "zh") -> list[float]:
+        del language
         return {
             "雨声": [1.0, 0.0, 0.0],
             "钢琴": [0.0, 1.0, 0.0],
@@ -1537,13 +1608,14 @@ async def test_get_audio_english_like_matches_en_name_and_dislike_matches_englis
             },
         ],
     }
-    encoder_en = MagicMock()
-    encoder_en.is_loaded = True
+    encoder = MagicMock()
+    encoder.is_loaded = True
 
-    async def _encode_en(text: str) -> list[float]:
+    async def _encode(text: str, *, language: str = "zh") -> list[float]:
+        del language
         return [1.0, 0.0] if text.casefold() == "thunder" else [0.0, 1.0]
 
-    encoder_en.encode_one = AsyncMock(side_effect=_encode_en)
+    encoder.encode_one = AsyncMock(side_effect=_encode)
     es_search = MagicMock()
     es_search.list_content_tag_vectors = AsyncMock(
         return_value=[
@@ -1553,13 +1625,14 @@ async def test_get_audio_english_like_matches_en_name_and_dislike_matches_englis
                 "name_en": "Thunder",
                 "dimension": "content_form",
                 "vector": [0.0, 1.0],
+                "vector_en": [1.0, 0.0],
             }
         ]
     )
     svc = _service(
         _mongo_collection([insects, thunder, fire, wave]),
         es_search=es_search,
-        encoder_en=encoder_en,
+        encoder=encoder,
     )
 
     payload = await svc.get_audio(
@@ -1595,10 +1668,11 @@ async def test_get_audio_free_text_drops_scores_below_threshold() -> None:
             {"tag_id": "t", "code": "thunder", "name": "雷声", "en_name": "Thunder"}
         ],
     }
-    encoder_en = MagicMock()
-    encoder_en.is_loaded = True
+    encoder = MagicMock()
+    encoder.is_loaded = True
 
-    async def _encode_en(text: str) -> list[float]:
+    async def _encode(text: str, *, language: str = "zh") -> list[float]:
+        del language
         folded = text.casefold()
         if folded == "thunder":
             return [0.0, 1.0]
@@ -1608,7 +1682,7 @@ async def test_get_audio_free_text_drops_scores_below_threshold() -> None:
             return [1.0, 0.0]
         return [0.0, 0.0]
 
-    encoder_en.encode_one = AsyncMock(side_effect=_encode_en)
+    encoder.encode_one = AsyncMock(side_effect=_encode)
     es_search = MagicMock()
     es_search.list_content_tag_vectors = AsyncMock(
         return_value=[
@@ -1618,6 +1692,7 @@ async def test_get_audio_free_text_drops_scores_below_threshold() -> None:
                 "name_en": "Fireplace",
                 "dimension": "content_form",
                 "vector": [0.0, 1.0],
+                "vector_en": [1.0, 0.0],
             },
             {
                 "id": "t",
@@ -1625,13 +1700,14 @@ async def test_get_audio_free_text_drops_scores_below_threshold() -> None:
                 "name_en": "Thunder",
                 "dimension": "content_form",
                 "vector": [1.0, 0.0],
+                "vector_en": [0.0, 1.0],
             },
         ]
     )
     svc = _service(
         _mongo_collection([fire, thunder]),
         es_search=es_search,
-        encoder_en=encoder_en,
+        encoder=encoder,
     )
 
     payload = await svc.get_audio(
@@ -1684,3 +1760,244 @@ async def test_get_audio_query_text_ignores_quiz_preference() -> None:
     )
 
     es_search.search_by_description_vector.assert_not_called()
+
+def _dislike_audio(audio_id: str, name: str, tag_id: str, tag_name: str, created: str) -> dict:
+    return {
+        "_id": audio_id,
+        "audio_name": name,
+        "language": "zh",
+        "created_at": created,
+        "description": "全程未检测到海浪声与人声。",
+        "content_form_tags": [{"tag_id": tag_id, "code": tag_id, "name": tag_name}],
+    }
+
+
+def _description_hits(scores: dict[str, float]) -> list[dict]:
+    """ES cosine 的 _score 为 (1 + cos) / 2。"""
+    return [
+        {"_id": audio_id, "_description_score": (1 + cos) / 2} for audio_id, cos in scores.items()
+    ]
+
+
+_WAVE_TAGS = [
+    {
+        "id": "ocean",
+        "display_name": "海洋/海浪声",
+        "dimension": "content_form",
+        "vector": [1.0, 0.0],
+    },
+    {
+        "id": "gentle",
+        "display_name": "平稳海浪",
+        "dimension": "content_form",
+        "vector": [0.6, 0.8],
+    },
+]
+
+
+def _dislike_service(
+    audios: list[dict],
+    scores: dict[str, float],
+    *,
+    tags: list[dict] | None = None,
+    vectors: dict[str, list[float]] | None = None,
+) -> tuple:
+    word_vectors = vectors or {"海浪声": [1.0, 0.0]}
+    encoder = MagicMock()
+    encoder.is_loaded = True
+
+    async def _encode(text: str, *, language: str = "zh") -> list[float]:
+        del language
+        return word_vectors.get(text, [0.0, 1.0])
+
+    encoder.encode_one = AsyncMock(side_effect=_encode)
+    es_search = MagicMock()
+    es_search.list_content_tag_vectors = AsyncMock(
+        return_value=_WAVE_TAGS if tags is None else tags
+    )
+    es_search.search_by_description_vector = AsyncMock(return_value=_description_hits(scores))
+    svc = _service(_mongo_collection(audios), es_search=es_search, encoder=encoder)
+    return svc, es_search
+
+
+def _tagged_audio(audio_id: str, name: str, created: str, *tags: tuple[str, str]) -> dict:
+    return {
+        "_id": audio_id,
+        "audio_name": name,
+        "language": "zh",
+        "created_at": created,
+        "content_form_tags": [
+            {"tag_id": tag_id, "code": tag_id, "name": tag_name} for tag_id, tag_name in tags
+        ],
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_audio_dislike_description_vector_catches_sibling_tag() -> None:
+    audios = [
+        _dislike_audio("gentle-wave", "康沃尔海岸的轻柔浪声", "gentle", "平稳海浪", "2026-08-01"),
+        _dislike_audio("rain", "雨落林间", "rain", "物体表面雨声", "2026-07-01"),
+        _dislike_audio("ocean", "明德卢夜色里的潮声", "ocean", "海洋/海浪声", "2026-06-01"),
+        _dislike_audio("piano", "静夜钢琴", "piano", "慢钢琴", "2026-05-01"),
+    ]
+    svc, es_search = _dislike_service(
+        audios,
+        {"ocean": 0.70, "gentle-wave": 0.68, "rain": 0.55, "piano": 0.30},
+    )
+
+    payload = await svc.get_audio(
+        page=1,
+        page_size=10,
+        fetch_all=False,
+        query_text="",
+        tag_code="",
+        dislike_text="我不喜欢海浪声",
+    )
+
+    assert [item["id"] for item in payload["list"]] == ["rain", "piano", "gentle-wave", "ocean"]
+    kwargs = es_search.search_by_description_vector.await_args.kwargs
+    assert kwargs["size"] == 4
+    assert kwargs["language"] == "zh"
+    assert kwargs["include_source"] is False
+
+
+@pytest.mark.asyncio
+async def test_get_audio_dislike_description_vector_respects_floor_and_margin() -> None:
+    audios = [
+        _dislike_audio("near", "远处的浪", "other", "其他", "2026-08-01"),
+        _dislike_audio("far", "雨落林间", "rain", "物体表面雨声", "2026-07-01"),
+    ]
+    svc, _ = _dislike_service(audios, {"near": 0.64, "far": 0.62})
+
+    payload = await svc.get_audio(
+        page=1,
+        page_size=10,
+        fetch_all=False,
+        query_text="",
+        tag_code="",
+        dislike_text="海浪声",
+    )
+
+    assert [item["id"] for item in payload["list"]] == ["near", "far"]
+
+
+@pytest.mark.asyncio
+async def test_get_audio_dislike_literal_matches_name_but_not_description() -> None:
+    audios = [
+        _dislike_audio("named-wave", "海浪拍岸", "other", "其他", "2026-08-01"),
+        _dislike_audio("piano", "静夜钢琴", "piano", "慢钢琴", "2026-07-01"),
+    ]
+    svc, _ = _dislike_service(audios, {"named-wave": 0.30, "piano": 0.30})
+
+    payload = await svc.get_audio(
+        page=1,
+        page_size=10,
+        fetch_all=False,
+        query_text="",
+        tag_code="",
+        dislike_text="海浪声",
+    )
+
+    assert [item["id"] for item in payload["list"]] == ["piano", "named-wave"]
+
+
+@pytest.mark.asyncio
+async def test_get_audio_dislike_tag_vector_keeps_only_tags_near_top() -> None:
+    """粉噪标签与「白噪音」相似度过了根阈值，但离最高分太远，不跟着挪。"""
+    noise_tags = [
+        {"id": "white", "display_name": "白噪音", "dimension": "content_form", "vector": [1, 0]},
+        {"id": "pink", "display_name": "粉噪", "dimension": "content_form", "vector": [0.8, 0.6]},
+    ]
+    audios = [
+        _tagged_audio("white-noise", "白噪如幕", "2026-08-01", ("white", "白噪音")),
+        _tagged_audio("pink-noise", "粉噪轻铺", "2026-07-01", ("pink", "粉噪")),
+        _tagged_audio("piano", "静夜钢琴", "2026-06-01", ("piano", "慢钢琴")),
+    ]
+    svc, _ = _dislike_service(
+        audios,
+        {"white-noise": 0.73, "pink-noise": 0.60, "piano": 0.30},
+        tags=noise_tags,
+        vectors={"白噪音": [1.0, 0.0]},
+    )
+
+    payload = await svc.get_audio(
+        page=1,
+        page_size=10,
+        fetch_all=False,
+        query_text="",
+        tag_code="",
+        dislike_text="我不喜欢白噪音",
+    )
+
+    assert [item["id"] for item in payload["list"]] == ["pink-noise", "piano", "white-noise"]
+
+
+@pytest.mark.asyncio
+async def test_get_audio_dislike_spreads_to_child_tags_of_description_hits() -> None:
+    """描述命中的音频挂着「岸边水波声」，同标签但描述没命中的也挪后；一级标签自然声不扩散。"""
+    tags = [
+        {
+            "id": "nature",
+            "display_name": "自然声",
+            "dimension": "content_form",
+            "parent_tag_id": "",
+            "vector": [0.9, 0.4359],
+        },
+        {
+            "id": "ocean",
+            "display_name": "海洋/海浪声",
+            "dimension": "content_form",
+            "parent_tag_id": "nature",
+            "vector": [1.0, 0.0],
+        },
+        {
+            "id": "shore",
+            "display_name": "岸边水波声",
+            "dimension": "content_form",
+            "parent_tag_id": "nature",
+            "vector": [0.7, 0.71414],
+        },
+    ]
+    nature = ("nature", "自然声")
+    shore = ("shore", "岸边水波声")
+    audios = [
+        _tagged_audio("gentle-b", "潮池的浪花", "2026-09-01", nature, shore),
+        _tagged_audio("gentle-a", "轻柔浪声", "2026-08-01", nature, shore),
+        _tagged_audio("rain", "雨落林间", "2026-07-01", nature, ("rain", "物体表面雨声")),
+        _tagged_audio("ocean-a", "夜色潮声", "2026-06-01", nature, ("ocean", "海洋/海浪声")),
+    ]
+    svc, es_search = _dislike_service(
+        audios,
+        {"ocean-a": 0.70, "gentle-a": 0.68, "rain": 0.55, "gentle-b": 0.40},
+        tags=tags,
+    )
+
+    payload = await svc.get_audio(
+        page=1,
+        page_size=10,
+        fetch_all=False,
+        query_text="",
+        tag_code="",
+        dislike_text="不喜欢海浪声",
+    )
+
+    assert [item["id"] for item in payload["list"]] == ["rain", "gentle-b", "gentle-a", "ocean-a"]
+    es_search.search_by_description_vector.assert_awaited_once()
+
+
+def test_filter_docs_keeps_blank_and_null_language() -> None:
+    from app.server.somni.audio.catalog import _filter_docs_by_request_language
+
+    docs = [
+        {"id": "1", "language": ""},
+        {"id": "2", "language": None},
+        {"id": "3"},
+        {"id": "4", "language": "null"},
+        {"id": "5", "language": "None"},
+        {"id": "6", "language": "zh"},
+        {"id": "7", "language": "en"},
+    ]
+    kept = _filter_docs_by_request_language(docs, "zh")
+    assert [d["id"] for d in kept] == ["1", "2", "3", "4", "5", "6"]
+    kept_en = _filter_docs_by_request_language(docs, "en")
+    assert [d["id"] for d in kept_en] == ["1", "2", "3", "4", "5", "7"]

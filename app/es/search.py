@@ -7,24 +7,29 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, Literal
 
-from elasticsearch import AsyncElasticsearch, NotFoundError
+from elasticsearch import ApiError, AsyncElasticsearch, NotFoundError
 from loguru import logger
 
 from app.core.audio_tags import canonical_tag, canonical_tags, reference_tag
 from app.core.config import Settings
 from app.es.index_mappings import (
+    build_handboard_audio_materials_mapping,
+    build_handboard_audio_tag_dictionary_mapping,
     build_somni_audio_materials_mapping,
     build_somni_audio_tag_dictionary_mapping,
 )
+from app.es.somni_docs import description_text_field, description_vector_field
 from app.schemas.audio import AudioTags, TagItem
+from app.server.somni.audio.bm25_query import build_bm25_must_clause
 
 LEGACY_INDICES = ("audio_materials", "tag_vectors")
-_GET_AUDIO_BM25_SOURCE = (
+GET_AUDIO_SOURCE_INCLUDES = (
     "audio_name",
-    "description",
+    "audio_name_en",
     "short_description",
+    "short_description_en",
     "audio_url",
     "cover_url",
     "content_form_tags",
@@ -34,6 +39,7 @@ _GET_AUDIO_BM25_SOURCE = (
     "created_at",
     "acoustic_metrics",
 )
+_GET_AUDIO_BM25_SOURCE = GET_AUDIO_SOURCE_INCLUDES
 CONTENT_TAG_TYPES = ("content_form", "mechanism", "audio_engineering")
 # 检索候选只取流水线与响应组装需要的字段，避免新增索引字段被默认带回。
 SEARCH_CANDIDATE_SOURCE_INCLUDES = (
@@ -91,23 +97,59 @@ def _parse_engineering_tags(items: list[dict[str, Any]] | None) -> list[TagItem]
     return parsed
 
 
-def build_get_audio_filters(*, language: str, tag_code: str = "") -> list[dict[str, Any]]:
-    """GetAudio 两路检索共用过滤：语言、启用、可选内容形态 code。"""
+def build_get_audio_filters(
+    *,
+    tag_code: str = "",
+    content_form_codes: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """GetAudio 两路检索共用过滤：启用、可选内容形态 code（不再按请求 language 过滤）。"""
     filters: list[dict[str, Any]] = [
-        {"term": {"language": language}},
         {"term": {"status": True}},
     ]
-    code = tag_code.strip()
-    if code:
+    codes: list[str] = []
+    single = (tag_code or "").strip()
+    if single:
+        codes = [single]
+    elif content_form_codes:
+        codes = [c.strip() for c in content_form_codes if c and str(c).strip()]
+    if len(codes) == 1:
         filters.append(
             {
                 "nested": {
                     "path": "content_form_tags",
-                    "query": {"term": {"content_form_tags.code": code}},
+                    "query": {"term": {"content_form_tags.code": codes[0]}},
+                }
+            }
+        )
+    elif len(codes) > 1:
+        filters.append(
+            {
+                "nested": {
+                    "path": "content_form_tags",
+                    "query": {
+                        "bool": {
+                            "should": [
+                                {"term": {"content_form_tags.code": code}}
+                                for code in codes
+                            ],
+                            "minimum_should_match": 1,
+                        }
+                    },
                 }
             }
         )
     return filters
+
+
+def _scored_documents(
+    response: dict[str, Any], *, score_field: str
+) -> list[dict[str, Any]]:
+    docs: list[dict[str, Any]] = []
+    for hit in response.get("hits", {}).get("hits", []):
+        doc = _document_from_hit(hit)
+        doc[score_field] = float(hit.get("_score") or 0.0)
+        docs.append(doc)
+    return docs
 
 
 def _document_from_hit(hit: dict[str, Any]) -> dict[str, Any]:
@@ -152,11 +194,13 @@ class EsSearch:
         *,
         audio_index: str | None = None,
         tag_dictionary_index: str | None = None,
+        index_profile: Literal["handboard", "somni"] = "handboard",
     ) -> None:
         self._client = client
         self._settings = settings
         self._audio_index = audio_index or settings.es_audio_index
         self._tag_dictionary_index = tag_dictionary_index or settings.es_tag_vectors_index
+        self._index_profile = index_profile
         self._content_tag_vectors_cache: list[dict[str, Any]] | None = None
         self._content_tag_vectors_lock = asyncio.Lock()
         # 按 tag_id 缓存 name_vector，避免每请求 mget（内容准入模糊路径）
@@ -404,19 +448,24 @@ class EsSearch:
         language: str = "",
         include_source: bool = True,
     ) -> list[dict[str, Any]]:
-        """description_vector 语义召回；缺少向量的旧文档自然不会命中。"""
+        """描述向量语义召回；按 language 选 zh/en 字段，不按文档 language 过滤。"""
         if not query_vector or size <= 0:
             return []
 
+        vector_field = description_vector_field(
+            language,
+            override=self._settings.get_audio_description_vector_field,
+        )
         knn: dict[str, Any] = {
-            "field": "description_vector",
+            "field": vector_field,
             "query_vector": query_vector,
             "k": size,
             "num_candidates": max(size * 3, 50),
         }
-        filters = [{"term": {"status": True}}]
-        if language.strip():
-            filters.append({"term": {"language": language.strip()}})
+        filters: list[dict[str, Any]] = [
+            {"term": {"status": True}},
+            {"exists": {"field": vector_field}},
+        ]
         if sleep_stage_tags:
             filters.append(_sleep_stage_filter(sleep_stage_tags))
         knn["filter"] = {"bool": {"filter": filters}}
@@ -470,15 +519,22 @@ class EsSearch:
         self,
         *,
         size: int,
-        language: str,
+        language: str = "",
     ) -> list[dict[str, Any]]:
-        """量产 GetAudio：按 language 拉取音频（不含 embedding），供内存过滤。"""
+        """量产 GetAudio：拉取启用音频（不含向量），不再按请求 language 过滤。"""
+        del language  # 保留入参兼容旧调用
         response = await self._client.search(
             index=self.audio_index,
             body={
-                "query": {"term": {"language": language}},
+                "query": {"term": {"status": True}},
                 "size": max(1, size),
-                "_source": {"excludes": ["embedding", "description_vector"]},
+                "_source": {
+                    "excludes": [
+                        "embedding",
+                        "description_vector",
+                        "description_vector_en",
+                    ]
+                },
             },
         )
         return [_document_from_hit(hit) for hit in response["hits"]["hits"]]
@@ -489,9 +545,14 @@ class EsSearch:
         *,
         language: str,
         tag_code: str = "",
+        content_form_codes: list[str] | None = None,
         size: int,
     ) -> list[dict[str, Any]]:
-        """量产 GetAudio：按 description_text 做 BM25 检索。"""
+        """量产 GetAudio：按 description_text / description_text_en 做 BM25。
+
+        短词整句 match_phrase；长句拆成关键词 phrase（should）。
+        """
+        text_field = description_text_field(language)
         response = await self._client.search(
             index=self.audio_index,
             body={
@@ -499,19 +560,91 @@ class EsSearch:
                 "query": {
                     "bool": {
                         "filter": build_get_audio_filters(
-                            language=language,
                             tag_code=tag_code,
+                            content_form_codes=content_form_codes,
                         ),
-                        "must": [{"match_phrase": {"description_text": query_text}}],
+                        "must": [build_bm25_must_clause(text_field, query_text)],
                     }
                 },
-                "_source": {"includes": list(_GET_AUDIO_BM25_SOURCE)},
+                "_source": {"includes": list(GET_AUDIO_SOURCE_INCLUDES)},
             },
         )
-        docs = [_document_from_hit(hit) for hit in response["hits"]["hits"]]
-        for doc, hit in zip(docs, response["hits"]["hits"]):
-            doc["_bm25_score"] = float(hit.get("_score") or 0.0)
-        return docs
+        return _scored_documents(response, score_field="_bm25_score")
+
+    async def search_get_audio_knn(
+        self,
+        query_vector: list[float],
+        *,
+        language: str,
+        tag_code: str = "",
+        content_form_codes: list[str] | None = None,
+        k: int,
+        num_candidates: int,
+    ) -> list[dict[str, Any]]:
+        """量产 GetAudio：按 description_vector / description_vector_en 做 Top-K。"""
+        vector_field = description_vector_field(
+            language,
+            override=self._settings.get_audio_description_vector_field,
+        )
+        filters = build_get_audio_filters(
+            tag_code=tag_code,
+            content_form_codes=content_form_codes,
+        )
+        filters.append({"exists": {"field": vector_field}})
+        response = await self._client.search(
+            index=self.audio_index,
+            body={
+                "knn": {
+                    "field": vector_field,
+                    "query_vector": query_vector,
+                    "k": max(1, k),
+                    "num_candidates": max(1, num_candidates),
+                    "filter": filters,
+                },
+                "size": max(1, k),
+                "_source": {"includes": list(GET_AUDIO_SOURCE_INCLUDES)},
+            },
+        )
+        return _scored_documents(response, score_field="_knn_score")
+
+    async def search_get_audio_vector_all(
+        self,
+        query_vector: list[float],
+        *,
+        language: str,
+        tag_code: str = "",
+        content_form_codes: list[str] | None = None,
+        size: int,
+    ) -> list[dict[str, Any]]:
+        """量产 GetAudio：在过滤集上精确计算全部文档向量分数。"""
+        vector_field = description_vector_field(
+            language,
+            override=self._settings.get_audio_description_vector_field,
+        )
+        filters = build_get_audio_filters(
+            tag_code=tag_code,
+            content_form_codes=content_form_codes,
+        )
+        filters.append({"exists": {"field": vector_field}})
+        response = await self._client.search(
+            index=self.audio_index,
+            body={
+                "size": max(1, size),
+                "query": {
+                    "script_score": {
+                        "query": {"bool": {"filter": filters}},
+                        "script": {
+                            "source": (
+                                f"(cosineSimilarity(params.q, '{vector_field}') + 1.0) / 2"
+                            ),
+                            "params": {"q": query_vector},
+                        },
+                    }
+                },
+                "_source": {"includes": list(GET_AUDIO_SOURCE_INCLUDES)},
+            },
+        )
+        return _scored_documents(response, score_field="_knn_score")
 
     async def migrate_legacy_indices(self) -> None:
         """删除旧版 audio_materials / tag_vectors 索引。"""
@@ -521,11 +654,27 @@ class EsSearch:
                 logger.info("已删除旧版 ES 索引：{}", index)
 
     async def ensure_indices(self) -> None:
-        """启动时幂等建索引；dims 必须与 EMBEDDING_DIM 一致。"""
-        dim = self._settings.embedding_dim
+        """幂等建索引：handboard / somni 两套 mapping 完全分开。
 
-        materials_mapping = {"mappings": build_somni_audio_materials_mapping(dim)}
-        dictionary_mapping = {"mappings": build_somni_audio_tag_dictionary_mapping(dim)}
+        已有索引走 put_mapping；dense_vector.dims 不可变，冲突时跳过并打日志。
+        量产要换维须先删索引再 ensure（sync_es_from_somni 已处理标签索引）。
+        """
+        dim = self._settings.embedding_dim
+        if self._index_profile == "somni":
+            dim_en = self._settings.embedding_dim_en
+            materials_mapping = {
+                "mappings": build_somni_audio_materials_mapping(dim, dim_en)
+            }
+            dictionary_mapping = {
+                "mappings": build_somni_audio_tag_dictionary_mapping(dim, dim_en)
+            }
+        else:
+            materials_mapping = {
+                "mappings": build_handboard_audio_materials_mapping(dim)
+            }
+            dictionary_mapping = {
+                "mappings": build_handboard_audio_tag_dictionary_mapping(dim)
+            }
 
         for index, mapping in (
             (self.audio_index, materials_mapping),
@@ -534,8 +683,24 @@ class EsSearch:
             if not await self._client.indices.exists(index=index):
                 await self._client.indices.create(index=index, body=mapping)
                 logger.info("已创建 ES 索引：{}", index)
-            else:
-                await self._client.indices.put_mapping(index=index, body=mapping["mappings"])
+                continue
+            try:
+                await self._client.indices.put_mapping(
+                    index=index, body=mapping["mappings"]
+                )
+            except ApiError as exc:
+                if not _is_dense_vector_dims_conflict(exc):
+                    raise
+                logger.warning(
+                    "跳过更新 ES 映射（向量 dims 不可变，保留现有索引）：index={} err={}",
+                    index,
+                    exc.message,
+                )
+
+
+def _is_dense_vector_dims_conflict(exc: ApiError) -> bool:
+    """put_mapping 因 dense_vector.dims 与现有字段冲突而失败。"""
+    return "Cannot update parameter [dims]" in f"{exc.message} {exc}"
 
 
 def _sleep_stage_filter(sleep_stage_tags: list[str]) -> dict[str, Any]:

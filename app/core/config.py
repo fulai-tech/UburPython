@@ -5,8 +5,9 @@
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Optional
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -97,12 +98,32 @@ class Settings(BaseSettings):
     sim_threshold: float = 0.7  # 内容形态向量模糊命中阈值（规范 §五-2）
     # GetAudio query_text 与内容形态标签（含二级）向量相似度下限
     get_audio_root_tag_sim_threshold: float = 0.75
-    # 有 query_text 时，标签向量路与 description_text BM25 路用 RRF 合并
+    # 有 query_text 时：BM25（混合文本）+ knn（混合向量）RRF 合并
+    get_audio_search_top_k: int = 30
     get_audio_bm25_enabled: bool = True
     get_audio_bm25_size: int = 50
+    get_audio_vector_enabled: bool = True
     get_audio_rrf_k: int = 60
+    get_audio_knn_k: int = 50
+    get_audio_knn_num_candidates: int = 150
+    # ES knn _score=(1+cosine)/2；0.79 ≈ 真实余弦 0.58，过滤弱语义邻居
+    get_audio_min_vector_score: float = 0.79
+    get_audio_min_bm25_score: float = 0.0
+    get_audio_score_cliff_ratio: float = 0.97
+    get_audio_score_cliff_ratio_zh: Optional[float] = None
+    get_audio_score_cliff_ratio_en: Optional[float] = None
+    get_audio_color_noise_mutex_enabled: bool = True
+    # knn 向量字段覆盖；空=按检索语言选 description_vector / description_vector_en
+    get_audio_description_vector_field: str = ""
     # 问卷自定义输入：描述向量得分不低于最高分的该比例才进入优先组，不按条数截断
     get_audio_preference_score_ratio: float = 0.945
+    # 问卷「不喜欢」对音频描述向量：余弦不低于下限，且与该词最高分相差不超过 margin
+    get_audio_dislike_desc_sim_floor: float = 0.65
+    get_audio_dislike_desc_sim_margin: float = 0.06
+    # 问卷「不喜欢」对标签名向量：不低于根标签阈值，且与最高分相差不超过 margin
+    get_audio_dislike_tag_sim_margin: float = 0.06
+    # 描述命中音频身上的二级标签，名字与该词相似度不低于此值时，挂这个标签的音频一起排到最后
+    get_audio_dislike_tag_spread_sim: float = 0.60
     # 多路文本检索厌恶硬剔除阈值；≥ 该值 penalty=1.0 丢弃候选
     strong_dislike_sim_threshold: float = 0.85
     search_sleep_stage_filter_enabled: bool = True  # 检索步骤 1 是否按睡眠阶段过滤
@@ -110,17 +131,29 @@ class Settings(BaseSettings):
 
     embedding_backend: str = "onnx"  # onnx | torch | qwen_api（DashScope/OpenAI 兼容）
     embedding_model: str = "BAAI/bge-small-zh-v1.5"
-    embedding_dim: int = 512  # 与 ES dense_vector.dims 一致
-    embedding_onnx_dir: str = "models/onnx/bge-small-zh-v1.5"
-    # 英文自由输入对标签英文名。空则用中文模型目录同级的 bge-small-en-v1.5-int8。
-    embedding_onnx_dir_en: str = ""
+    embedding_dim: int = 512  # zh；与 ES description_vector.dims 一致
+    embedding_dim_en: int = 384  # en；与 ES description_vector_en.dims 一致
+    embedding_onnx_dir: str = "models/onnx/bge-small-zh-v1.5-int8"
+    # 英文混合向量 / 英文标签名。空则用中文模型目录同级的 bge-small-en-v1.5-int8。
+    embedding_onnx_dir_en: str = "models/onnx/bge-small-en-v1.5-int8"
     dashscope_api_key: str = ""
     dashscope_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     embedding_api_timeout_sec: float = 30.0
     embedding_api_batch_size: int = 10
     embedding_text_cache_size: int = 4096  # 请求侧文本→向量 LRU，降低重复 ONNX
-    embedding_onnx_pool_size: int = 4  # ONNX InferenceSession 池大小，提高并发 encode
+    embedding_onnx_pool_size: int = 1  # ONNX InferenceSession 池；1=省内存串行，>1 提高并发但倍增模型内存
     embedding_onnx_intra_op_threads: int = 1  # 单 session 内线程数；池化后宜保持较小避免 CPU 过订阅
+
+    @field_validator(
+        "get_audio_score_cliff_ratio_zh",
+        "get_audio_score_cliff_ratio_en",
+        mode="before",
+    )
+    @classmethod
+    def _empty_optional_float(cls, value: object) -> object:
+        if value is None or value == "":
+            return None
+        return value
 
     log_level: str = "INFO"
     log_dir: str = "logs"
@@ -161,6 +194,21 @@ class Settings(BaseSettings):
     default_page_size: int = 20
     max_page_size: int = 200
     fetch_all_hard_limit: int = 5000
+
+    def resolve_get_audio_score_cliff_ratio(self, language: str) -> float:
+        """按检索语言解析断崖；zh/en 覆盖未设时回退 get_audio_score_cliff_ratio。"""
+        lang = (language or "").strip().lower()
+        if lang.startswith("zh") and self.get_audio_score_cliff_ratio_zh is not None:
+            return float(self.get_audio_score_cliff_ratio_zh)
+        if lang.startswith("en") and self.get_audio_score_cliff_ratio_en is not None:
+            return float(self.get_audio_score_cliff_ratio_en)
+        return float(self.get_audio_score_cliff_ratio)
+
+    def resolve_embedding_onnx_dir_en(self) -> str:
+        directory = self.embedding_onnx_dir_en.strip()
+        if directory:
+            return directory
+        return str(Path(self.embedding_onnx_dir).parent / "bge-small-en-v1.5-int8")
 
     @property
     def embedding_onnx_path(self) -> Path:

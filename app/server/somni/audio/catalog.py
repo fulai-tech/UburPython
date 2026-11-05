@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import math
-from dataclasses import dataclass
+import re
 from typing import Any
 
 from loguru import logger
@@ -31,18 +31,24 @@ from app.core.config import Settings
 from app.core.exceptions import AppError, EncoderNotReadyError
 from app.embedding.encoder import Encoder
 from app.es.search import EsSearch
+from app.es.somni_docs import resolve_query_language, resolve_search_language
 from app.schemas.audio import SearchAudioRequest
 from app.server.somni.audio.hot import HotTracker, normalize_tag_code
-from app.server.somni.audio.segment import segment_dislike_text, segment_dislike_text_en
+from app.server.somni.audio.relevance_filter import (
+    apply_lane_relevance_filters,
+    detect_color_noise_intents,
+    diversify_multi_color_noise,
+    filter_conflicting_color_noise,
+)
+from app.server.somni.audio.rrf import rrf_merge
+from app.server.somni.audio.segment import (
+    segment_dislike_phrases,
+    segment_dislike_text,
+    segment_dislike_text_en,
+)
 
 _TAG_ENABLED = "启用"
 _CONTENT_FORM = "content_form"
-
-
-@dataclass(frozen=True)
-class _MatchedContentTags:
-    ids: set[str]
-    codes: set[str]
 
 
 class InvalidAudioQueryError(AppError):
@@ -58,7 +64,6 @@ class AudioCatalogService:
         *,
         es_search: EsSearch | None = None,
         encoder: Encoder | None = None,
-        encoder_en: Encoder | None = None,
         hot: HotTracker | None = None,
         retrieval: Any | None = None,
         redis: Any | None = None,
@@ -67,7 +72,6 @@ class AudioCatalogService:
         self._settings = settings
         self._es_search = es_search
         self._encoder = encoder
-        self._encoder_en = encoder_en
         self._hot = hot
         self._content_form_tag_bank_cache: list[dict[str, Any]] | None = None
         self._retrieval = retrieval
@@ -124,34 +128,25 @@ class AudioCatalogService:
             ) from exc
         pref = preference_text.strip()
         dislike = dislike_text.strip()
-        # 暂时：zh / en 都走中文目录、中文标签和中文检索。
-        language = "zh"
-        # 搜索词走原检索，不套问卷偏好。分类筛选仍保留偏好排序。
-        if text:
-            codes = []
-            pref = ""
-            dislike = ""
-        # 列表、标签筛选和搜索词都读量产 ES，避免 Mongo 与 ES 各看一批音频。
-        docs = await self._load_audios(from_es=True, language=language)
+        language = resolve_search_language(language)
+        # 有搜索词：ES 双路（BM25 混合文本 + knn 混合向量），不套问卷偏好。
+        if text and self._search_path_enabled():
+            return await self._get_audio_hybrid_search(
+                text=text,
+                tag_code=code,
+                language=language,
+                fetch_all=fetch_all,
+                page=page,
+                page_size=page_size,
+            )
+        # 列表 / 标签筛选：读全量启用音频，再按请求 language 软过滤（空串或同语言）。
+        docs = await self._load_audios(from_es=True, language="all")
+        catalog_size = len(docs)
+        docs = _filter_docs_by_request_language(docs, language)
         hot_tag_codes: set[str] = set()
         if code:
             docs = [doc for doc in docs if _has_content_form_code(doc, code)]
             hot_tag_codes.add(code)
-        if text:
-            matched = await self._content_form_tags_by_text(text, language=language)
-            tag_docs = [doc for doc in docs if _has_content_form_tag_id(doc, matched.ids)]
-            hot_tag_codes |= matched.codes
-            bm25_docs = await self._bm25_audio_docs(
-                text,
-                language=language,
-                tag_code=code,
-                fetch_all=fetch_all,
-            )
-            docs = _rrf_merge_docs(
-                tag_docs,
-                bm25_docs,
-                k=self._settings.get_audio_rrf_k,
-            )
         preferred_ids: set[str] = set()
         if codes or pref:
             preferred_ids = await self._preferred_audio_ids(
@@ -160,9 +155,16 @@ class AudioCatalogService:
                 preference_text=pref,
             )
             docs = _order_preferred_then_rest(docs, preferred_ids)
-        docs = _move_disliked_to_end(docs, await self._disliked_audio_ids(docs, dislike))
+        disliked_ids = await self._disliked_audio_ids(
+            docs,
+            dislike,
+            catalog_size=catalog_size,
+        )
+        docs = _move_disliked_to_end(docs, disliked_ids)
         payload = _paginate_docs(docs, page, page_size, fetch_all, self._settings)
-        payload["list"] = [_to_audio_list_item(item, language=language) for item in payload["list"]]
+        payload["list"] = [
+            _to_audio_list_item(item, language=language) for item in payload["list"]
+        ]
         self._schedule_hot(
             query_text,
             language,
@@ -170,6 +172,243 @@ class AudioCatalogService:
             tag_codes=hot_tag_codes,
         )
         return payload
+
+    def _search_path_enabled(self) -> bool:
+        return (
+            self._settings.get_audio_vector_enabled
+            or self._settings.get_audio_bm25_enabled
+        )
+
+    async def _get_audio_hybrid_search(
+        self,
+        *,
+        text: str,
+        tag_code: str,
+        language: str,
+        fetch_all: bool,
+        page: int | None,
+        page_size: int | None,
+    ) -> dict[str, Any]:
+        es_search = self._require_es_search()
+        # 检索字段/模型按输入文字语种；请求 language 只做可见性与展示
+        query_language = resolve_query_language(text, language)
+        query_vector, degraded = await self._prepare_search_inputs(
+            text, language=query_language
+        )
+        bm25_docs, vector_docs, lane_degraded = await self._search_candidates(
+            es_search=es_search,
+            text=text,
+            query_vector=query_vector,
+            tag_code=tag_code,
+            language=query_language,
+            fetch_all=fetch_all,
+        )
+        for lane in lane_degraded:
+            if lane not in degraded:
+                degraded.append(lane)
+        self._raise_if_all_lanes_failed(degraded)
+        bm25_docs = _filter_docs_by_request_language(bm25_docs, language)
+        vector_docs = _filter_docs_by_request_language(vector_docs, language)
+        color_intents = detect_color_noise_intents(text)
+        multi_color = len(color_intents) >= 2
+        cliff_ratio = self._settings.resolve_get_audio_score_cliff_ratio(query_language)
+        # 多色：按色分别断崖，避免一色顶分把另一色整段砍掉
+        lane_intents = color_intents if multi_color else None
+        bm25_docs = apply_lane_relevance_filters(
+            bm25_docs,
+            score_field="_bm25_score",
+            min_score=self._settings.get_audio_min_bm25_score,
+            cliff_ratio=cliff_ratio,
+            color_intents=lane_intents,
+        )
+        vector_docs = apply_lane_relevance_filters(
+            vector_docs,
+            score_field="_knn_score",
+            min_score=self._settings.get_audio_min_vector_score,
+            cliff_ratio=cliff_ratio,
+            color_intents=lane_intents,
+        )
+        merged_docs = _merge_hybrid_search_documents(
+            bm25_docs,
+            vector_docs,
+            rrf_k=self._settings.get_audio_rrf_k,
+        )
+        if multi_color:
+            merged_docs = diversify_multi_color_noise(
+                merged_docs,
+                query_text=text,
+                per_color=2,
+            )
+        elif self._settings.get_audio_color_noise_mutex_enabled:
+            merged_docs = filter_conflicting_color_noise(
+                merged_docs,
+                query_text=text,
+            )
+        mapped = [_map_material(doc) for doc in merged_docs]
+        if not fetch_all:
+            mapped = mapped[: self._settings.get_audio_search_top_k]
+        payload = _paginate_docs(mapped, page, page_size, fetch_all, self._settings)
+        payload["list"] = [
+            _to_audio_list_item(item, language=language) for item in payload["list"]
+        ]
+        self._schedule_hot(
+            text,
+            language,
+            int(payload.get("total") or 0),
+            tag_codes={tag_code} if tag_code else set(),
+        )
+        if degraded:
+            payload["degraded"] = list(degraded)
+        return payload
+
+    async def _prepare_search_inputs(
+        self, text: str, *, language: str
+    ) -> tuple[list[float] | None, list[str]]:
+        degraded: list[str] = []
+        query_vector, encode_failed = await self._encode_query_if_needed(
+            text, language=language
+        )
+        if encode_failed:
+            degraded.append("vector")
+        return query_vector, degraded
+
+    async def _encode_query_if_needed(
+        self, text: str, *, language: str
+    ) -> tuple[list[float] | None, bool]:
+        if not self._settings.get_audio_vector_enabled:
+            return None, False
+        try:
+            vector = await self._require_encoder().encode_one(text, language=language)
+            return vector, False
+        except Exception as exc:  # noqa: BLE001 — 编码失败不阻断 BM25
+            logger.warning("GetAudio 向量编码失败，降级跳过 knn：{}", exc)
+            return None, True
+
+    def _require_encoder(self) -> Encoder:
+        if self._encoder is None or not self._encoder.is_loaded:
+            raise EncoderNotReadyError()
+        return self._encoder
+
+    def _require_es_search(self) -> EsSearch:
+        if self._es_search is None:
+            raise AppError(
+                message="Elasticsearch 未就绪，无法按搜索词查询音频",
+                status_code=HttpStatus.SERVICE_UNAVAILABLE,
+            )
+        return self._es_search
+
+    async def _search_candidates(
+        self,
+        *,
+        es_search: EsSearch,
+        text: str,
+        query_vector: list[float] | None,
+        tag_code: str,
+        language: str,
+        fetch_all: bool,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
+        jobs: list[tuple[str, Any]] = []
+        if self._settings.get_audio_bm25_enabled:
+            jobs.append(
+                (
+                    "bm25",
+                    es_search.search_get_audio_bm25(
+                        text,
+                        language=language,
+                        tag_code=tag_code,
+                        size=self._bm25_recall_size(fetch_all),
+                    ),
+                )
+            )
+        if self._settings.get_audio_vector_enabled and query_vector is not None:
+            jobs.append(
+                (
+                    "vector",
+                    self._vector_search(
+                        es_search,
+                        query_vector,
+                        tag_code=tag_code,
+                        language=language,
+                        fetch_all=fetch_all,
+                    ),
+                )
+            )
+        return await self._gather_search_jobs(jobs)
+
+    def _bm25_recall_size(self, fetch_all: bool) -> int:
+        if fetch_all:
+            return self._settings.fetch_all_hard_limit
+        return max(
+            self._settings.get_audio_search_top_k,
+            self._settings.get_audio_knn_k,
+            self._settings.get_audio_bm25_size,
+        )
+
+    def _vector_search(
+        self,
+        es_search: EsSearch,
+        query_vector: list[float],
+        *,
+        tag_code: str,
+        language: str,
+        fetch_all: bool,
+    ):
+        if fetch_all:
+            return es_search.search_get_audio_vector_all(
+                query_vector,
+                language=language,
+                tag_code=tag_code,
+                size=self._settings.fetch_all_hard_limit,
+            )
+        return es_search.search_get_audio_knn(
+            query_vector,
+            language=language,
+            tag_code=tag_code,
+            k=self._settings.get_audio_knn_k,
+            num_candidates=self._settings.get_audio_knn_num_candidates,
+        )
+
+    async def _gather_search_jobs(
+        self,
+        jobs: list[tuple[str, Any]],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
+        if not jobs:
+            return [], [], []
+        results = await asyncio.gather(
+            *(coro for _, coro in jobs),
+            return_exceptions=True,
+        )
+        bm25_docs: list[dict[str, Any]] = []
+        vector_docs: list[dict[str, Any]] = []
+        degraded: list[str] = []
+        for (kind, _), result in zip(jobs, results):
+            if isinstance(result, BaseException):
+                logger.warning("GetAudio {} 检索失败，单路降级：{}", kind, result)
+                degraded.append(kind)
+                continue
+            if kind == "bm25":
+                bm25_docs = result
+            else:
+                vector_docs = result
+        return bm25_docs, vector_docs, degraded
+
+    def _raise_if_all_lanes_failed(self, degraded: list[str]) -> None:
+        want_bm25 = self._settings.get_audio_bm25_enabled
+        want_vector = self._settings.get_audio_vector_enabled
+        bm25_ok = want_bm25 and "bm25" not in degraded
+        vector_ok = want_vector and "vector" not in degraded
+        if bm25_ok or vector_ok:
+            return
+        if want_bm25 and want_vector:
+            message = "音频检索暂不可用：BM25 与向量均失败"
+        elif want_bm25:
+            message = "音频检索暂不可用：BM25 失败"
+        else:
+            message = "音频检索暂不可用：向量检索失败"
+        raise AppError(
+            message=message,
+            status_code=HttpStatus.SERVICE_UNAVAILABLE,
+        )
 
     async def _preferred_audio_ids(
         self,
@@ -191,14 +430,138 @@ class AudioCatalogService:
         preferred.update(_audio_ids_for_tag_ids(docs, tag_ids))
         return preferred
 
-    async def _disliked_audio_ids(self, docs: list[dict[str, Any]], dislike_text: str) -> set[str]:
-        """讨厌的自由输入同样分词后对标签名向量，命中的音频排到最后。"""
-        if not dislike_text.strip():
+    async def _disliked_audio_ids(
+        self,
+        docs: list[dict[str, Any]],
+        dislike_text: str,
+        *,
+        catalog_size: int,
+    ) -> set[str]:
+        """讨厌的自由输入按短语切词，命中的音频排到最后。
+
+        中文词各自并发：标签名向量（只取与最高分接近的标签）、音频描述向量，
+        以及描述命中音频身上、名字也和这个词相近的二级标签。
+        另有音频名和标签名的字面匹配；英文词只对标签英文名向量。
+        """
+        if not dislike_text.strip() or not docs:
             return set()
-        return _audio_ids_for_tag_ids(docs, await self._free_text_tag_ids(dislike_text))
+        try:
+            tags = await self._content_form_tag_bank()
+        except Exception as exc:  # noqa: BLE001 — 厌恶排序失败不阻断目录
+            logger.warning("厌恶输入读取标签向量失败：{}", exc)
+            tags = []
+        vocabulary = [
+            part
+            for tag in tags
+            for part in re.split(r"[/／、()（）\s-]+", str(tag.get("display_name") or ""))
+        ]
+        han_words = _han_words(segment_dislike_phrases(dislike_text, vocabulary))
+        en_words = segment_dislike_text_en(dislike_text)
+        threshold = self._settings.get_audio_root_tag_sim_threshold
+        margin = self._settings.get_audio_dislike_tag_sim_margin
+        found = _audio_ids_by_literal(docs, han_words)
+        if en_words and tags:
+            en_tag_ids = await self._tag_ids_for_words(
+                tags,
+                en_words,
+                self._encoder,
+                "vector_en",
+                threshold,
+                margin=margin,
+                language="en",
+            )
+            found |= _audio_ids_for_tag_ids(docs, en_tag_ids)
+        if not han_words:
+            return found
+        if self._encoder is None or not self._encoder.is_loaded:
+            logger.warning("厌恶输入未做中文向量：编码器未就绪")
+            return found
+        # ES knn 的 num_candidates 上限 10000，检索侧按 size 的 3 倍取候选
+        size = max(1, min(catalog_size, 3000))
+        per_word = await asyncio.gather(
+            *(
+                self._disliked_ids_for_word(docs, tags, word, size=size)
+                for word in han_words
+            )
+        )
+        for ids in per_word:
+            found |= ids
+        return found
+
+    async def _disliked_ids_for_word(
+        self,
+        docs: list[dict[str, Any]],
+        tags: list[dict[str, Any]],
+        word: str,
+        *,
+        size: int,
+    ) -> set[str]:
+        # 中文 dislike 词固定走中文模型/字段，与请求 language 无关
+        try:
+            query = await self._encoder.encode_one(word, language="zh")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("厌恶输入词向量失败：{}", exc)
+            return set()
+        tag_scores = _tag_scores_for_language(tags, query, "zh")
+        found = _audio_ids_for_tag_ids(
+            docs,
+            _tag_ids_near_top(
+                tag_scores,
+                self._settings.get_audio_root_tag_sim_threshold,
+                self._settings.get_audio_dislike_tag_sim_margin,
+            ),
+        )
+        described = await self._audio_ids_by_description(
+            docs, query, language="zh", size=size
+        )
+        found |= described
+        spread = _spread_tag_ids(
+            docs,
+            described,
+            tags,
+            tag_scores,
+            self._settings.get_audio_dislike_tag_spread_sim,
+        )
+        found |= _audio_ids_for_tag_ids(docs, spread)
+        return found
+
+    async def _audio_ids_by_description(
+        self,
+        docs: list[dict[str, Any]],
+        query: list[float],
+        *,
+        language: str,
+        size: int,
+    ) -> set[str]:
+        """词向量对音频描述向量，取不低于下限、且与最高分足够接近的音频。"""
+        if self._es_search is None:
+            return set()
+        try:
+            hits = await self._es_search.search_by_description_vector(
+                query,
+                sleep_stage_tags=[],
+                size=size,
+                language=language,
+                include_source=False,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("厌恶输入描述向量检索失败：{}", exc)
+            return set()
+        # ES cosine 相似度的 _score 为 (1 + cos) / 2
+        scored = [
+            (2 * float(hit.get("_description_score") or 0.0) - 1, str(hit.get("_id") or ""))
+            for hit in hits
+        ]
+        if not scored:
+            return set()
+        floor = self._settings.get_audio_dislike_desc_sim_floor
+        margin = self._settings.get_audio_dislike_desc_sim_margin
+        cutoff = max(floor, max(score for score, _ in scored) - margin)
+        doc_ids = {str(doc.get("id") or "") for doc in docs}
+        return {audio_id for score, audio_id in scored if score >= cutoff and audio_id in doc_ids}
 
     async def _free_text_tag_ids(self, text: str) -> set[str]:
-        """每个词单独编码。中文对标签中文名向量，英文对英文模型现算的英文名向量。"""
+        """每个词单独编码。中文对标签中文名向量，英文对标签英文名向量。"""
         han_words = _han_words(segment_dislike_text(text))
         en_words = segment_dislike_text_en(text)
         if not han_words and not en_words:
@@ -214,17 +577,24 @@ class AudioCatalogService:
         matched: set[str] = set()
         if han_words:
             matched.update(
-                await self._tag_ids_for_words(tags, han_words, self._encoder, "vector", threshold)
+                await self._tag_ids_for_words(
+                    tags,
+                    han_words,
+                    self._encoder,
+                    "vector",
+                    threshold,
+                    language="zh",
+                )
             )
         if en_words:
-            await self._fill_english_name_vectors(tags)
             matched.update(
                 await self._tag_ids_for_words(
                     tags,
                     en_words,
-                    self._encoder_en,
-                    "vector_en_model",
+                    self._encoder,
+                    "vector_en",
                     threshold,
+                    language="en",
                 )
             )
         return matched
@@ -236,20 +606,24 @@ class AudioCatalogService:
         encoder: Encoder | None,
         vector_field: str,
         threshold: float,
+        *,
+        margin: float | None = None,
+        language: str = "zh",
     ) -> set[str]:
         if encoder is None or not encoder.is_loaded:
             logger.warning(
-                "自由输入未做{}向量：编码器未就绪", "英文" if vector_field != "vector" else "中文"
+                "自由输入未做{}向量：编码器未就绪", "英文" if language == "en" else "中文"
             )
             return set()
         matched: set[str] = set()
         for word in words:
             try:
-                query = await encoder.encode_one(word)
+                query = await encoder.encode_one(word, language=language)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("自由输入词向量失败：{}", exc)
                 continue
-            matched.update(_tag_ids_at_least(tags, query, vector_field, threshold))
+            scores = _tag_scores(tags, query, vector_field)
+            matched.update(_tag_ids_near_top(scores, threshold, margin))
         return matched
 
     async def _content_form_tag_bank(self) -> list[dict[str, Any]]:
@@ -261,24 +635,6 @@ class AudioCatalogService:
         bank = [dict(tag) for tag in raw if isinstance(tag, dict) and _is_content_form_dict(tag)]
         self._content_form_tag_bank_cache = bank
         return bank
-
-    async def _fill_english_name_vectors(self, tags: list[dict[str, Any]]) -> None:
-        """库里的 name_en_vector 是中文模型的 512 维，不能和英文模型比。按英文名现算 384 维。"""
-        encoder = self._encoder_en
-        if encoder is None or not encoder.is_loaded:
-            return
-        for tag in tags:
-            if "vector_en_model" in tag:
-                continue
-            name_en = str(tag.get("name_en") or "").strip()
-            if not name_en:
-                tag["vector_en_model"] = []
-                continue
-            try:
-                tag["vector_en_model"] = await encoder.encode_one(name_en)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("英文标签名向量失败：{}", exc)
-                tag["vector_en_model"] = []
 
     async def search_audio(self, request: SearchAudioRequest) -> list[dict[str, Any]]:
         """与 POST /api/audio/search 相同的检索流水线，数据源是量产 ES。"""
@@ -472,7 +828,7 @@ class AudioCatalogService:
                 f"量产音频索引不存在：{self._es_search.audio_index}，"
                 "请先运行 scripts/sync_es_from_somni.py 同步数据"
             )
-        language = "zh"
+        language = "all"
         raw = await self._fetch_audios_es(language)
         docs = [_map_material(doc) for doc in raw]
         written = await self._catalog_cache.set(from_es=True, language=language, docs=docs)
@@ -506,8 +862,9 @@ class AudioCatalogService:
             return docs
 
     async def _fetch_audios_mongo(self, language: str) -> list[dict[str, Any]]:
+        del language  # 目录不再按请求 language 过滤
         collection = self._materials()
-        query = {"language": language}
+        query = {"status": True}
         limit = self._settings.fetch_all_hard_limit + 1
         cursor = collection.find(query, _AUDIO_LIST_PROJECTION, limit=limit)
         docs = [bson_to_jsonable(doc) async for doc in cursor]
@@ -526,70 +883,6 @@ class AudioCatalogService:
         )
         self._reject_over_limit(len(docs))
         return docs
-
-    async def _bm25_audio_docs(
-        self,
-        text: str,
-        *,
-        language: str,
-        tag_code: str,
-        fetch_all: bool,
-    ) -> list[dict[str, Any]]:
-        if not self._settings.get_audio_bm25_enabled or self._es_search is None:
-            return []
-        size = (
-            self._settings.fetch_all_hard_limit if fetch_all else self._settings.get_audio_bm25_size
-        )
-        raw = await self._es_search.search_get_audio_bm25(
-            text,
-            language=language,
-            tag_code=tag_code,
-            size=size,
-        )
-        return [_map_material(doc) for doc in raw]
-
-    async def _content_form_tags_by_text(
-        self,
-        text: str,
-        *,
-        language: str,
-    ) -> _MatchedContentTags:
-        if self._encoder is None or not self._encoder.is_loaded:
-            raise EncoderNotReadyError()
-        if self._es_search is None:
-            raise AppError(
-                message="Elasticsearch 未就绪，无法按搜索词匹配标签",
-                status_code=HttpStatus.SERVICE_UNAVAILABLE,
-            )
-        query_vector = await self._encoder.encode_one(text)
-        tags = await self._es_search.list_content_tag_vectors()
-        threshold = self._settings.get_audio_root_tag_sim_threshold
-        scored: list[tuple[float, str]] = []
-        lexical_ids: set[str] = set()
-        id_to_code: dict[str, str] = {}
-        for tag in tags:
-            if not _is_content_form_dict(tag):
-                continue
-            tag_id = str(tag.get("id") or "").strip()
-            if not tag_id:
-                continue
-            code = str(tag.get("code") or "").strip()
-            if code:
-                id_to_code[tag_id] = code
-            if _lexical_match_content_tag(tag, text):
-                lexical_ids.add(tag_id)
-            vector = _tag_vector_for_language(tag, language)
-            if not isinstance(vector, list) or not vector:
-                continue
-            sim = _cosine_similarity(query_vector, vector)
-            if sim <= threshold:
-                continue
-            scored.append((sim, tag_id))
-        matched_ids = lexical_ids | _select_matched_tag_ids(scored)
-        return _MatchedContentTags(
-            ids=matched_ids,
-            codes={id_to_code[i] for i in matched_ids if i in id_to_code},
-        )
 
     def _tags(self) -> AsyncIOMotorCollection:
         return self._db()[self._settings.somni_mongo_tag_dictionary_collection]
@@ -611,50 +904,57 @@ class AudioCatalogService:
             raise InvalidAudioQueryError(f"全量条数超过上限 {limit}")
 
 
-def _rrf_merge_docs(
-    tag_docs: list[dict[str, Any]],
+def _merge_hybrid_search_documents(
     bm25_docs: list[dict[str, Any]],
+    vector_docs: list[dict[str, Any]],
     *,
-    k: int,
+    rrf_k: int,
 ) -> list[dict[str, Any]]:
-    """标签向量路与 BM25 路按名次融合。一路为空时保留另一路原顺序。"""
-    if not bm25_docs:
-        return tag_docs
-    if not tag_docs:
-        return bm25_docs
-    scores: dict[str, float] = {}
-    for docs in (tag_docs, bm25_docs):
-        for rank, doc in enumerate(docs, start=1):
-            doc_id = str(doc.get("id") or doc.get("_id") or "")
-            if not doc_id:
-                continue
-            scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (k + rank)
-    by_id: dict[str, dict[str, Any]] = {}
-    for doc in (*tag_docs, *bm25_docs):
-        doc_id = str(doc.get("id") or doc.get("_id") or "")
-        if doc_id and doc_id not in by_id:
-            by_id[doc_id] = doc
-    ranked = sorted(scores.items(), key=lambda item: (-item[1], item[0]))
-    return [by_id[doc_id] for doc_id, _score in ranked if doc_id in by_id]
+    ranked_ids = [_hybrid_document_ids(bm25_docs), _hybrid_document_ids(vector_docs)]
+    merged = rrf_merge(ranked_ids, k=rrf_k)
+    docs_by_id: dict[str, dict[str, Any]] = {}
+    for doc in bm25_docs:
+        doc_id = _hybrid_document_id(doc)
+        if not doc_id:
+            continue
+        docs_by_id[doc_id] = dict(doc)
+    for doc in vector_docs:
+        doc_id = _hybrid_document_id(doc)
+        if not doc_id:
+            continue
+        existing = docs_by_id.get(doc_id)
+        if existing is None:
+            docs_by_id[doc_id] = dict(doc)
+            continue
+        if "_knn_score" in doc:
+            existing["_knn_score"] = doc["_knn_score"]
+        if "_bm25_score" in doc and "_bm25_score" not in existing:
+            existing["_bm25_score"] = doc["_bm25_score"]
+    return [
+        {**docs_by_id[doc_id], "_rrf_score": rrf_score}
+        for doc_id, rrf_score in merged
+        if doc_id in docs_by_id
+    ]
 
 
-def _select_matched_tag_ids(scored: list[tuple[float, str]]) -> set[str]:
-    """保留高分标签；近精确命中时收紧范围，避免宽泛根标签稀释结果。"""
-    if not scored:
-        return set()
-    best = max(sim for sim, _ in scored)
-    if best >= 0.9:
-        return {tag_id for sim, tag_id in scored if sim >= best - 0.05}
-    return {tag_id for _, tag_id in scored}
+def _hybrid_document_ids(docs: list[dict[str, Any]]) -> list[str]:
+    return [doc_id for doc in docs if (doc_id := _hybrid_document_id(doc))]
+
+
+def _hybrid_document_id(doc: dict[str, Any]) -> str:
+    return str(doc.get("_id") or doc.get("id") or "")
 
 
 _AUDIO_LIST_PROJECTION = {
     "audio_name": 1,
+    "audio_name_en": 1,
     "audio_url": 1,
     "cover_url": 1,
     "description": 1,
     "short_description": 1,
+    "short_description_en": 1,
     "vip": 1,
+    "language": 1,
     "content_form_tags": 1,
     "acoustic_metrics": 1,
     "created_at": 1,
@@ -729,25 +1029,54 @@ def _map_material(doc: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": str(doc.get("id") or doc.get("_id") or ""),
         "audio_name": str(doc.get("audio_name") or ""),
+        "audio_name_en": str(doc.get("audio_name_en") or ""),
         "audio_url": str(doc.get("audio_url") or ""),
         "cover_url": str(doc.get("cover_url") or ""),
         "description": str(doc.get("description") or ""),
         "short_description": str(doc.get("short_description") or ""),
+        "short_description_en": str(doc.get("short_description_en") or ""),
         "vip": _to_vip(doc.get("vip")),
+        "language": str(doc.get("language") or ""),
         "content_form_tags": doc.get("content_form_tags") or [],
         "acoustic_metrics": _acoustic_metrics(doc.get("acoustic_metrics")),
         "created_at": doc.get("created_at") or doc.get("create_time") or "",
     }
 
 
+def _doc_language(doc: dict[str, Any]) -> str:
+    """归一化文档 language；缺失 / null / 空串 / 字面 None|null 视为无语言。"""
+    raw = doc.get("language")
+    if raw is None:
+        return ""
+    text = str(raw).strip()
+    if text in {"", "None", "null", "NULL"}:
+        return ""
+    return text
+
+
+def _filter_docs_by_request_language(
+    docs: list[dict[str, Any]],
+    language: str,
+) -> list[dict[str, Any]]:
+    """只保留 language 为空/null，或与请求 language 相同的文档（路径 A/B 共用）。"""
+    wanted = resolve_search_language(language)
+    return [
+        doc
+        for doc in docs
+        if (doc_lang := _doc_language(doc)) == "" or doc_lang == wanted
+    ]
+
+
 def _to_audio_list_item(doc: dict[str, Any], *, language: str) -> dict[str, Any]:
     return {
         "id": str(doc.get("id") or ""),
         "audio_name": str(doc.get("audio_name") or ""),
+        "audio_name_en": str(doc.get("audio_name_en") or ""),
         "audio_url": str(doc.get("audio_url") or ""),
         "cover_url": str(doc.get("cover_url") or ""),
         # 量产列表展示用短描述，写入 description 出参（不单独返回 short_description）
         "description": str(doc.get("short_description") or ""),
+        "description_en": str(doc.get("short_description_en") or ""),
         "vip": _to_vip(doc.get("vip")),
         "tag": _map_audio_tags(doc.get("content_form_tags"), language=language),
         "is_voice": _is_voice(doc.get("acoustic_metrics")),
@@ -808,7 +1137,7 @@ def _to_vip(value: Any) -> int:
 
 
 def _tag_vector_for_language(tag: dict[str, Any], language: str) -> list[float] | None:
-    """en 优先 name_en_vector，zh 优先 name_vector；缺省回退另一侧。"""
+    """en 优先 vector_en，zh 优先 vector；缺省回退另一侧。"""
     primary = "vector_en" if language == "en" else "vector"
     fallback = "vector" if language == "en" else "vector_en"
     for key in (primary, fallback):
@@ -816,23 +1145,6 @@ def _tag_vector_for_language(tag: dict[str, Any], language: str) -> list[float] 
         if isinstance(value, list) and value:
             return value
     return None
-
-
-def _lexical_match_content_tag(tag: dict[str, Any], text: str) -> bool:
-    """短英文词（如 rain）靠向量难过阈值时，用 code / 英文名词法命中。"""
-    needle = text.strip().casefold()
-    if not needle:
-        return False
-    code = str(tag.get("code") or "").strip().casefold()
-    name = str(tag.get("label") or "").strip().casefold()
-    name_en = str(tag.get("name_en") or "").strip().casefold()
-    if needle in {code, name, name_en}:
-        return True
-    if code and needle in code.split("_"):
-        return True
-    if name_en and needle in name_en.replace("/", " ").split():
-        return True
-    return False
 
 
 def _is_blank(value: Any) -> bool:
@@ -899,22 +1211,94 @@ def _audio_ids_for_tag_ids(docs: list[dict[str, Any]], tag_ids: set[str]) -> set
     return found
 
 
-def _tag_ids_at_least(
+def _audio_ids_by_literal(docs: list[dict[str, Any]], words: list[str]) -> set[str]:
+    """词直接出现在音频名或标签名里。描述常写「未检测到雷声」这类否定，不做字面匹配。"""
+    forms = {
+        form
+        for word in words
+        for form in (word, word.removesuffix("声音"), word.removesuffix("声"))
+        if len(form) >= 2
+    }
+    if not forms:
+        return set()
+    found: set[str] = set()
+    for doc in docs:
+        audio_id = str(doc.get("id") or "")
+        names = [str(doc.get("audio_name") or "")]
+        names.extend(
+            str(item.get("name") or "")
+            for item in doc.get("content_form_tags") or []
+            if isinstance(item, dict)
+        )
+        if audio_id and any(form in name for form in forms for name in names):
+            found.add(audio_id)
+    return found
+
+
+def _tag_scores(
     tags: list[dict[str, Any]],
     query: list[float],
     vector_field: str,
-    threshold: float,
-) -> set[str]:
-    matched: set[str] = set()
+) -> dict[str, float]:
+    scores: dict[str, float] = {}
     for tag in tags:
         vector = tag.get(vector_field)
-        if not isinstance(vector, list) or not vector:
-            continue
-        if _cosine(query, vector) >= threshold:
-            tag_id = str(tag.get("id") or "").strip()
-            if tag_id:
-                matched.add(tag_id)
-    return matched
+        tag_id = str(tag.get("id") or "").strip()
+        if tag_id and isinstance(vector, list) and vector:
+            scores[tag_id] = _cosine(query, vector)
+    return scores
+
+
+def _tag_scores_for_language(
+    tags: list[dict[str, Any]],
+    query: list[float],
+    language: str,
+) -> dict[str, float]:
+    """按请求 language 选标签名向量（en→vector_en，zh→vector，缺省回退）。"""
+    scores: dict[str, float] = {}
+    for tag in tags:
+        vector = _tag_vector_for_language(tag, language)
+        tag_id = str(tag.get("id") or "").strip()
+        if tag_id and isinstance(vector, list) and vector:
+            scores[tag_id] = _cosine(query, vector)
+    return scores
+
+
+def _tag_ids_near_top(
+    scores: dict[str, float],
+    threshold: float,
+    margin: float | None,
+) -> set[str]:
+    """不低于 threshold 的标签；给了 margin 时还要与最高分相差不超过 margin。"""
+    if not scores:
+        return set()
+    cutoff = threshold if margin is None else max(threshold, max(scores.values()) - margin)
+    return {tag_id for tag_id, score in scores.items() if score >= cutoff}
+
+
+def _spread_tag_ids(
+    docs: list[dict[str, Any]],
+    audio_ids: set[str],
+    tags: list[dict[str, Any]],
+    tag_scores: dict[str, float],
+    min_score: float,
+) -> set[str]:
+    """描述命中的音频身上的二级标签，名字也和这个词相近的。一级标签（如自然声）不扩散。"""
+    if not audio_ids:
+        return set()
+    roots = {str(tag.get("id") or "") for tag in tags if _is_blank(tag.get("parent_tag_id"))}
+    carried = {
+        str(item.get("tag_id") or "")
+        for doc in docs
+        if str(doc.get("id") or "") in audio_ids
+        for item in doc.get("content_form_tags") or []
+        if isinstance(item, dict)
+    }
+    return {
+        tag_id
+        for tag_id in carried
+        if tag_id and tag_id not in roots and tag_scores.get(tag_id, 0.0) >= min_score
+    }
 
 
 def _cosine(left: list[float], right: list[float]) -> float:
@@ -967,13 +1351,3 @@ def _has_content_form_tag_id(doc: dict[str, Any], tag_ids: set[str]) -> bool:
             return True
     return False
 
-
-def _cosine_similarity(left: list[float], right: list[float]) -> float:
-    if len(left) != len(right) or not left:
-        return 0.0
-    dot = sum(x * y for x, y in zip(left, right, strict=True))
-    norm_left = math.sqrt(sum(x * x for x in left))
-    norm_right = math.sqrt(sum(y * y for y in right))
-    if norm_left == 0 or norm_right == 0:
-        return 0.0
-    return dot / (norm_left * norm_right)

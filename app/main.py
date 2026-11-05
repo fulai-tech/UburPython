@@ -58,7 +58,7 @@ from app.core.config import Settings, get_settings
 from app.core.exception_handlers import register_exception_handlers
 from app.core.logging import setup_logging
 from app.core.somni_redis import create_somni_redis
-from app.embedding.encoder import Encoder, create_encoder, create_english_encoder
+from app.embedding.encoder import Encoder, LanguageRouterEncoder, create_encoder
 from app.es.client import create_es_client
 from app.es.search import EsSearch
 from app.es.search_events import SearchEventsStore
@@ -123,12 +123,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _app_state.es_client = es_client
 
     encoder = create_encoder(settings)
-    encoder_en = create_english_encoder(settings)
     if not settings.app_debug:
         encoder.load()
-        if encoder_en is not None:
-            encoder_en.load()
-    if encoder_en is None:
+    if isinstance(encoder, LanguageRouterEncoder) and not encoder.supports_english:
         logger.warning("英文标签向量模型未加载，英文自由输入不会按标签向量排序")
     _app_state.encoder = encoder
 
@@ -219,6 +216,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         settings,
         audio_index=settings.somni_es_audio_index,
         tag_dictionary_index=settings.somni_es_tag_vectors_index,
+        index_profile="somni",
     )
     somni_sleep_stage_cache = await create_sleep_stage_candidate_cache(
         settings,
@@ -238,7 +236,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         settings,
         es_search=somni_es_search,
         encoder=encoder,
-        encoder_en=encoder_en,
         hot=hot_tracker,
         retrieval=somni_retrieval,
         redis=somni_redis,

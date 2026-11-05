@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from functools import lru_cache
 from pathlib import Path
 
@@ -67,6 +68,120 @@ def segment_dislike_text(text: str) -> list[str]:
         seen.add(token)
         words.append(token)
     return words
+
+
+# 「不喜欢」整句里的连接词：在这里把一句话切成几个短语
+_PHRASE_BREAKS = frozenset({"和", "与", "跟", "或", "或者", "以及", "还有", "及"})
+
+# 短语首尾的口头语、否定和程度词，去掉后剩下的才是声音本身
+_PHRASE_EDGE_FILLERS = _FILLERS | {
+    "我",
+    "也",
+    "都",
+    "真的",
+    "特别",
+    "非常",
+    "比较",
+    "有点",
+    "不太",
+    "不要",
+    "不想",
+    "不想听",
+    "不想要",
+    "不爱",
+    "不爱听",
+    "听",
+    "怕",
+    "害怕",
+    "我怕",
+    "受不了",
+    "别",
+    "别放",
+    "避免",
+    "吵",
+    "太吵",
+    "太",
+    "声音",
+    "音频",
+}
+
+# 只说「声音」「音频」这类泛称时，不拿去匹配
+_GENERIC_SOUND_WORDS = frozenset({"声音", "声响", "音频", "东西"})
+
+# 只用默认词典，不往里加词。标签名在每次请求里现场定位，标签改名或下线立即生效。
+_phrase_tokenizer = jieba.Tokenizer()
+
+
+def _is_break_token(token: str) -> bool:
+    return token in _PHRASE_BREAKS or not re.search(r"\w", token)
+
+
+def _tokens_keeping_names(text: str, vocabulary: Iterable[str]) -> list[str]:
+    """默认分词，再把原句里完整出现的标签名合并成一个词。
+
+    标签名两端都要落在分词边界上，「流水声」里的「水声」不算。长的优先，互不重叠。
+    """
+    pieces = list(_phrase_tokenizer.tokenize(text))
+    bounds = {start for _, start, _ in pieces} | {end for _, _, end in pieces}
+    taken = [False] * len(text)
+    spans: dict[int, int] = {}
+    for name in sorted({word for word in vocabulary if len(word) >= 2}, key=len, reverse=True):
+        start = text.find(name)
+        while start != -1:
+            end = start + len(name)
+            if start in bounds and end in bounds and not any(taken[start:end]):
+                spans[start] = end
+                taken[start:end] = [True] * len(name)
+            start = text.find(name, start + 1)
+    tokens: list[str] = []
+    for word, start, _ in pieces:
+        if start in spans:
+            tokens.append(text[start : spans[start]])
+        elif not taken[start]:
+            tokens.append(word)
+    return tokens
+
+
+def segment_dislike_phrases(text: str, vocabulary: Iterable[str] = ()) -> list[str]:
+    """按连接词和标点切成短语，去掉首尾口头语。
+
+    vocabulary 是标签名，原句里完整出现的标签名当作一个词，「白噪音」「人声引导」不会被切碎。
+    四个字以内的短语整体保留；若它全由多字词组成（湖水拍打），再补上这些词。
+    切出单字的短语是复合词（滴水声→滴/水声），拆开会丢掉修饰，不补。
+    更长的短语只取多字词。
+    """
+    phrases: list[list[str]] = [[]]
+    for token in _tokens_keeping_names(text.strip(), vocabulary):
+        token = token.strip()
+        if not token or _is_break_token(token):
+            phrases.append([])
+            continue
+        phrases[-1].append(token)
+    words: list[str] = []
+    for tokens in phrases:
+        while tokens and tokens[0] in _PHRASE_EDGE_FILLERS:
+            tokens = tokens[1:]
+        while tokens and tokens[-1] in _PHRASE_EDGE_FILLERS:
+            tokens = tokens[:-1]
+        if not tokens:
+            continue
+        inner = [
+            token
+            for token in tokens
+            if len(token) >= 2 and token not in _PHRASE_EDGE_FILLERS
+        ]
+        phrase = "".join(tokens)
+        if len(phrase) > 4:
+            words.extend(inner)
+            continue
+        words.append(phrase)
+        if all(len(token) >= 2 for token in tokens):
+            words.extend(inner)
+    return [
+        word
+        for word in dict.fromkeys(words)
+        if len(word) >= 2 and word not in _GENERIC_SOUND_WORDS
+    ]
 
 
 def tags_overlapping(term: str, names: list[str]) -> list[str]:

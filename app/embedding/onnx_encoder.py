@@ -72,7 +72,10 @@ class OnnxEncoder(EncoderBase):
     def pool_size(self) -> int:
         return len(self._sessions)
 
-    async def encode(self, texts: list[str]) -> list[list[float]]:
+    async def encode(
+        self, texts: list[str], *, language: str = "zh"
+    ) -> list[list[float]]:
+        del language  # 单模型 encoder；双语路由由 LanguageRouterEncoder 处理
         if not texts:
             return []
         if not self.is_loaded:
@@ -128,6 +131,6 @@ class OnnxEncoder(EncoderBase):
         normalized = l2_normalize(pooled)
         return normalized.tolist()
 
-    async def encode_one(self, text: str) -> list[float]:
-        results = await self.encode([text])
+    async def encode_one(self, text: str, *, language: str = "zh") -> list[float]:
+        results = await self.encode([text], language=language)
         return results[0]
