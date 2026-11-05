@@ -237,8 +237,9 @@ def apply_lane_relevance_filters(
     score_field: str,
     min_score: float,
     cliff_ratio: float,
+    color_intents: list[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """先绝对门槛，再相对断崖（假定输入大致按分数降序）。"""
+    """先绝对门槛，再相对断崖；多色意图时按色分别断崖再合并。"""
     if not any(score_field in d for d in docs):
         return list(docs)
     ranked = sorted(
@@ -249,6 +250,61 @@ def apply_lane_relevance_filters(
     filtered = filter_docs_by_min_score(
         ranked, score_field=score_field, min_score=min_score
     )
+    intents = [
+        color
+        for color in (color_intents or [])
+        if color in _COLOR_NOISE_CANONICAL
+    ]
+    if len(intents) >= 2:
+        return filter_docs_by_score_cliff_per_color(
+            filtered,
+            score_field=score_field,
+            cliff_ratio=cliff_ratio,
+            color_intents=intents,
+        )
     return filter_docs_by_score_cliff(
         filtered, score_field=score_field, cliff_ratio=cliff_ratio
+    )
+
+
+def filter_docs_by_score_cliff_per_color(
+    docs: list[dict[str, Any]],
+    *,
+    score_field: str,
+    cliff_ratio: float,
+    color_intents: list[str],
+) -> list[dict[str, Any]]:
+    """
+    多色断崖：每种意图色在各自桶内相对截断后合并。
+    不保留非意图色文档（雨声等），避免垫进多色噪音结果。
+    """
+    intent_set = {
+        color for color in color_intents if color in _COLOR_NOISE_CANONICAL
+    }
+    if len(intent_set) < 2:
+        return filter_docs_by_score_cliff(
+            docs, score_field=score_field, cliff_ratio=cliff_ratio
+        )
+
+    kept: dict[str, dict[str, Any]] = {}
+    for color in color_intents:
+        if color not in intent_set:
+            continue
+        bucket = [doc for doc in docs if color in _doc_color_labels(doc)]
+        ranked = sorted(
+            bucket,
+            key=lambda d: float(d.get(score_field) or 0.0),
+            reverse=True,
+        )
+        for doc in filter_docs_by_score_cliff(
+            ranked, score_field=score_field, cliff_ratio=cliff_ratio
+        ):
+            doc_id = _doc_id(doc)
+            if doc_id:
+                kept[doc_id] = doc
+
+    return sorted(
+        kept.values(),
+        key=lambda d: float(d.get(score_field) or 0.0),
+        reverse=True,
     )

@@ -84,7 +84,6 @@ class AudioCatalogService:
         *,
         es_search: EsSearch | None = None,
         encoder: Encoder | None = None,
-        encoder_en: Encoder | None = None,
         hot: HotTracker | None = None,
         retrieval: Any | None = None,
         redis: Any | None = None,
@@ -93,7 +92,6 @@ class AudioCatalogService:
         self._settings = settings
         self._es_search = es_search
         self._encoder = encoder
-        self._encoder_en = encoder_en
         self._hot = hot
         self._content_form_tag_bank_cache: list[dict[str, Any]] | None = None
         self._retrieval = retrieval
@@ -234,20 +232,21 @@ class AudioCatalogService:
         color_intents = detect_color_noise_intents(text)
         multi_color = len(color_intents) >= 2
         cliff_ratio = self._settings.resolve_get_audio_score_cliff_ratio(query_language)
-        # 多色意图时断崖放宽，避免一色顶分把另一色整段砍掉
-        if multi_color:
-            cliff_ratio = min(cliff_ratio, 0.90)
+        # 多色：按色分别断崖，避免一色顶分把另一色整段砍掉
+        lane_intents = color_intents if multi_color else None
         bm25_docs = apply_lane_relevance_filters(
             bm25_docs,
             score_field="_bm25_score",
             min_score=self._settings.get_audio_min_bm25_score,
             cliff_ratio=cliff_ratio,
+            color_intents=lane_intents,
         )
         vector_docs = apply_lane_relevance_filters(
             vector_docs,
             score_field="_knn_score",
             min_score=self._settings.get_audio_min_vector_score,
             cliff_ratio=cliff_ratio,
+            color_intents=lane_intents,
         )
         merged_docs = _merge_hybrid_search_documents(
             bm25_docs,
@@ -483,7 +482,13 @@ class AudioCatalogService:
         found = _audio_ids_by_literal(docs, han_words)
         if en_words and tags:
             en_tag_ids = await self._tag_ids_for_words(
-                tags, en_words, self._encoder_en, "vector_en", threshold, margin=margin
+                tags,
+                en_words,
+                self._encoder,
+                "vector_en",
+                threshold,
+                margin=margin,
+                language="en",
             )
             found |= _audio_ids_for_tag_ids(docs, en_tag_ids)
         if not han_words:
@@ -592,16 +597,24 @@ class AudioCatalogService:
         matched: set[str] = set()
         if han_words:
             matched.update(
-                await self._tag_ids_for_words(tags, han_words, self._encoder, "vector", threshold)
+                await self._tag_ids_for_words(
+                    tags,
+                    han_words,
+                    self._encoder,
+                    "vector",
+                    threshold,
+                    language="zh",
+                )
             )
         if en_words:
             matched.update(
                 await self._tag_ids_for_words(
                     tags,
                     en_words,
-                    self._encoder_en,
+                    self._encoder,
                     "vector_en",
                     threshold,
+                    language="en",
                 )
             )
         return matched
@@ -615,16 +628,17 @@ class AudioCatalogService:
         threshold: float,
         *,
         margin: float | None = None,
+        language: str = "zh",
     ) -> set[str]:
         if encoder is None or not encoder.is_loaded:
             logger.warning(
-                "自由输入未做{}向量：编码器未就绪", "英文" if vector_field != "vector" else "中文"
+                "自由输入未做{}向量：编码器未就绪", "英文" if language == "en" else "中文"
             )
             return set()
         matched: set[str] = set()
         for word in words:
             try:
-                query = await encoder.encode_one(word)
+                query = await encoder.encode_one(word, language=language)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("自由输入词向量失败：{}", exc)
                 continue

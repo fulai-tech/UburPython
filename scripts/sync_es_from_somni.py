@@ -259,6 +259,9 @@ class TagDictionarySyncJob:
             stats["created"] = len(payloads)
             return stats
 
+        # 清库前先确认中文编码器可用；失败则保留原索引
+        await self._preflight_zh_encoder()
+
         stats["deleted"] = await wipe_and_recreate_index(
             self._client,
             self._es_search,
@@ -271,17 +274,30 @@ class TagDictionarySyncJob:
         self._es_search.clear_content_tag_vectors_cache()
         return stats
 
+    async def _preflight_zh_encoder(self) -> None:
+        """清库前探测 zh 编码；失败则抛错，避免空索引。"""
+        await self._encoder.encode_one("同步预检", language="zh")
+
     async def _insert_one(self, doc_id: str, es_doc: dict[str, Any]) -> str:
         try:
             es_doc["name_vector"] = await self._encoder.encode_one(
                 str(es_doc.get("name", "")), language="zh"
             )
             name_en = str(es_doc.get("name_en", "")).strip()
-            # cosine 字段不能写零向量；英文名用英文模型
+            # cosine 字段不能写零向量；英文失败时仍保留中文标签
             if name_en:
-                es_doc["name_en_vector"] = await self._encoder.encode_one(
-                    name_en, language="en"
-                )
+                try:
+                    es_doc["name_en_vector"] = await self._encoder.encode_one(
+                        name_en, language="en"
+                    )
+                except Exception as exc:
+                    es_doc.pop("name_en_vector", None)
+                    logger.warning(
+                        "量产同步标签跳过 name_en_vector，id={}，name={}，原因：{}",
+                        doc_id,
+                        es_doc.get("name"),
+                        exc,
+                    )
             else:
                 es_doc.pop("name_en_vector", None)
             await self._client.index(
@@ -349,6 +365,9 @@ class MaterialsSyncJob:
             stats["created"] = len(payloads)
             return stats
 
+        # 清库前先确认中文编码器可用；失败则保留原索引
+        await self._preflight_zh_encoder()
+
         stats["deleted"] = await wipe_and_recreate_index(
             self._client,
             self._es_search,
@@ -359,6 +378,10 @@ class MaterialsSyncJob:
             stats[outcome] += 1
 
         return stats
+
+    async def _preflight_zh_encoder(self) -> None:
+        """清库前探测 zh 编码；失败则抛错，避免空索引。"""
+        await self._encoder.encode_one("同步预检", language="zh")
 
     async def _insert_one(self, doc_id: str, es_doc: dict[str, Any]) -> str:
         try:
@@ -420,12 +443,8 @@ class MongoEsSyncJob:
     async def run(self, *, dry_run: bool = False) -> SyncJobResult:
         logger.info("开始量产 Mongo → ES 全量重建同步，dry_run={}", dry_run)
         await self._es_search.migrate_legacy_indices()
-        if not dry_run:
-            # name_en_vector dims 变更时 put_mapping 会失败；标签任务本来就会全量重建
-            tag_index = self._es_search.tag_dictionary_index
-            if await self._client.indices.exists(index=tag_index):
-                await self._client.indices.delete(index=tag_index)
-                logger.info("已删除标签词典索引以便按新 dims 重建：{}", tag_index)
+        # 不在拉 Mongo / 编码预检前删索引；标签清库改由 TagDictionarySyncJob
+        # 在 fetch + 编码器预检成功后再 wipe（避免同步失败留下空索引）
         await self._es_search.ensure_indices()
 
         tag_job = TagDictionarySyncJob(

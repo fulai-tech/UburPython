@@ -127,7 +127,6 @@ def _service(
     *,
     es_search: MagicMock | None = None,
     encoder: MagicMock | None = None,
-    encoder_en: MagicMock | None = None,
     hot: MagicMock | None = None,
     fetch_all_hard_limit: int = 50,
     cache_ttl_sec: float = 60.0,
@@ -168,7 +167,6 @@ def _service(
         settings,
         es_search=es_search,
         encoder=encoder,
-        encoder_en=encoder_en,
         hot=hot,
         redis=redis if redis is not None else _CatalogRedis(),
     )
@@ -1368,7 +1366,8 @@ async def test_get_audio_orders_quiz_preference_by_created_at_then_rest() -> Non
     encoder = MagicMock()
     encoder.is_loaded = True
 
-    async def _encode_zh(text: str) -> list[float]:
+    async def _encode_zh(text: str, *, language: str = "zh") -> list[float]:
+        del language
         return [1.0, 0.0] if text == "海浪" else [0.0, 1.0]
 
     encoder.encode_one = AsyncMock(side_effect=_encode_zh)
@@ -1526,7 +1525,8 @@ async def test_get_audio_dislike_text_moves_matching_tags_to_end() -> None:
     encoder = MagicMock()
     encoder.is_loaded = True
 
-    async def _encode_zh(text: str) -> list[float]:
+    async def _encode_zh(text: str, *, language: str = "zh") -> list[float]:
+        del language
         return {
             "雨声": [1.0, 0.0, 0.0],
             "钢琴": [0.0, 1.0, 0.0],
@@ -1610,13 +1610,14 @@ async def test_get_audio_english_like_matches_en_name_and_dislike_matches_englis
             },
         ],
     }
-    encoder_en = MagicMock()
-    encoder_en.is_loaded = True
+    encoder = MagicMock()
+    encoder.is_loaded = True
 
-    async def _encode_en(text: str) -> list[float]:
+    async def _encode(text: str, *, language: str = "zh") -> list[float]:
+        del language
         return [1.0, 0.0] if text.casefold() == "thunder" else [0.0, 1.0]
 
-    encoder_en.encode_one = AsyncMock(side_effect=_encode_en)
+    encoder.encode_one = AsyncMock(side_effect=_encode)
     es_search = MagicMock()
     es_search.list_content_tag_vectors = AsyncMock(
         return_value=[
@@ -1633,7 +1634,7 @@ async def test_get_audio_english_like_matches_en_name_and_dislike_matches_englis
     svc = _service(
         _mongo_collection([insects, thunder, fire, wave]),
         es_search=es_search,
-        encoder_en=encoder_en,
+        encoder=encoder,
     )
 
     payload = await svc.get_audio(
@@ -1669,10 +1670,11 @@ async def test_get_audio_free_text_drops_scores_below_threshold() -> None:
             {"tag_id": "t", "code": "thunder", "name": "雷声", "en_name": "Thunder"}
         ],
     }
-    encoder_en = MagicMock()
-    encoder_en.is_loaded = True
+    encoder = MagicMock()
+    encoder.is_loaded = True
 
-    async def _encode_en(text: str) -> list[float]:
+    async def _encode(text: str, *, language: str = "zh") -> list[float]:
+        del language
         folded = text.casefold()
         if folded == "thunder":
             return [0.0, 1.0]
@@ -1682,7 +1684,7 @@ async def test_get_audio_free_text_drops_scores_below_threshold() -> None:
             return [1.0, 0.0]
         return [0.0, 0.0]
 
-    encoder_en.encode_one = AsyncMock(side_effect=_encode_en)
+    encoder.encode_one = AsyncMock(side_effect=_encode)
     es_search = MagicMock()
     es_search.list_content_tag_vectors = AsyncMock(
         return_value=[
@@ -1707,7 +1709,7 @@ async def test_get_audio_free_text_drops_scores_below_threshold() -> None:
     svc = _service(
         _mongo_collection([fire, thunder]),
         es_search=es_search,
-        encoder_en=encoder_en,
+        encoder=encoder,
     )
 
     payload = await svc.get_audio(

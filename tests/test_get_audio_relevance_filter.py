@@ -136,3 +136,32 @@ def test_diversify_multi_color_keeps_each_intent() -> None:
     )
     assert [d["_id"] for d in kept[:2]] == ["w", "p"]
     assert {d["_id"] for d in kept} == {"w", "p", "x"}
+
+
+def test_multi_color_lane_cliff_keeps_both_colors() -> None:
+    """全局断崖会砍掉粉；按色断崖后白+粉保留，雨声等非意图色丢弃。"""
+    docs = [
+        {"_id": "w", "audio_name": "白噪音", "_bm25_score": 10.0},
+        {"_id": "p", "audio_name": "粉噪音", "_bm25_score": 8.9},
+        {"_id": "x", "audio_name": "雨声", "_bm25_score": 5.0},
+    ]
+    global_cliff = apply_lane_relevance_filters(
+        docs,
+        score_field="_bm25_score",
+        min_score=0.0,
+        cliff_ratio=0.90,
+    )
+    assert [d["_id"] for d in global_cliff] == ["w"]
+
+    per_color = apply_lane_relevance_filters(
+        docs,
+        score_field="_bm25_score",
+        min_score=0.0,
+        cliff_ratio=0.90,
+        color_intents=["白噪音", "粉噪音"],
+    )
+    assert {d["_id"] for d in per_color} == {"w", "p"}
+    after_div = diversify_multi_color_noise(
+        per_color, query_text="白噪音和粉噪音", per_color=1
+    )
+    assert {d["_id"] for d in after_div} == {"w", "p"}

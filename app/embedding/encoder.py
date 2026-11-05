@@ -55,6 +55,11 @@ class LanguageRouterEncoder(EncoderBase):
             return True
         return self._en.is_loaded
 
+    @property
+    def supports_english(self) -> bool:
+        """英文 ONNX 是否已配置（文件存在并已纳入路由）。"""
+        return self._en is not None
+
     def _route(self, language: str) -> EncoderBase:
         if resolve_search_language(language) == "en":
             if self._en is None:

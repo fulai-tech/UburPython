@@ -294,18 +294,49 @@ async def test_material_sync_skips_missing_audio_url(tmp_path) -> None:
     es_search.ensure_indices = AsyncMock()
     es_client = MagicMock()
     es_client.indices.exists = AsyncMock(return_value=False)
+    es_client.indices.delete = AsyncMock()
     es_client.index = AsyncMock()
+    encoder = MagicMock()
+    encoder.encode_one = AsyncMock(return_value=[0.1] * 512)
 
     stats = await MaterialsSyncJob(
         mongo,
         es_search,
         es_client,
-        MagicMock(),
+        encoder,
         Settings(sync_backup_dir=str(tmp_path)),
     ).run(dry_run=False)
 
     assert stats["skipped"] == 1
     assert stats["created"] == 0
+    es_client.index.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_material_sync_does_not_wipe_when_preflight_fails(tmp_path) -> None:
+    mongo = MagicMock()
+    mongo.fetch_materials = AsyncMock(
+        return_value=[_material_doc("6a33a7928030d4cf420efeb6")]
+    )
+    es_search = MagicMock()
+    es_search.audio_index = "somni_audio_materials"
+    es_search.ensure_indices = AsyncMock()
+    es_client = MagicMock()
+    es_client.indices.exists = AsyncMock(return_value=True)
+    es_client.indices.delete = AsyncMock()
+    encoder = MagicMock()
+    encoder.encode_one = AsyncMock(side_effect=RuntimeError("encoder down"))
+
+    with pytest.raises(RuntimeError, match="encoder down"):
+        await MaterialsSyncJob(
+            mongo,
+            es_search,
+            es_client,
+            encoder,
+            Settings(sync_backup_dir=str(tmp_path)),
+        ).run(dry_run=False)
+
+    es_client.indices.delete.assert_not_called()
     es_client.index.assert_not_called()
 
 
@@ -324,6 +355,7 @@ async def test_mongo_sync_job_migrates_legacy_indices() -> None:
     es_search.clear_content_tag_vectors_cache = MagicMock()
     es_client = MagicMock()
     es_client.indices.exists = AsyncMock(return_value=False)
+    es_client.indices.delete = AsyncMock()
 
     await MongoEsSyncJob(
         mongo, es_search, es_client, MagicMock(), Settings()
@@ -331,6 +363,106 @@ async def test_mongo_sync_job_migrates_legacy_indices() -> None:
 
     es_search.migrate_legacy_indices.assert_awaited_once()
     es_search.ensure_indices.assert_awaited_once()
+    # dry-run 不删索引；非 dry-run 的清库也只发生在 Tag/Materials job 内部
+    es_client.indices.delete.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_mongo_sync_job_does_not_delete_tag_index_before_jobs(tmp_path) -> None:
+    """外层不得在拉 Mongo 前删标签索引。"""
+    mongo = MagicMock()
+    mongo.fetch_tag_dictionary = AsyncMock(return_value=[])
+    mongo.fetch_materials = AsyncMock(return_value=[])
+    es_search = MagicMock()
+    es_search.migrate_legacy_indices = AsyncMock()
+    es_search.ensure_indices = AsyncMock()
+    es_search.list_all_tag_dictionary_doc_ids = AsyncMock(return_value=set())
+    es_search.list_all_audio_doc_ids = AsyncMock(return_value=set())
+    es_search.tag_dictionary_index = "somni_audio_tag_dictionary"
+    es_search.audio_index = "somni_audio_materials"
+    es_search.clear_content_tag_vectors_cache = MagicMock()
+    es_client = MagicMock()
+    es_client.indices.exists = AsyncMock(return_value=True)
+    es_client.indices.delete = AsyncMock()
+    encoder = MagicMock()
+    encoder.encode_one = AsyncMock(return_value=[0.1] * 512)
+
+    await MongoEsSyncJob(
+        mongo,
+        es_search,
+        es_client,
+        encoder,
+        Settings(sync_backup_dir=str(tmp_path)),
+    ).run(dry_run=True)
+
+    es_client.indices.delete.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_tag_sync_keeps_zh_when_en_encode_fails(tmp_path) -> None:
+    mongo = MagicMock()
+    mongo.fetch_tag_dictionary = AsyncMock(
+        return_value=[_tag_doc("6a325acc1a3dbc128504c423")]
+    )
+    es_search = MagicMock()
+    es_search.tag_dictionary_index = "somni_audio_tag_dictionary"
+    es_search.clear_content_tag_vectors_cache = MagicMock()
+    es_search.ensure_indices = AsyncMock()
+    es_client = MagicMock()
+    es_client.indices.exists = AsyncMock(return_value=True)
+    es_client.count = AsyncMock(return_value={"count": 1})
+    es_client.indices.delete = AsyncMock()
+    es_client.index = AsyncMock()
+
+    async def _encode(text: str, *, language: str = "zh") -> list[float]:
+        if language == "en":
+            raise FileNotFoundError("英文 ONNX 模型未配置")
+        return [0.1] * 512
+
+    encoder = MagicMock()
+    encoder.encode_one = AsyncMock(side_effect=_encode)
+
+    stats = await TagDictionarySyncJob(
+        mongo,
+        es_search,
+        es_client,
+        encoder,
+        Settings(sync_backup_dir=str(tmp_path)),
+    ).run(dry_run=False)
+
+    assert stats["created"] == 1
+    assert stats["failed"] == 0
+    document = es_client.index.await_args.kwargs["document"]
+    assert "name_vector" in document
+    assert "name_en_vector" not in document
+
+
+@pytest.mark.asyncio
+async def test_tag_sync_does_not_wipe_when_preflight_fails(tmp_path) -> None:
+    mongo = MagicMock()
+    mongo.fetch_tag_dictionary = AsyncMock(
+        return_value=[_tag_doc("6a325acc1a3dbc128504c423")]
+    )
+    es_search = MagicMock()
+    es_search.tag_dictionary_index = "somni_audio_tag_dictionary"
+    es_search.ensure_indices = AsyncMock()
+    es_client = MagicMock()
+    es_client.indices.exists = AsyncMock(return_value=True)
+    es_client.indices.delete = AsyncMock()
+    encoder = MagicMock()
+    encoder.encode_one = AsyncMock(side_effect=RuntimeError("encoder down"))
+
+    with pytest.raises(RuntimeError, match="encoder down"):
+        await TagDictionarySyncJob(
+            mongo,
+            es_search,
+            es_client,
+            encoder,
+            Settings(sync_backup_dir=str(tmp_path)),
+        ).run(dry_run=False)
+
+    es_client.indices.delete.assert_not_called()
+    es_client.index.assert_not_called()
 
 
 def test_somni_es_node_does_not_fall_back_to_handboard() -> None:
