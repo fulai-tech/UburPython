@@ -477,9 +477,7 @@ async def test_get_audio_cache_stays_resident() -> None:
 async def test_warm_audio_catalog_overwrites_current_key_and_drops_stale_ones() -> None:
     from app.cache.somni_audio_catalog_cache import catalog_cache_key
 
-    collection = _mongo_collection(
-        [{**_RAIN, "acoustic_metrics": {"voice_presence_ratio": 0.2}}]
-    )
+    collection = _mongo_collection([{**_RAIN, "acoustic_metrics": {"voice_presence_ratio": 0.2}}])
     redis = _CatalogRedis()
     redis.store["somni:audio:catalog:v2:old"] = ("stale", None)
     redis.store["somni:audio:hot:v1:query:zh:2026-W45"] = ("hot", None)
@@ -517,11 +515,10 @@ async def test_warm_audio_catalog_fails_with_hint_when_index_missing() -> None:
 @pytest.mark.asyncio
 async def test_get_audio_and_get_hot_after_catalog_key_rebuild() -> None:
     """目录键重建后，GetAudio 仍能标出人声，GetHot 继续读原来的热榜键。"""
+    from app.cache.somni_audio_catalog_cache import catalog_cache_key
     from app.server.somni.audio.hot import HotTracker, hot_redis_key
     from app.server.somni.audio.rpc import AudioRpc
     from app.uburnode_grpc.grpc_gen import uburnode_somni_pb2
-
-    from app.cache.somni_audio_catalog_cache import catalog_cache_key
 
     voiced = {
         **_RAIN,
@@ -1213,7 +1210,8 @@ async def test_prescription_search_resolves_codes_and_uses_ranked_search_without
     retrieval.search = AsyncMock(
         return_value=[
             {
-                "id": "a1",
+                "_id": "a1",
+                "status": True,
                 "audio_url": "https://cdn/a.mp3",
                 "_score": 0.9,
                 "sleep_stage_tags": [{"code": "unwind"}],

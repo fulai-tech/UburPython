@@ -12,7 +12,6 @@ from app.core.codes import HttpStatus
 from app.core.exceptions import AppError, ServiceNotReadyError
 from app.schemas.audio import SearchAudioRequest
 from app.server.errors import abort_from_app_error, abort_invalid, run_rpc_call
-from app.server.somni.audio.catalog import prescription_material_scope
 from app.server.somni.audio.hot import parse_hot_kind
 from app.server.somni.metadata import parse_language
 from app.uburnode_grpc.grpc_gen import uburnode_somni_pb2, uburnode_somni_pb2_grpc
@@ -71,30 +70,29 @@ class AudioRpc(uburnode_somni_pb2_grpc.AudioServiceServicer):
 
         async def _do():
             response = uburnode_somni_pb2.SearchPrescriptionAudioRes()
-            with prescription_material_scope():
-                for task in request.tasks:
-                    if (
-                        task.top_k < 1
-                        or task.top_k > 20
-                        or len(task.query_text) > 1000
-                        or not task.sleep_stage_tags
-                    ):
-                        raise ValueError("invalid prescription search task")
-                    candidates = await service.search_prescription_audio(
-                        {
-                            "query_text": task.query_text,
-                            "sleep_stage_tags": list(task.sleep_stage_tags),
-                            "content_tag_codes": list(task.content_tag_codes),
-                            "content_tags": list(task.content_tags),
-                            "disliked_tags": list(task.disliked_tags),
-                            "top_k": task.top_k,
-                        }
-                    )
-                    result = response.results.add(task_id=task.task_id)
-                    for rank, candidate in enumerate(candidates, start=1):
-                        structured = {**candidate, "retrieval_rank": rank}
-                        struct = ParseDict(structured, Struct())
-                        result.candidates.add().CopyFrom(struct)
+            for task in request.tasks:
+                if (
+                    task.top_k < 1
+                    or task.top_k > 20
+                    or len(task.query_text) > 1000
+                    or not task.sleep_stage_tags
+                ):
+                    raise ValueError("invalid prescription search task")
+                candidates = await service.search_prescription_audio(
+                    {
+                        "query_text": task.query_text,
+                        "sleep_stage_tags": list(task.sleep_stage_tags),
+                        "content_tag_codes": list(task.content_tag_codes),
+                        "content_tags": list(task.content_tags),
+                        "disliked_tags": list(task.disliked_tags),
+                        "top_k": task.top_k,
+                    }
+                )
+                result = response.results.add(task_id=task.task_id)
+                for rank, candidate in enumerate(candidates, start=1):
+                    structured = {**candidate, "retrieval_rank": rank}
+                    struct = ParseDict(structured, Struct())
+                    result.candidates.add().CopyFrom(struct)
             return response
 
         return await run_rpc_call(context, _do)

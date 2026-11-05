@@ -5,12 +5,8 @@ from __future__ import annotations
 import asyncio
 import math
 import re
-from collections.abc import Iterator
-from contextlib import contextmanager
-from contextvars import ContextVar
 from typing import Any
 
-from bson import ObjectId
 from loguru import logger
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorCollection
 
@@ -37,7 +33,6 @@ from app.embedding.encoder import Encoder
 from app.es.search import EsSearch
 from app.es.somni_docs import resolve_query_language, resolve_search_language
 from app.schemas.audio import SearchAudioRequest
-from app.schemas.search_material import project_search_material
 from app.server.somni.audio.hot import HotTracker, normalize_tag_code
 from app.server.somni.audio.relevance_filter import (
     apply_lane_relevance_filters,
@@ -54,21 +49,6 @@ from app.server.somni.audio.segment import (
 
 _TAG_ENABLED = "启用"
 _CONTENT_FORM = "content_form"
-
-
-_material_snapshot: ContextVar[dict[str, dict[str, Any] | None] | None] = ContextVar(
-    "prescription_material_snapshot", default=None
-)
-
-
-@contextmanager
-def prescription_material_scope() -> Iterator[None]:
-    """One authoritative Mongo read per distinct material within a batch RPC."""
-    token = _material_snapshot.set({})
-    try:
-        yield
-    finally:
-        _material_snapshot.reset(token)
 
 
 class InvalidAudioQueryError(AppError):
@@ -726,7 +706,7 @@ class AudioCatalogService:
         requested_top_k = request.top_k
         request.top_k = min(60, requested_top_k * 3)
         materials = await self._retrieval.search(request)
-        materials = await self._verify_prescription_materials(materials)
+        materials = self._filter_prescription_materials(materials)
         materials = [
             material
             for material in materials
@@ -741,65 +721,24 @@ class AudioCatalogService:
             if stages & material_tag_codes({"sleep_stage_tags": item.get("sleep_stage_tags", [])})
         ][:requested_top_k]
 
-    async def _verify_prescription_materials(
-        self, candidates: list[dict[str, Any]]
+    @staticmethod
+    def _filter_prescription_materials(
+        candidates: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        """Mongo presence/status and safety metadata are authoritative over ES and caches."""
-        identifiers = {str(item.get("_id") or item.get("id") or "") for item in candidates}
-        identifiers.discard("")
-        if not identifiers:
-            return []
-        current = _material_snapshot.get()
-        if current is None:
-            current = {}
-        missing = identifiers - current.keys()
-        if missing:
-            ids: list[Any] = list(missing)
-            ids.extend(ObjectId(value) for value in missing if ObjectId.is_valid(value))
-            fields = (
-                "_id",
-                "status",
-                "audio_name",
-                "description",
-                "audio_url",
-                "cover_url",
-                "sleep_stage_tags",
-                "content_form_tags",
-                "audio_engineering_tags",
-                "evidence_level_tags",
-                "duration_seconds",
-                "acoustic_metrics",
-                "language",
-                "languages",
-                "short_description",
-                "source",
-                "created_at",
-                "updated_at",
-            )
-            cursor = self._materials().find(
-                {"_id": {"$in": ids}, "status": True}, {key: 1 for key in fields}
-            )
-            fetched = {
-                str(row["_id"]): project_search_material(bson_to_jsonable(row))
-                async for row in cursor
-            }
-            current.update({identifier: fetched.get(identifier) for identifier in missing})
+        """Validate ES metadata locally; do not re-read material identities from Mongo."""
         verified = []
-        keys = (
-            "sleep_stage_tags",
-            "content_form_tags",
-            "audio_engineering_tags",
-        )
         for candidate in candidates:
             identifier = str(candidate.get("_id") or candidate.get("id") or "")
-            source = current.get(identifier)
-            if source is None or source.get("status") is not True or not source.get("audio_url"):
+            if (
+                not identifier
+                or candidate.get("status") is not True
+                or not candidate.get("audio_url")
+            ):
                 continue
             try:
-                validated_content_references(source)
+                validated_content_references(candidate)
             except ValueError as exc:
-                # IDs/codes only: never log URLs, titles or user preferences.
-                refs = source.get("content_form_tags") or []
+                refs = candidate.get("content_form_tags") or []
                 codes = [str(ref.get("code") or "") for ref in refs if isinstance(ref, dict)]
                 logger.warning(
                     "prescription_material_rejected audio_id={} reason={} content_codes={}",
@@ -808,16 +747,7 @@ class AudioCatalogService:
                     codes,
                 )
                 continue
-            projected = project_search_material({**candidate, "_id": identifier})
-            if any(projected[key] != source[key] for key in keys):
-                # Changed eligibility needs fresh indexing and ranking.
-                continue
-            verified.append(
-                {
-                    **source,
-                    **{key: candidate[key] for key in ("_score", "score") if key in candidate},
-                }
-            )
+            verified.append(candidate)
         return verified
 
     async def get_hot(

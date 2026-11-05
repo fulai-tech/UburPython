@@ -414,7 +414,7 @@ python scripts/somni_preference_fixture_import.py /path/to/fixture_package --rem
 
 `somni_audio_tag_dictionary`是合法code来源。`app/core/audio_tag_aliases.json`保留type/id/parent/status；170条源记录中纯数字测试阶段213/1321显式隔离，168条用于运行时。字典本身的别名只从code/name/name_en派生；`audio_preference_rules.json`独立维护审核的日常表达与广义集合，目标必须存在且启用。雨声/rain sounds覆盖现有雨类及含雷雨的storm_ambience，后者保守额外排除强风暴；不排除整个natural_sound。父级内容标签展开为启用后代，喜欢为OR，厌恶命中任一即排除。无厌恶答复与工程none值分开；不明确工程维度的重复取值不作声音类别。
 
-SearchPrescriptionAudio及SearchAudioRequest在检索前完成兼容归一化和存在/类型校验，英文格式不是合法性证明。2026-10-21起，未知自由文本厌恶忽略，query中未解析否定不阻断召回，已识别排除继续保留；不以向量猜测硬禁忌。标准标签决定硬排除；向量只作软惩罚和召回/排序。Mongo刷新素材后再次检查厌恶与人声value，不能因ES/缓存旧标签绕过。query继续使用中文原文，不翻译已有embedding。结果缓存audio_search_v5+，标签排序去重并绑定字典/映射摘要；阶段索引及标签向量缓存绑定相同摘要。更改配置后需同步产物和重启，不支持请求中隐式热更新。
+SearchPrescriptionAudio及SearchAudioRequest在检索前完成兼容归一化和存在/类型校验，英文格式不是合法性证明。2026-10-21起，未知自由文本厌恶忽略，query中未解析否定不阻断召回，已识别排除继续保留；不以向量猜测硬禁忌。标准标签决定硬排除；向量只作软惩罚和召回/排序。处方结果按ES/缓存返回的素材字段检查厌恶及内容合法性，不再回查Mongo素材或覆盖ID/链接；最新状态和标签依赖索引、缓存同步。query继续使用中文原文，不翻译已有embedding。结果缓存audio_search_v5+，标签排序去重并绑定字典/映射摘要；阶段索引及标签向量缓存绑定相同摘要。更改配置后需同步产物和重启，不支持请求中隐式热更新。
 
 维护源为本仓解析器和配置，使用 `PYTHONPATH=. python scripts/export_audio_tag_contract.py --mirror-root <DeepHealth根目录>` 校验共享产物；`--write`同步配置与解析器；`--refresh --write --env-file <operator profile>`从Mongo只读重导出。工具不写数据库、不重建embedding，输出不含连接凭据。原GetAudioTag仍返回顶层类别，未改变Proto或DB schema。部署前需对两个仓库配套验证。
 

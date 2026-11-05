@@ -1,6 +1,5 @@
 """Current Mongo material contract and DeepHealth prescription RPC regression."""
 
-from copy import deepcopy
 from unittest.mock import AsyncMock, MagicMock
 
 import grpc
@@ -162,18 +161,41 @@ async def test_current_tag_batch_reaches_retrieval_and_preserves_struct_metadata
         assert candidate["duration_seconds"] == 1800
         assert candidate["acoustic_metrics"]["tempo_bpm"] is None
         assert candidate["audio_engineering_tags"][1]["value"]["code"] == "conditional"
-    assert materials.find.call_count == 1
+    materials.find.assert_not_called()
     assert retrieval.search.await_count == 34
 
 
-async def test_stale_engineering_or_disabled_material_is_not_authorized():
+async def test_prescription_uses_es_material_without_mongo_identity_recheck():
     row = material()
-    service = AudioCatalogService(None, Settings())
+    row["_id"] = "es-only-id"
+    retrieval = MagicMock()
+    retrieval.search = AsyncMock(return_value=[project_search_material(row)])
+    service = AudioCatalogService(None, Settings(), retrieval=retrieval)
     collection = MagicMock()
-    collection.find.side_effect = lambda *args: Cursor([row] if row["status"] else [])
+    collection.find.side_effect = AssertionError("material Mongo must not be read")
     service._materials = lambda: collection
-    stale = deepcopy(row)
-    stale["audio_engineering_tags"][1]["value"]["code"] = "true"
-    assert await service._verify_prescription_materials([project_search_material(stale)]) == []
-    row["status"] = False
-    assert await service._verify_prescription_materials([project_search_material(row)]) == []
+    result = await service.search_prescription_audio({"sleep_stage_tags": ["unwind"], "top_k": 1})
+    assert result == [project_search_material(row)]
+    collection.find.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", ["disabled", "url", "stage", "disliked", "unknown_content"])
+async def test_es_only_prescription_keeps_metadata_stage_and_dislike_checks(failure):
+    row = material()
+    task = {"sleep_stage_tags": ["unwind"], "top_k": 1}
+    if failure == "disabled":
+        row["status"] = False
+    elif failure == "url":
+        row["audio_url"] = ""
+    elif failure == "stage":
+        row["sleep_stage_tags"] = [{"code": "soothe"}]
+    elif failure == "disliked":
+        row["content_form_tags"] = [{"code": "bird_calls"}]
+        task["disliked_tags"] = ["bird_calls"]
+    else:
+        row["content_form_tags"] = [{"code": "invalid-content-code"}]
+    retrieval = MagicMock()
+    retrieval.search = AsyncMock(return_value=[project_search_material(row)])
+    service = AudioCatalogService(None, Settings(), retrieval=retrieval)
+    service._materials = lambda: (_ for _ in ()).throw(AssertionError("no Mongo material lookup"))
+    assert await service.search_prescription_audio(task) == []
