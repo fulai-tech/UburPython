@@ -36,6 +36,7 @@ _SLEEP = {
     "session_id": "string",
     "language": "string",
     "sleep_summary": "document",
+    "sleep_quality": "document",
     "unified_data_timeline": "document",
     "ambient_climate_monitor": "document",
     "sleep_breakdown": "document",

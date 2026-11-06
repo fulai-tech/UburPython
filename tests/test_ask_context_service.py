@@ -317,3 +317,98 @@ async def test_failure_log_includes_reason() -> None:
         and "reason=记录缺少字段 phases.missing" in line
         for line in lines
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "paths",
+    [
+        ["sleep_quality"],
+        [
+            "sleep_quality.sleep_onset_latency_minutes",
+            "sleep_quality.sleep_efficiency",
+            "sleep_quality.awake_after_onset_minutes",
+        ],
+        [],
+    ],
+)
+async def test_sleep_quality_readable_without_exposing_other_modules(paths: list[str]) -> None:
+    quality = {
+        "sleep_onset_latency_minutes": 18,
+        "sleep_efficiency": 87.5,
+        "awake_after_onset_minutes": 0,
+    }
+    doc = {
+        "_id": ObjectId(REPORT_ID),
+        "sleep_quality": quality,
+        "private_field": "must not be returned",
+    }
+    result = await _service(FakeStore({"somni_sleep_reports": [doc]})).get_context(
+        {
+            "context_type": "source_data",
+            "query_id": "quality-read",
+            "source_refs": [
+                {
+                    "table_name": "somni_sleep_reports",
+                    "query": _query({"_id": REPORT_ID}),
+                    "filter_key": paths,
+                }
+            ],
+        }
+    )
+    record = json.loads(result["table_data"]["somni_sleep_reports"])
+    assert record["sleep_quality"] == quality
+    assert "private_field" not in record
+    assert set(record) == ({"sleep_quality"} if paths else {"_id", "sleep_quality"})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("quality", [None, {}])
+async def test_missing_sleep_quality_projection_returns_not_found(quality: dict | None) -> None:
+    doc = {"_id": ObjectId(REPORT_ID)}
+    if quality is not None:
+        doc["sleep_quality"] = quality
+    with pytest.raises(AskContextError) as caught:
+        await _service(FakeStore({"somni_sleep_reports": [doc]})).get_context(
+            {
+                "context_type": "source_data",
+                "query_id": "quality-missing",
+                "source_refs": [
+                    {
+                        "table_name": "somni_sleep_reports",
+                        "query": _query({"_id": REPORT_ID}),
+                        "filter_key": ["sleep_quality.sleep_efficiency"],
+                    }
+                ],
+            }
+        )
+    assert caught.value.status == "NOT_FOUND"
+
+
+@pytest.mark.asyncio
+async def test_sleep_quality_rejects_nested_range_query() -> None:
+    with pytest.raises(AskContextError) as caught:
+        await _service(FakeStore()).get_context(
+            {
+                "context_type": "source_data",
+                "query_id": "quality-query",
+                "source_refs": [
+                    {
+                        "table_name": "somni_sleep_reports",
+                        "query": _query({"sleep_quality.sleep_efficiency": {"$gte": 85}}),
+                    }
+                ],
+            }
+        )
+    assert caught.value.status == "INVALID_ARGUMENT"
+
+
+@pytest.mark.asyncio
+async def test_sleep_quality_uses_existing_document_query_rules() -> None:
+    store = FakeStore()
+    condition = {"sleep_quality": {"sleep_efficiency": 85}}
+    await _service(store).get_context({
+        "context_type": "source_data", "query_id": "quality-equality",
+        "source_refs": [{"table_name": "somni_sleep_reports", "query": _query(condition)}],
+    })
+    assert store.calls == [("find", "somni_sleep_reports", condition)]
