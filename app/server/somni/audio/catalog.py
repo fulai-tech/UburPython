@@ -154,13 +154,14 @@ class AudioCatalogService:
                 codes=codes,
                 preference_text=pref,
             )
-            docs = _order_preferred_then_rest(docs, preferred_ids)
         disliked_ids = await self._disliked_audio_ids(
             docs,
             dislike,
             catalog_size=catalog_size,
         )
-        docs = _move_disliked_to_end(docs, disliked_ids)
+        # 喜欢 → 中性 → 讨厌；各段内按创建时间从新到旧，段间不混排。
+        # 同时命中喜欢与讨厌时归讨厌段。
+        docs = _order_like_neutral_dislike(docs, preferred_ids, disliked_ids)
         payload = _paginate_docs(docs, page, page_size, fetch_all, self._settings)
         payload["list"] = [
             _to_audio_list_item(item, language=language) for item in payload["list"]
@@ -1184,16 +1185,29 @@ def _created_stamp(value: Any) -> str:
     return str(value)
 
 
-def _order_preferred_then_rest(
+def _order_like_neutral_dislike(
     docs: list[dict[str, Any]],
     preferred_ids: set[str],
+    disliked_ids: set[str],
 ) -> list[dict[str, Any]]:
-    """偏好音频在前，其余在后。两段按创建时间从新到旧；时间相同保持原顺序。"""
-    preferred = [doc for doc in docs if str(doc.get("id") or "") in preferred_ids]
-    rest = [doc for doc in docs if str(doc.get("id") or "") not in preferred_ids]
-    preferred.sort(key=lambda doc: _created_stamp(doc.get("created_at")), reverse=True)
-    rest.sort(key=lambda doc: _created_stamp(doc.get("created_at")), reverse=True)
-    return preferred + rest
+    """喜欢 / 中性 / 讨厌 三段拼接；各段内按创建时间从新到旧，时间相同保持原顺序。
+
+    无偏好、无厌恶时整表按时间排（等同中性一段）。既喜欢又讨厌的归讨厌段。
+    """
+    liked: list[dict[str, Any]] = []
+    neutral: list[dict[str, Any]] = []
+    disliked: list[dict[str, Any]] = []
+    for doc in docs:
+        audio_id = str(doc.get("id") or "")
+        if audio_id and audio_id in disliked_ids:
+            disliked.append(doc)
+        elif audio_id and audio_id in preferred_ids:
+            liked.append(doc)
+        else:
+            neutral.append(doc)
+    for bucket in (liked, neutral, disliked):
+        bucket.sort(key=lambda doc: _created_stamp(doc.get("created_at")), reverse=True)
+    return liked + neutral + disliked
 
 
 def _han_words(words: list[str]) -> list[str]:
@@ -1314,19 +1328,6 @@ def _cosine(left: list[float], right: list[float]) -> float:
     if left_norm <= 0 or right_norm <= 0:
         return 0.0
     return dot / math.sqrt(left_norm * right_norm)
-
-
-def _move_disliked_to_end(
-    docs: list[dict[str, Any]],
-    disliked_ids: set[str],
-) -> list[dict[str, Any]]:
-    """讨厌的音频挪到末尾，并按创建时间从新到旧。其余音频保持原有顺序。"""
-    if not disliked_ids:
-        return docs
-    kept = [doc for doc in docs if str(doc.get("id") or "") not in disliked_ids]
-    disliked = [doc for doc in docs if str(doc.get("id") or "") in disliked_ids]
-    disliked.sort(key=lambda doc: _created_stamp(doc.get("created_at")), reverse=True)
-    return kept + disliked
 
 
 def _has_content_form_code(doc: dict[str, Any], tag_code: str) -> bool:
