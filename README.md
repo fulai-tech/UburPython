@@ -440,3 +440,17 @@ SearchPrescriptionAudio及SearchAudioRequest在检索前完成兼容归一化和
 没有符合用户、日期和有效状态的方案返回目标缺失。选中最新项后仍校验版本、快照及正文关联，
 最新项关联错误则明确失败，不静默回退旧方案。其他路径的active方案读取语义保持原样。
 没有修改Proto、持久化结构或写库逻辑；现有数据不迁移、不删除，需发布中间件代码后生效。
+
+
+### Ask GetContext: sleep quality projections
+
+`somni_sleep_reports` supports reading `sleep_quality` and its nested paths via
+`filter_key`, including `sleep_onset_latency_minutes` (minutes),
+`sleep_efficiency` (0–100 percent), and `awake_after_onset_minutes` (minutes).
+An empty `filter_key` includes this module when present. Explicitly requested
+missing paths return `NOT_FOUND`; measured zero values are preserved.
+`sleep_quality` is registered as a `document` in the existing report field dictionary,
+following the same whole-object equality rules as `sleep_summary`. Nested query keys
+and operators inside document values remain unsupported. The protobuf wire format is unchanged. Deploy the updated middleware before clients use these paths.
+
+Regression: `python -m pytest tests/test_ask_context_service.py tests/test_ask_context_query_builder.py -q`.
