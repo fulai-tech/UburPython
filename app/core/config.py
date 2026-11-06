@@ -95,6 +95,9 @@ class Settings(BaseSettings):
     applewatch_steps_level_low: int = 5000
     applewatch_steps_level_medium: int = 10000
 
+    # GetEvents：会话遥测按总时长百分比分桶（默认 10% → 约 10 个点）
+    somni_report_series_bucket_percent: float = Field(default=10.0, gt=0, le=100)
+
     sim_threshold: float = 0.7  # 内容形态向量模糊命中阈值（规范 §五-2）
     # GetAudio query_text 与内容形态标签（含二级）向量相似度下限
     get_audio_root_tag_sim_threshold: float = 0.75

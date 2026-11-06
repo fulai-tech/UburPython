@@ -124,3 +124,30 @@ class ReportStore:
             .sort("ts", 1)
         )
         return await cursor.to_list(length=50_000)
+
+    async def find_session_payload(self, session_id: str) -> dict[str, Any] | None:
+        sid = session_id.strip()
+        if not sid:
+            return None
+        return await self._db()[
+            self._settings.somni_mongo_session_payloads_collection
+        ].find_one(
+            {
+                "session_id": sid,
+                "kind": "session",
+                "ignored": {"$ne": True},
+            }
+        )
+
+    async def list_telemetry_by_session(
+        self,
+        session_id: str,
+        metric: str | None = None,
+    ) -> list[dict[str, Any]]:
+        sid = session_id.strip()
+        if not sid:
+            return []
+        query: dict[str, Any] = {"session_id": sid}
+        if metric:
+            query["metric"] = metric
+        return await self.list_telemetry_by_filter(query)
