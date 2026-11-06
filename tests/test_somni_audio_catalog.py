@@ -1985,6 +1985,35 @@ async def test_get_audio_dislike_spreads_to_child_tags_of_description_hits() -> 
     es_search.search_by_description_vector.assert_awaited_once()
 
 
+def test_order_like_neutral_dislike_three_bands_by_created_at() -> None:
+    """喜欢 / 中性 / 讨厌 三段；段内从新到旧；既喜欢又讨厌归讨厌。"""
+    from app.server.somni.audio.catalog import _order_like_neutral_dislike
+
+    docs = [
+        {"id": "like-old", "created_at": "2026-01-01T00:00:00Z"},
+        {"id": "dislike-new", "created_at": "2026-06-01T00:00:00Z"},
+        {"id": "neutral-new", "created_at": "2026-05-01T00:00:00Z"},
+        {"id": "like-new", "created_at": "2026-04-01T00:00:00Z"},
+        {"id": "both", "created_at": "2026-08-01T00:00:00Z"},
+        {"id": "dislike-old", "created_at": "2026-02-01T00:00:00Z"},
+        {"id": "neutral-old", "created_at": "2026-03-01T00:00:00Z"},
+    ]
+    ordered = _order_like_neutral_dislike(
+        docs,
+        preferred_ids={"like-old", "like-new", "both"},
+        disliked_ids={"dislike-new", "dislike-old", "both"},
+    )
+    assert [d["id"] for d in ordered] == [
+        "like-new",
+        "like-old",
+        "neutral-new",
+        "neutral-old",
+        "both",
+        "dislike-new",
+        "dislike-old",
+    ]
+
+
 def test_filter_docs_keeps_blank_and_null_language() -> None:
     from app.server.somni.audio.catalog import _filter_docs_by_request_language
 
