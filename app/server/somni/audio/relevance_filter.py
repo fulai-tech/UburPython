@@ -52,8 +52,123 @@ def detect_color_noise_intents(text: str) -> list[str]:
     return found
 
 
+# 虚词/噪声整词：命中则跳过 BM25+knn（避免「和」命中「温和」等字面误召）
+DEFAULT_BM25_QUERY_BLACKLIST = frozenset(
+    {
+        # 语气/结构虚词
+        "了",
+        "的",
+        "啊",
+        "呢",
+        "吧",
+        "吗",
+        "呀",
+        "嘛",
+        "哦",
+        "嗯",
+        # 代词
+        "我",
+        "你",
+        "他",
+        "她",
+        "它",
+        "您",
+        "咱",
+        # 连词/判断/常用单字虚词
+        "和",
+        "与",
+        "或",
+        "是",
+        "在",
+        "有",
+        "就",
+        "还",
+        "很",
+        "太",
+        "最",
+        "不",
+        "没",
+        "也",
+        "都",
+        "把",
+        "被",
+        "让",
+        "给",
+        "从",
+        "向",
+        "对",
+        "比",
+        "好",
+        "行",
+        # 整句噪声（整词匹配）
+        "可以",
+        "好的",
+        "随便",
+        "你好",
+        "在吗",
+        "哈哈",
+        "呵呵",
+        "嗯嗯",
+        # 英文虚词 / 极短噪声（长度>2 的需显式列出；≤2 另有规则）
+        "a",
+        "an",
+        "the",
+        "i",
+        "me",
+        "you",
+        "and",
+        "or",
+        "no",
+        "yes",
+        "ok",
+        "hi",
+        "lol",
+        "omg",
+        "idk",
+        "wtf",
+        "foo",
+        "bar",
+        "test",
+        "car",
+    }
+)
+
+# 纯字母英文整词不超过该长度时视为极短噪声（rain/wind 为 4，不受影响）
+_EN_SHORT_QUERY_MAX_LEN = 2
+
+
+def normalize_get_audio_query(text: str) -> str:
+    return str(text or "").strip()
+
+
+def is_bm25_query_blacklisted(
+    text: str,
+    *,
+    blacklist: frozenset[str] | set[str] | None = None,
+) -> bool:
+    """整词命中黑名单，或纯英文极短词（≤2 字母）→ 不应检索。
+
+    blacklist 为 None 或空集合时回退 DEFAULT_BM25_QUERY_BLACKLIST
+    （避免 GET_AUDIO_BM25_QUERY_BLACKLIST= 空串静默关掉防护）。
+    """
+    q = normalize_get_audio_query(text)
+    if not q:
+        return False
+    blocked = blacklist if blacklist else DEFAULT_BM25_QUERY_BLACKLIST
+    if q.lower() in {item.lower() for item in blocked}:
+        return True
+    # 纯 ASCII 字母且极短：no/hi/ok 等；不含数字与符号
+    if q.isascii() and q.isalpha() and len(q) <= _EN_SHORT_QUERY_MAX_LEN:
+        return True
+    return False
+
+
 def _doc_title(doc: dict[str, Any]) -> str:
     return str(doc.get("audio_name") or "").lower()
+
+
+def _doc_title_en(doc: dict[str, Any]) -> str:
+    return str(doc.get("audio_name_en") or "").lower()
 
 
 def _doc_tag_blob(doc: dict[str, Any]) -> str:
@@ -194,6 +309,39 @@ def filter_docs_by_min_score(
         if float(doc[score_field]) >= min_score:
             out.append(doc)
     return out
+
+
+def doc_matches_query_lexically(doc: dict[str, Any], query_text: str) -> bool:
+    """标题/英文名/标签是否与 query 有弱字面重合（整词或中文单字）。"""
+    q = normalize_get_audio_query(query_text)
+    if not q:
+        return True
+    blob = f"{_doc_title(doc)} {_doc_title_en(doc)} {_doc_tag_blob(doc)}"
+    ql = q.lower()
+    if ql in blob:
+        return True
+    if len(q) >= 2:
+        for ch in q:
+            if ch.isascii() or ch.isspace():
+                continue
+            if ch in blob:
+                return True
+        for tok in ql.split():
+            if len(tok) >= 3 and tok in blob:
+                return True
+    return False
+
+
+def filter_docs_by_query_lexical_match(
+    docs: list[dict[str, Any]],
+    *,
+    query_text: str,
+) -> list[dict[str, Any]]:
+    """合路后去掉标题/标签与 query 无弱字面关系的噪声。"""
+    q = normalize_get_audio_query(query_text)
+    if not q:
+        return list(docs)
+    return [doc for doc in docs if doc_matches_query_lexically(doc, q)]
 
 
 def filter_docs_by_score_cliff(

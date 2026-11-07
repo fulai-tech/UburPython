@@ -109,15 +109,38 @@ class Settings(BaseSettings):
     get_audio_rrf_k: int = 60
     get_audio_knn_k: int = 50
     get_audio_knn_num_candidates: int = 150
-    # ES knn _score=(1+cosine)/2；0.79 ≈ 真实余弦 0.58，过滤弱语义邻居
-    get_audio_min_vector_score: float = 0.79
-    get_audio_min_bm25_score: float = 0.0
+    # 合路后只保留同时出现在 BM25 与 knn 名单的文档（双路共识）
+    get_audio_hybrid_require_both_lanes: bool = False
+    # 合路过滤后按相关度重排：knn 主序、BM25 辅序（避免 RRF 双路共识把强相关挤到后面）
+    get_audio_rerank_by_relevance: bool = True
+    # ES knn _score=(1+cosine)/2；0.80 ≈ 真实余弦 0.60，过滤弱语义邻居（如单字母误召）
+    get_audio_min_vector_score: float = 0.80
+    # BM25 绝对门槛；0 会放行英文冠词 a 等弱命中。
+    # 「人声」命中分多在 0.21～0.29（词频 1～2），0.2 可放行主档。
+    get_audio_min_bm25_score: float = 0.2
+    # 分路断崖：相对该路最高分的保留比例；未设时回退共享断崖
+    get_audio_bm25_score_cliff_ratio: Optional[float] = 0.78
+    get_audio_knn_score_cliff_ratio: Optional[float] = 0.95
     get_audio_score_cliff_ratio: float = 0.97
     get_audio_score_cliff_ratio_zh: Optional[float] = None
     get_audio_score_cliff_ratio_en: Optional[float] = None
     get_audio_color_noise_mutex_enabled: bool = True
+    # 虚词/噪声 query 跳过双路检索（逗号/空白分隔；空串=用代码内置默认；另有纯英文≤2 字母规则）
+    get_audio_bm25_query_blacklist: str = (
+        "了,的,啊,呢,吧,吗,呀,嘛,哦,嗯,我,你,他,她,它,您,咱,"
+        "和,与,或,是,在,有,就,还,很,太,最,不,没,也,都,把,被,让,给,从,向,对,比,好,行,"
+        "可以,好的,随便,你好,在吗,哈哈,呵呵,嗯嗯,"
+        "a,an,the,i,me,you,and,or,no,yes,ok,hi,lol,omg,idk,wtf,foo,bar,test,car"
+    )
+    # 合路后要求标题/标签与 query 有弱字面重合，压制描述误召
+    get_audio_lexical_match_enabled: bool = True
     # knn 向量字段覆盖；空=按检索语言选 description_vector / description_vector_en
     get_audio_description_vector_field: str = ""
+
+    def resolve_get_audio_bm25_query_blacklist(self) -> frozenset[str]:
+        """解析黑名单；空配置返回空集合，由 is_bm25_query_blacklisted 回退内置默认。"""
+        raw = (self.get_audio_bm25_query_blacklist or "").replace("，", ",")
+        return frozenset(part.strip() for part in raw.split(",") if part.strip())
     # 问卷自定义输入：描述向量得分不低于最高分的该比例才进入优先组，不按条数截断
     get_audio_preference_score_ratio: float = 0.945
     # 问卷「不喜欢」对音频描述向量：余弦不低于下限，且与该词最高分相差不超过 margin
@@ -150,6 +173,8 @@ class Settings(BaseSettings):
     @field_validator(
         "get_audio_score_cliff_ratio_zh",
         "get_audio_score_cliff_ratio_en",
+        "get_audio_bm25_score_cliff_ratio",
+        "get_audio_knn_score_cliff_ratio",
         mode="before",
     )
     @classmethod
@@ -199,13 +224,25 @@ class Settings(BaseSettings):
     fetch_all_hard_limit: int = 5000
 
     def resolve_get_audio_score_cliff_ratio(self, language: str) -> float:
-        """按检索语言解析断崖；zh/en 覆盖未设时回退 get_audio_score_cliff_ratio。"""
+        """按检索语言解析共享断崖；zh/en 覆盖未设时回退 get_audio_score_cliff_ratio。"""
         lang = (language or "").strip().lower()
         if lang.startswith("zh") and self.get_audio_score_cliff_ratio_zh is not None:
             return float(self.get_audio_score_cliff_ratio_zh)
         if lang.startswith("en") and self.get_audio_score_cliff_ratio_en is not None:
             return float(self.get_audio_score_cliff_ratio_en)
         return float(self.get_audio_score_cliff_ratio)
+
+    def resolve_get_audio_bm25_score_cliff_ratio(self, language: str) -> float:
+        """BM25 断崖；未单独配置时回退共享断崖（含 zh/en 覆盖）。"""
+        if self.get_audio_bm25_score_cliff_ratio is not None:
+            return float(self.get_audio_bm25_score_cliff_ratio)
+        return self.resolve_get_audio_score_cliff_ratio(language)
+
+    def resolve_get_audio_knn_score_cliff_ratio(self, language: str) -> float:
+        """knn 断崖；未单独配置时回退共享断崖（含 zh/en 覆盖）。"""
+        if self.get_audio_knn_score_cliff_ratio is not None:
+            return float(self.get_audio_knn_score_cliff_ratio)
+        return self.resolve_get_audio_score_cliff_ratio(language)
 
     def resolve_embedding_onnx_dir_en(self) -> str:
         directory = self.embedding_onnx_dir_en.strip()

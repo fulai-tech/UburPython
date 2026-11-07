@@ -5,9 +5,12 @@ from app.server.somni.audio.relevance_filter import (
     apply_lane_relevance_filters,
     detect_color_noise_intents,
     diversify_multi_color_noise,
+    doc_matches_query_lexically,
     filter_conflicting_color_noise,
     filter_docs_by_min_score,
+    filter_docs_by_query_lexical_match,
     filter_docs_by_score_cliff,
+    is_bm25_query_blacklisted,
 )
 
 
@@ -31,6 +34,25 @@ def test_resolve_cliff_ratio_by_language() -> None:
     )
     assert s2.resolve_get_audio_score_cliff_ratio("zh") == 0.97
     assert s2.resolve_get_audio_score_cliff_ratio("en") == 0.97
+
+
+def test_resolve_lane_cliff_ratio_overrides_shared() -> None:
+    s = Settings(
+        _env_file=None,
+        get_audio_score_cliff_ratio=0.97,
+        get_audio_bm25_score_cliff_ratio=0.85,
+        get_audio_knn_score_cliff_ratio=0.90,
+    )
+    assert s.resolve_get_audio_bm25_score_cliff_ratio("zh") == 0.85
+    assert s.resolve_get_audio_knn_score_cliff_ratio("zh") == 0.90
+    s2 = Settings(
+        _env_file=None,
+        get_audio_score_cliff_ratio=0.97,
+        get_audio_bm25_score_cliff_ratio=None,
+        get_audio_knn_score_cliff_ratio=None,
+    )
+    assert s2.resolve_get_audio_bm25_score_cliff_ratio("zh") == 0.97
+    assert s2.resolve_get_audio_knn_score_cliff_ratio("en") == 0.97
 
 
 def test_min_score_drops_weak_hits() -> None:
@@ -165,3 +187,54 @@ def test_multi_color_lane_cliff_keeps_both_colors() -> None:
         per_color, query_text="白噪音和粉噪音", per_color=1
     )
     assert {d["_id"] for d in after_div} == {"w", "p"}
+
+
+def test_bm25_query_blacklist_blocks_particles() -> None:
+    assert is_bm25_query_blacklisted("了")
+    assert is_bm25_query_blacklisted("我")
+    assert is_bm25_query_blacklisted("和")
+    assert is_bm25_query_blacklisted("The")
+    assert is_bm25_query_blacklisted("no")
+    assert is_bm25_query_blacklisted("car")
+    assert is_bm25_query_blacklisted("ok")  # ≤2 纯字母
+    assert is_bm25_query_blacklisted("zz")  # 极短英文规则
+    assert not is_bm25_query_blacklisted("雨声")
+    assert not is_bm25_query_blacklisted("人声")
+    assert not is_bm25_query_blacklisted("噪声")
+    assert not is_bm25_query_blacklisted("雨")
+    assert not is_bm25_query_blacklisted("助眠")
+    assert not is_bm25_query_blacklisted("rain")
+    assert not is_bm25_query_blacklisted("wind")
+    # 空配置 / 空集合必须回退内置默认，不能静默失效
+    assert is_bm25_query_blacklisted("了", blacklist=frozenset())
+    assert is_bm25_query_blacklisted(
+        "了",
+        blacklist=Settings(
+            _env_file=None, get_audio_bm25_query_blacklist=""
+        ).resolve_get_audio_bm25_query_blacklist(),
+    )
+
+
+def test_lexical_match_keeps_title_or_tag_overlap() -> None:
+    rain = {
+        "_id": "1",
+        "audio_name": "轻柔微雨",
+        "content_form_tags": [{"name": "均匀小雨", "code": "steady_light_rain"}],
+    }
+    piano = {
+        "_id": "2",
+        "audio_name": "静待相逢",
+        "content_form_tags": [{"name": "轻音乐", "code": "light_music"}],
+    }
+    voice = {
+        "_id": "3",
+        "audio_name": "正念冥想",
+        "content_form_tags": [{"name": "人声引导", "code": "voice_guidance"}],
+    }
+    assert doc_matches_query_lexically(rain, "雨声")
+    assert not doc_matches_query_lexically(piano, "钢琴")
+    assert doc_matches_query_lexically(voice, "人声")
+    kept = filter_docs_by_query_lexical_match(
+        [rain, piano, voice], query_text="钢琴"
+    )
+    assert kept == []
