@@ -60,6 +60,8 @@ SEARCH_CANDIDATE_SOURCE_INCLUDES = (
     "short_description",
     "recommend_weight",
     "status",
+    "audio_name_en",
+    "short_description_en",
 )
 
 
@@ -129,8 +131,7 @@ def build_get_audio_filters(
                     "query": {
                         "bool": {
                             "should": [
-                                {"term": {"content_form_tags.code": code}}
-                                for code in codes
+                                {"term": {"content_form_tags.code": code}} for code in codes
                             ],
                             "minimum_should_match": 1,
                         }
@@ -141,9 +142,7 @@ def build_get_audio_filters(
     return filters
 
 
-def _scored_documents(
-    response: dict[str, Any], *, score_field: str
-) -> list[dict[str, Any]]:
+def _scored_documents(response: dict[str, Any], *, score_field: str) -> list[dict[str, Any]]:
     docs: list[dict[str, Any]] = []
     for hit in response.get("hits", {}).get("hits", []):
         doc = _document_from_hit(hit)
@@ -169,7 +168,9 @@ def _candidate_from_hit(hit: dict[str, Any]) -> dict[str, Any]:
 CANDIDATE_QUERY_SIZE = 1000
 
 
-def _candidate_search_body(query: dict[str, Any], *, size: int = CANDIDATE_QUERY_SIZE) -> dict[str, Any]:
+def _candidate_search_body(
+    query: dict[str, Any], *, size: int = CANDIDATE_QUERY_SIZE
+) -> dict[str, Any]:
     """检索候选查询体：只取流水线必要字段。"""
     active_query = {
         "bool": {
@@ -447,6 +448,7 @@ class EsSearch:
         size: int,
         language: str = "",
         include_source: bool = True,
+        allow_field_override: bool = True,
     ) -> list[dict[str, Any]]:
         """描述向量语义召回；按 language 选 zh/en 字段，不按文档 language 过滤。"""
         if not query_vector or size <= 0:
@@ -454,7 +456,9 @@ class EsSearch:
 
         vector_field = description_vector_field(
             language,
-            override=self._settings.get_audio_description_vector_field,
+            override=self._settings.get_audio_description_vector_field
+            if allow_field_override
+            else "",
         )
         knn: dict[str, Any] = {
             "field": vector_field,
@@ -473,20 +477,43 @@ class EsSearch:
             {"includes": list(SEARCH_CANDIDATE_SOURCE_INCLUDES)} if include_source else False
         )
 
+        return await self._search_knn_documents(
+            query_vector,
+            vector_field=vector_field,
+            k=size,
+            num_candidates=max(size * 3, 50),
+            filters=knn["filter"],
+            source=source,
+            score_field="_description_score",
+        )
+
+    async def _search_knn_documents(
+        self,
+        query_vector: list[float],
+        *,
+        vector_field: str,
+        k: int,
+        num_candidates: int,
+        filters: Any,
+        source: Any,
+        score_field: str,
+    ) -> list[dict[str, Any]]:
+        """Shared ES vector request; each caller owns its filters/projection/score name."""
         response = await self._client.search(
             index=self.audio_index,
             body={
-                "knn": knn,
-                "size": size,
+                "knn": {
+                    "field": vector_field,
+                    "query_vector": query_vector,
+                    "k": k,
+                    "num_candidates": num_candidates,
+                    "filter": filters,
+                },
+                "size": k,
                 "_source": source,
             },
         )
-        results: list[dict[str, Any]] = []
-        for hit in response["hits"]["hits"]:
-            source = _candidate_from_hit(hit)
-            source["_description_score"] = float(hit.get("_score") or 0.0)
-            results.append(source)
-        return results
+        return _scored_documents(response, score_field=score_field)
 
     @staticmethod
     def parse_tags(raw: dict[str, Any]) -> AudioTags:
@@ -547,26 +574,28 @@ class EsSearch:
         tag_code: str = "",
         content_form_codes: list[str] | None = None,
         size: int,
+        sleep_stage_tags: list[str] | None = None,
+        source_includes: tuple[str, ...] = GET_AUDIO_SOURCE_INCLUDES,
     ) -> list[dict[str, Any]]:
         """量产 GetAudio：按 description_text / description_text_en 做 BM25。
 
         短词整句 match_phrase；长句拆成关键词 phrase（should）。
         """
         text_field = description_text_field(language)
+        filters = build_get_audio_filters(tag_code=tag_code, content_form_codes=content_form_codes)
+        if sleep_stage_tags:
+            filters.append(_sleep_stage_filter(sleep_stage_tags))
         response = await self._client.search(
             index=self.audio_index,
             body={
                 "size": max(1, size),
                 "query": {
                     "bool": {
-                        "filter": build_get_audio_filters(
-                            tag_code=tag_code,
-                            content_form_codes=content_form_codes,
-                        ),
+                        "filter": filters,
                         "must": [build_bm25_must_clause(text_field, query_text)],
                     }
                 },
-                "_source": {"includes": list(GET_AUDIO_SOURCE_INCLUDES)},
+                "_source": {"includes": list(source_includes)},
             },
         )
         return _scored_documents(response, score_field="_bm25_score")
@@ -591,21 +620,15 @@ class EsSearch:
             content_form_codes=content_form_codes,
         )
         filters.append({"exists": {"field": vector_field}})
-        response = await self._client.search(
-            index=self.audio_index,
-            body={
-                "knn": {
-                    "field": vector_field,
-                    "query_vector": query_vector,
-                    "k": max(1, k),
-                    "num_candidates": max(1, num_candidates),
-                    "filter": filters,
-                },
-                "size": max(1, k),
-                "_source": {"includes": list(GET_AUDIO_SOURCE_INCLUDES)},
-            },
+        return await self._search_knn_documents(
+            query_vector,
+            vector_field=vector_field,
+            k=max(1, k),
+            num_candidates=max(1, num_candidates),
+            filters=filters,
+            source={"includes": list(GET_AUDIO_SOURCE_INCLUDES)},
+            score_field="_knn_score",
         )
-        return _scored_documents(response, score_field="_knn_score")
 
     async def search_get_audio_vector_all(
         self,
@@ -634,9 +657,7 @@ class EsSearch:
                     "script_score": {
                         "query": {"bool": {"filter": filters}},
                         "script": {
-                            "source": (
-                                f"(cosineSimilarity(params.q, '{vector_field}') + 1.0) / 2"
-                            ),
+                            "source": (f"(cosineSimilarity(params.q, '{vector_field}') + 1.0) / 2"),
                             "params": {"q": query_vector},
                         },
                     }
@@ -662,19 +683,11 @@ class EsSearch:
         dim = self._settings.embedding_dim
         if self._index_profile == "somni":
             dim_en = self._settings.embedding_dim_en
-            materials_mapping = {
-                "mappings": build_somni_audio_materials_mapping(dim, dim_en)
-            }
-            dictionary_mapping = {
-                "mappings": build_somni_audio_tag_dictionary_mapping(dim, dim_en)
-            }
+            materials_mapping = {"mappings": build_somni_audio_materials_mapping(dim, dim_en)}
+            dictionary_mapping = {"mappings": build_somni_audio_tag_dictionary_mapping(dim, dim_en)}
         else:
-            materials_mapping = {
-                "mappings": build_handboard_audio_materials_mapping(dim)
-            }
-            dictionary_mapping = {
-                "mappings": build_handboard_audio_tag_dictionary_mapping(dim)
-            }
+            materials_mapping = {"mappings": build_handboard_audio_materials_mapping(dim)}
+            dictionary_mapping = {"mappings": build_handboard_audio_tag_dictionary_mapping(dim)}
 
         for index, mapping in (
             (self.audio_index, materials_mapping),
@@ -685,9 +698,7 @@ class EsSearch:
                 logger.info("已创建 ES 索引：{}", index)
                 continue
             try:
-                await self._client.indices.put_mapping(
-                    index=index, body=mapping["mappings"]
-                )
+                await self._client.indices.put_mapping(index=index, body=mapping["mappings"])
             except ApiError as exc:
                 if not _is_dense_vector_dims_conflict(exc):
                     raise

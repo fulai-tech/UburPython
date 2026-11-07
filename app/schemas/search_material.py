@@ -21,6 +21,8 @@ def project_search_material(doc: dict[str, Any]) -> dict[str, Any]:
     }
     for key in (
         "short_description",
+        "audio_name_en",
+        "short_description_en",
         "language",
         "languages",
         "source",

@@ -454,3 +454,28 @@ following the same whole-object equality rules as `sleep_summary`. Nested query 
 and operators inside document values remain unsupported. The protobuf wire format is unchanged. Deploy the updated middleware before clients use these paths.
 
 Regression: `python -m pytest tests/test_ask_context_service.py tests/test_ask_context_query_builder.py -q`.
+
+### Prescription hybrid recall and bilingual metadata
+
+`SearchPrescriptionAudio` uses the dedicated `RetrievalService.search_prescription` path.
+Natural queries recall BM25 and description vectors concurrently, merge identities by RRF,
+and combine with existing tag candidates. Generic `SearchAudio` keeps its existing ranking path.
+The catalogue and prescription paths share encoding, lane collection and RRF primitives;
+`GetAudio` keeps its catalogue-specific relevance thresholds, sorting and hot-list behavior.
+
+Prescription final-score formulas/weights are unchanged. BM25-only hits have zero description
+similarity; keyword scores and RRF ranks are never substituted for vector similarity.
+RRF determines recall budget/order and final-score ties. Source language determines the description
+encoder/field; tag vectors stay on the reviewed dictionary's original semantic basis.
+An unavailable lane can degrade to the other; both unavailable returns dependency failure, while
+successful empty results remain empty. Logs record lane counts and degradation without exceptions.
+Pure color-noise requests reuse sibling-color exclusion and diversification, without applying
+catalogue cliff thresholds or removing a separately requested rain/nature channel.
+
+ES candidate projections and response Structs preserve `audio_name_en` and `short_description_en`
+when present; missing English fields do not trigger translation or synthetic values.
+`GetAudio` continues mapping the short English text to `AudioListItem.description_en` (field 10),
+and English name to `audio_name_en` (field 9). No new language request field or device-node field.
+Sleep-stage candidate cache namespaces are v4 to preserve the new projection; natural-text vector
+keys include recall version, language and model identity. No migration, index rewrite or bulk cache
+clear is required. Hard enabled/stage/dislike validation and no-hot-accounting remain in force.

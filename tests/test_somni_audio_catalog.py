@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.core.config import Settings
-from app.core.exceptions import AppError, EncoderNotReadyError
+from app.core.exceptions import AppError
 from app.server.somni.audio import catalog
 from app.server.somni.audio.catalog import AudioCatalogService, InvalidAudioQueryError
 
@@ -156,9 +156,7 @@ def _service(
             es_search.search_get_audio_bm25 = AsyncMock(return_value=[])
         if not isinstance(getattr(es_search, "search_get_audio_knn", None), AsyncMock):
             es_search.search_get_audio_knn = AsyncMock(return_value=[])
-        if not isinstance(
-            getattr(es_search, "search_get_audio_vector_all", None), AsyncMock
-        ):
+        if not isinstance(getattr(es_search, "search_get_audio_vector_all", None), AsyncMock):
             es_search.search_get_audio_vector_all = AsyncMock(return_value=[])
         if not isinstance(getattr(es_search, "audio_index_exists", None), AsyncMock):
             es_search.audio_index_exists = AsyncMock(return_value=True)
@@ -429,9 +427,7 @@ async def test_get_audio_keeps_mongo_and_es_caches_separate() -> None:
     es_search = MagicMock()
     es_search.list_audio_catalog_docs = AsyncMock(return_value=[_RAIN])
     es_search.search_get_audio_bm25 = AsyncMock(return_value=[])
-    es_search.search_get_audio_knn = AsyncMock(
-        return_value=[{**_RAIN, "_knn_score": 0.9}]
-    )
+    es_search.search_get_audio_knn = AsyncMock(return_value=[{**_RAIN, "_knn_score": 0.9}])
     es_search.search_get_audio_vector_all = AsyncMock(return_value=[])
     svc = _service(collection, es_search=es_search, encoder=encoder)
 
@@ -615,9 +611,7 @@ async def test_get_audio_query_merges_bm25_and_knn_hits() -> None:
     es_search = MagicMock()
     es_search.list_audio_catalog_docs = AsyncMock(return_value=[])
     es_search.search_get_audio_bm25 = AsyncMock(return_value=[piano])
-    es_search.search_get_audio_knn = AsyncMock(
-        return_value=[{**_RAIN, "_knn_score": 0.88}]
-    )
+    es_search.search_get_audio_knn = AsyncMock(return_value=[{**_RAIN, "_knn_score": 0.88}])
     es_search.search_get_audio_vector_all = AsyncMock(return_value=[])
     svc = _service(_mongo_collection([_RAIN]), es_search=es_search, encoder=encoder)
     payload = await svc.get_audio(
@@ -746,9 +740,7 @@ async def test_get_audio_query_text_matches_child_tag() -> None:
     encoder.encode_one = AsyncMock(return_value=[1.0, 0.0])
     es_search = MagicMock()
     es_search.search_get_audio_bm25 = AsyncMock(return_value=[])
-    es_search.search_get_audio_knn = AsyncMock(
-        return_value=[{**white_noise, "_knn_score": 0.91}]
-    )
+    es_search.search_get_audio_knn = AsyncMock(return_value=[{**white_noise, "_knn_score": 0.91}])
     es_search.search_get_audio_vector_all = AsyncMock(return_value=[])
     es_search.list_audio_catalog_docs = AsyncMock(return_value=[])
     svc = _service(_mongo_collection([_RAIN, white_noise]), es_search=es_search, encoder=encoder)
@@ -969,9 +961,7 @@ async def test_get_audio_succeeds_when_hot_recording_fails() -> None:
 async def test_get_audio_query_text_without_encoder_degrades_to_bm25() -> None:
     es_search = MagicMock()
     es_search.list_audio_catalog_docs = AsyncMock(return_value=[])
-    es_search.search_get_audio_bm25 = AsyncMock(
-        return_value=[{**_RAIN, "_bm25_score": 1.2}]
-    )
+    es_search.search_get_audio_bm25 = AsyncMock(return_value=[{**_RAIN, "_bm25_score": 1.2}])
     es_search.search_get_audio_knn = AsyncMock(return_value=[])
     es_search.search_get_audio_vector_all = AsyncMock(return_value=[])
     svc = _service(_mongo_collection([_RAIN]), es_search=es_search, encoder=None)
@@ -1094,9 +1084,7 @@ async def test_get_audio_query_text_rain_matches_via_code_token() -> None:
     encoder.is_loaded = True
     encoder.encode_one = AsyncMock(return_value=[1.0, 0.0])
     es_search = MagicMock()
-    es_search.search_get_audio_bm25 = AsyncMock(
-        return_value=[{**rain, "_bm25_score": 3.0}]
-    )
+    es_search.search_get_audio_bm25 = AsyncMock(return_value=[{**rain, "_bm25_score": 3.0}])
     es_search.search_get_audio_knn = AsyncMock(return_value=[])
     es_search.search_get_audio_vector_all = AsyncMock(return_value=[])
     es_search.list_audio_catalog_docs = AsyncMock(return_value=[])
@@ -1218,6 +1206,7 @@ async def test_prescription_search_resolves_codes_and_uses_ranked_search_without
             }
         ]
     )
+    retrieval.search_prescription = retrieval.search
     service = _service(MagicMock(), hot=MagicMock())
     service._retrieval = retrieval
 
@@ -1267,6 +1256,7 @@ async def test_prescription_search_resolves_codes_and_uses_ranked_search_without
 async def test_prescription_search_fails_closed_on_unknown_tag_code(monkeypatch) -> None:
     retrieval = MagicMock()
     retrieval.search = AsyncMock(return_value=[{"id": "must-not-return"}])
+    retrieval.search_prescription = retrieval.search
     service = _service(MagicMock())
     service._retrieval = retrieval
 
@@ -1293,6 +1283,7 @@ async def test_prescription_search_fails_closed_on_unknown_tag_code(monkeypatch)
 async def test_prescription_search_fails_closed_on_ambiguous_tag_code(monkeypatch) -> None:
     retrieval = MagicMock()
     retrieval.search = AsyncMock(return_value=[{"id": "must-not-return"}])
+    retrieval.search_prescription = retrieval.search
     service = _service(MagicMock())
     service._retrieval = retrieval
 
@@ -1760,6 +1751,7 @@ async def test_get_audio_query_text_ignores_quiz_preference() -> None:
     )
 
     es_search.search_by_description_vector.assert_not_called()
+
 
 def _dislike_audio(audio_id: str, name: str, tag_id: str, tag_name: str, created: str) -> dict:
     return {
