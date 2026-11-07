@@ -86,6 +86,7 @@ async def test_unknown_rpc_dislike_is_ignored_before_retrieval():
 
     retrieval = AsyncMock()
     retrieval.search.return_value = []
+    retrieval.search_prescription = retrieval.search
     service = AudioCatalogService(None, Settings(), retrieval=retrieval)
     assert (
         await service.search_prescription_audio({"disliked_tags": ["未审核的新标签", "钢琴"]}) == []

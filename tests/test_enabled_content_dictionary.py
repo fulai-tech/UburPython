@@ -77,6 +77,7 @@ async def test_all_regression_codes_reach_real_catalog_validation():
     rows = dictionary_records()
     retrieval = MagicMock()
     retrieval.search = AsyncMock(return_value=[])
+    retrieval.search_prescription = retrieval.search
     catalog = AudioCatalogService(None, Settings(), retrieval=retrieval)
     collection = MagicMock()
     collection.find.side_effect = lambda query, projection: Cursor(

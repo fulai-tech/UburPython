@@ -1,6 +1,6 @@
 """按睡眠阶段拆分的候选文档 Redis 缓存。
 
-文档全局只存一份（sleep_stage_v3_doc:*），各阶段仅存 audio_url 索引；
+文档全局只存一份（sleep_stage_v4_doc:*），各阶段仅存 audio_url 索引；
 多阶段查询合并索引后 MGET 文档，按 audio_url 去重。
 """
 
@@ -19,8 +19,8 @@ from app.core.config import Settings
 
 SLEEP_STAGES = ("unwind", "soothe", "guard", "wake")
 _CACHE_CLEANUP_STAGES = SLEEP_STAGES
-SLEEP_STAGE_INDEX_KEY_PREFIX = "sleep_stage_v3_index:"
-SLEEP_STAGE_DOC_KEY_PREFIX = "sleep_stage_v3_doc:"
+SLEEP_STAGE_INDEX_KEY_PREFIX = "sleep_stage_v4_index:"
+SLEEP_STAGE_DOC_KEY_PREFIX = "sleep_stage_v4_doc:"
 # 兼容旧测试/调用名
 SLEEP_STAGE_CANDIDATE_KEY_PREFIX = SLEEP_STAGE_INDEX_KEY_PREFIX
 _LEGACY_SLEEP_STAGE_INDEX_KEY_PREFIX = "sleep_stage_index:"

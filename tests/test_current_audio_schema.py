@@ -124,6 +124,7 @@ async def test_current_tag_batch_reaches_retrieval_and_preserves_struct_metadata
     row = material()
     retrieval = MagicMock()
     retrieval.search = AsyncMock(return_value=[project_search_material(row)])
+    retrieval.search_prescription = retrieval.search
     service = AudioCatalogService(None, Settings(), retrieval=retrieval)
     materials = MagicMock()
     materials.find.side_effect = lambda *args: Cursor([row])
@@ -170,6 +171,7 @@ async def test_prescription_uses_es_material_without_mongo_identity_recheck():
     row["_id"] = "es-only-id"
     retrieval = MagicMock()
     retrieval.search = AsyncMock(return_value=[project_search_material(row)])
+    retrieval.search_prescription = retrieval.search
     service = AudioCatalogService(None, Settings(), retrieval=retrieval)
     collection = MagicMock()
     collection.find.side_effect = AssertionError("material Mongo must not be read")
@@ -196,6 +198,7 @@ async def test_es_only_prescription_keeps_metadata_stage_and_dislike_checks(fail
         row["content_form_tags"] = [{"code": "invalid-content-code"}]
     retrieval = MagicMock()
     retrieval.search = AsyncMock(return_value=[project_search_material(row)])
+    retrieval.search_prescription = retrieval.search
     service = AudioCatalogService(None, Settings(), retrieval=retrieval)
     service._materials = lambda: (_ for _ in ()).throw(AssertionError("no Mongo material lookup"))
     assert await service.search_prescription_audio(task) == []

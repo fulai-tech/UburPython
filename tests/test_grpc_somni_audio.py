@@ -24,11 +24,9 @@ def _make_rpc() -> tuple[AudioRpc, MagicMock]:
 
 
 @pytest.mark.asyncio
-async def test_get_audio_treats_language_en_as_zh() -> None:
+async def test_get_audio_preserves_explicit_english_language() -> None:
     rpc, service = _make_rpc()
-    service.get_audio = AsyncMock(
-        return_value={"list": [], "page": 1, "page_size": 20, "total": 0}
-    )
+    service.get_audio = AsyncMock(return_value={"list": [], "page": 1, "page_size": 20, "total": 0})
     req = uburnode_somni_pb2.GetAudioReq(page=1, page_size=20, language="en")
     await rpc.GetAudio(req, _context())
     service.get_audio.assert_awaited_once_with(
@@ -40,7 +38,7 @@ async def test_get_audio_treats_language_en_as_zh() -> None:
         content_form_codes=[],
         preference_text="",
         dislike_text="",
-        language="zh",
+        language="en",
     )
 
 
@@ -184,9 +182,7 @@ async def test_get_audio_tag_maps_fields() -> None:
 @pytest.mark.asyncio
 async def test_search_audio_matches_http_search_request() -> None:
     rpc, service = _make_rpc()
-    service.search_audio = AsyncMock(
-        return_value=[{"id": "a1", "audio_name": "持续海浪拍岸声"}]
-    )
+    service.search_audio = AsyncMock(return_value=[{"id": "a1", "audio_name": "持续海浪拍岸声"}])
     res = await rpc.SearchAudio(
         uburnode_somni_pb2.SearchAudioReq(query_text="海浪声", top_k=5),
         _context(),
@@ -224,9 +220,7 @@ async def test_get_hot_passes_kind_tag() -> None:
 @pytest.mark.asyncio
 async def test_get_hot_maps_items() -> None:
     rpc, service = _make_rpc()
-    service.get_hot = AsyncMock(
-        return_value={"items": [{"keyword": "雨声", "score": 5}]}
-    )
+    service.get_hot = AsyncMock(return_value={"items": [{"keyword": "雨声", "score": 5}]})
     res = await rpc.GetHot(uburnode_somni_pb2.GetHotReq(), _context())
     service.get_hot.assert_awaited_once_with(language="zh", kind="query")
     assert res.items[0].keyword == "雨声"
@@ -243,19 +237,34 @@ async def test_get_hot_rejects_invalid_kind() -> None:
     service.get_hot.assert_not_called()
     ctx.abort.assert_awaited_once()
 
+
 @pytest.mark.asyncio
 async def test_search_prescription_audio_batches_by_task_without_hot_api() -> None:
     rpc, service = _make_rpc()
-    service.search_prescription_audio = AsyncMock(return_value=[{
-        "id": "audio-1", "audio_name": "rain", "audio_url": "https://cdn.example/rain.mp3",
-        "tags": ["steady_rain"], "_score": 0.87,
-    }])
-    request = uburnode_somni_pb2.SearchPrescriptionAudioReq(tasks=[
-        uburnode_somni_pb2.PrescriptionAudioSearchTask(
-            task_id="task-1", problem_code="C1.1", intervention_code="breathing_guidance",
-            query_text="gentle breathing", content_tag_codes=["breathing_guidance"], sleep_stage_tags=["unwind"], top_k=5,
-        )
-    ])
+    service.search_prescription_audio = AsyncMock(
+        return_value=[
+            {
+                "id": "audio-1",
+                "audio_name": "rain",
+                "audio_url": "https://cdn.example/rain.mp3",
+                "tags": ["steady_rain"],
+                "_score": 0.87,
+            }
+        ]
+    )
+    request = uburnode_somni_pb2.SearchPrescriptionAudioReq(
+        tasks=[
+            uburnode_somni_pb2.PrescriptionAudioSearchTask(
+                task_id="task-1",
+                problem_code="C1.1",
+                intervention_code="breathing_guidance",
+                query_text="gentle breathing",
+                content_tag_codes=["breathing_guidance"],
+                sleep_stage_tags=["unwind"],
+                top_k=5,
+            )
+        ]
+    )
     result = await rpc.SearchPrescriptionAudio(request, _context())
     assert len(result.results) == 1
     assert result.results[0].task_id == "task-1"

@@ -61,8 +61,8 @@ def _doc(name: str, url: str, stages: list[str]) -> dict[str, Any]:
 
 
 def test_key_builders() -> None:
-    assert SLEEP_STAGE_INDEX_KEY_PREFIX == "sleep_stage_v3_index:"
-    assert SLEEP_STAGE_DOC_KEY_PREFIX == "sleep_stage_v3_doc:"
+    assert SLEEP_STAGE_INDEX_KEY_PREFIX == "sleep_stage_v4_index:"
+    assert SLEEP_STAGE_DOC_KEY_PREFIX == "sleep_stage_v4_doc:"
     from app.core.audio_tags import audio_tag_contract_version
 
     assert (
@@ -309,11 +309,11 @@ async def test_clear_all_removes_legacy_indexes_docs_and_candidate_keys() -> Non
 async def test_clear_all_removes_stale_awake_stage_index() -> None:
     redis = _FakeRedis()
     cache = SleepStageCandidateCache(redis, ttl_sec=60)
-    await redis.set("sleep_stage_v3_index:清醒", json.dumps(["https://cdn/awake.mp3"]), ex=60)
+    await redis.set("sleep_stage_v4_index:清醒", json.dumps(["https://cdn/awake.mp3"]), ex=60)
 
     await cache.clear_all()
 
-    assert await redis.get("sleep_stage_v3_index:清醒") is None
+    assert await redis.get("sleep_stage_v4_index:清醒") is None
 
 
 @pytest.mark.asyncio

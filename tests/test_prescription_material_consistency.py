@@ -39,6 +39,7 @@ async def test_es_ids_and_urls_are_not_replaced_or_removed_by_mongo():
             project_search_material(current),
         ]
     )
+    retrieval.search_prescription = retrieval.search
     service = AudioCatalogService(None, Settings(), retrieval=retrieval)
     collection = MagicMock()
     collection.find.return_value = Cursor([current, {**current, "_id": "changed"}])
@@ -66,6 +67,7 @@ async def test_repeated_search_does_not_create_mongo_authority_snapshot():
     }
     retrieval = MagicMock()
     retrieval.search = AsyncMock(return_value=[project_search_material(row)])
+    retrieval.search_prescription = retrieval.search
     service = AudioCatalogService(None, Settings(), retrieval=retrieval)
     collection = MagicMock()
     collection.find.side_effect = AssertionError("no material Mongo reads")

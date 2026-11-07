@@ -34,7 +34,8 @@ from app.core.audio_tags import (
 )
 from app.core.config import Settings
 from app.embedding.encoder import Encoder
-from app.es.search import CANDIDATE_QUERY_SIZE, EsSearch
+from app.es.search import CANDIDATE_QUERY_SIZE, SEARCH_CANDIDATE_SOURCE_INCLUDES, EsSearch
+from app.es.somni_docs import resolve_query_language
 from app.schemas.audio import (
     EVIDENCE_WEIGHT_MAP,
     AudioTags,
@@ -42,6 +43,17 @@ from app.schemas.audio import (
     SearchAudioRequest,
 )
 from app.schemas.search_material import project_search_material
+from app.server.somni.audio.relevance_filter import (
+    diversify_multi_color_noise,
+    filter_conflicting_color_noise,
+)
+from app.services.hybrid_recall import (
+    RECALL_VERSION,
+    encode_query,
+    gather_lanes,
+    merge_documents,
+    require_available_lane,
+)
 
 if TYPE_CHECKING:
     from app.cache.sleep_stage_cache import SleepStageCandidateCache
@@ -234,6 +246,220 @@ class RetrievalService:
             if query_text:
                 return await self._search_text_multi_route(request, query_text)
             return await self._search_tag_only(request)
+
+    async def search_prescription(self, request: SearchAudioRequest) -> list[dict[str, Any]]:
+        """Hybrid natural-text recall, retaining the prescription scoring contract."""
+        async with self._search_semaphore:
+            text = (request.query_text or "").strip()
+            if not text:
+                return await self._search_tag_only(request)
+            dictionary = await self._tag_dictionary()
+            positive = _remove_negative_fragments(text).strip()
+            if _extract_negative_fragments(text) and not re.sub(
+                r"\b(?:i|we|please|really|would|like|want|any)\b|[\W_]+|我|请",
+                "",
+                positive,
+                flags=re.I,
+            ):
+                positive = ""
+            tag_vector = []
+            vectors_available = True
+            try:
+                if positive:
+                    tag_vector = await self._encode_one(positive)
+            except Exception as exc:
+                vectors_available = False
+                logger.warning("prescription_tag_encoding_unavailable type={}", type(exc).__name__)
+            extracted = await self._extract_query_tags(
+                text,
+                tag_vector,
+                dictionary,
+                allow_vectors=vectors_available,
+            )
+            content = _unique_preserve_order(
+                [
+                    *_normalize_color_noise_aliases(request.content_tags),
+                    *extracted.content_tags,
+                ]
+            )
+            content = _remove_mutually_exclusive_expansions(
+                content,
+                preferred_labels=_normalize_color_noise_aliases(request.content_tags),
+            )
+            disliked = _usable_dislike_tags(
+                canonical_tags(
+                    [
+                        *request.disliked_tags,
+                        *extracted.disliked_tags,
+                    ]
+                )
+            )
+            content = [code for code in content if code not in disliked]
+            effective = request.model_copy(
+                update={"content_tags": content, "disliked_tags": disliked}
+            )
+            if not positive:
+                return await self._search_tag_only(effective)
+            language = resolve_query_language(positive)
+            size = _recall_size(request.top_k)
+
+            async def vector_lane():
+                if language == "zh" and not vectors_available:
+                    raise RuntimeError("prescription_query_encoder_unavailable")
+                vector = await self._encode_hybrid_query(positive, language)
+                return await self._es_search.search_by_description_vector(
+                    vector,
+                    sleep_stage_tags=request.sleep_stage_tags,
+                    size=size,
+                    language=language,
+                    allow_field_override=False,
+                )
+
+            async def recall():
+                bm25, vector, failed = await gather_lanes(
+                    [
+                        (
+                            "bm25",
+                            self._es_search.search_get_audio_bm25(
+                                positive,
+                                language=language,
+                                size=size,
+                                sleep_stage_tags=request.sleep_stage_tags,
+                                source_includes=SEARCH_CANDIDATE_SOURCE_INCLUDES,
+                            ),
+                        ),
+                        ("vector", vector_lane()),
+                    ]
+                )
+                logger.info(
+                    "prescription_recall version={} language={} bm25={} vector={} degraded={}",
+                    RECALL_VERSION,
+                    language,
+                    len(bm25),
+                    len(vector),
+                    failed,
+                )
+                require_available_lane(failed)
+                return merge_documents(bm25, vector, k=self._settings.get_audio_rrf_k)
+
+            recall_task = asyncio.create_task(recall())
+
+            async def tag_lane():
+                if not content:
+                    return []
+                try:
+                    if not self._settings.search_sleep_stage_filter_enabled:
+                        return await self._load_sleep_stage_candidates_on_miss(
+                            request.sleep_stage_tags
+                        )
+                    return await self._fetch_step1_candidates(request.sleep_stage_tags)
+                except Exception as exc:
+                    logger.warning(
+                        "prescription_tag_recall_unavailable type={}", type(exc).__name__
+                    )
+                    return []
+
+            tags_task = asyncio.create_task(tag_lane())
+            try:
+                docs, tag_docs = await asyncio.gather(recall_task, tags_task)
+            except BaseException:
+                recall_task.cancel()
+                tags_task.cancel()
+                await asyncio.gather(recall_task, tags_task, return_exceptions=True)
+                raise
+            explicit = set(_normalize_color_noise_aliases(request.content_tags))
+            lexical = set(_match_labels_from_text(positive, dictionary))
+            colors = set(_detect_color_noise_from_text(positive))
+            # Mixed or uncertain requirements must not be trimmed into a pure noise query.
+            if colors and not (
+                (explicit | lexical) - MUTUALLY_EXCLUSIVE_CONTENT_TAGS - {COLOR_NOISE_PARENT_TAG}
+            ):
+                docs = filter_conflicting_color_noise(docs, query_text=positive)
+                docs = diversify_multi_color_noise(docs, query_text=positive)
+            docs = [
+                doc
+                for doc in docs[:size]
+                if not _has_mutually_exclusive_conflict(
+                    content,
+                    self._es_search.parse_tags(doc).content_labels(),
+                )
+            ]
+            all_docs = [*tag_docs, *docs]
+            need_vectors = bool(
+                _strip_voice_mention_tags(disliked)
+            ) or self._has_non_exact_content_candidate(tag_docs, content)
+            (
+                vectors,
+                content,
+                disliked,
+                content_vectors,
+                dislike_vectors,
+            ) = await self._prepare_content_admission_inputs(
+                all_docs,
+                effective,
+                need_dictionary=need_vectors,
+            )
+            snapshot = VectorSimilaritySnapshot.build([*content_vectors, *dislike_vectors], vectors)
+            tag_candidates = (
+                await self._score_content_candidates(
+                    tag_docs,
+                    content,
+                    vectors,
+                    request_vectors=content_vectors,
+                    similarity_snapshot=snapshot,
+                )
+                if content
+                else []
+            )
+            candidates = await self._merge_and_rank_text_candidates(
+                tag_candidates=tag_candidates,
+                desc_candidates=[
+                    self._candidate_from_doc(doc, desc_score=_parse_desc_score(doc)) for doc in docs
+                ],
+                content_tags=content,
+                disliked_tags=_strip_voice_mention_tags(disliked),
+                voice_filter_tags=disliked,
+                dictionary_vectors=vectors,
+                dislike_vectors=dislike_vectors,
+                similarity_snapshot=snapshot,
+                similarity_row_offset=len(content_vectors),
+                top_k=request.top_k,
+            )
+            return [project_search_material(candidate.source) for candidate in candidates]
+
+    async def _encode_hybrid_query(self, text: str, language: str) -> list[float]:
+        key = _vector_key(text, natural=True, language=language, model=self._model_identity())
+        vector = self._text_vector_cache.get(key)
+        if vector is None:
+            vector = await encode_query(self._encoder, text, language)
+        dimension = (
+            self._settings.embedding_dim_en if language == "en" else self._settings.embedding_dim
+        )
+        if len(vector) != dimension:
+            self._text_vector_cache.pop(key, None)
+            raise ValueError("prescription_embedding_dimension_mismatch")
+        self._text_vector_cache[key] = vector
+        self._text_vector_cache.move_to_end(key)
+        while len(self._text_vector_cache) > self._text_vector_cache_max:
+            self._text_vector_cache.popitem(last=False)
+        return self._text_vector_cache[key]
+
+    def _model_identity(self) -> str:
+        return hashlib.sha256(
+            repr(
+                (
+                    self._settings.embedding_backend,
+                    self._settings.embedding_model,
+                    self._settings.embedding_onnx_dir,
+                    self._settings.embedding_onnx_dir_en,
+                    self._settings.embedding_dim,
+                    self._settings.embedding_dim_en,
+                )
+            ).encode()
+        ).hexdigest()
+
+    def _cache_key(self, text: str, *, natural: bool) -> str:
+        return _vector_key(text, natural=natural, model=self._model_identity() if natural else "")
 
     async def fallback_empty_search(self, request: SearchAudioRequest) -> EmptySearchFallback:
         """主检索为空时的 HTTP 兜底。有内容标签先走相似标签，仍空且有 query_text 再走描述向量。"""
@@ -881,7 +1107,7 @@ class RetrievalService:
         missing = [
             text
             for text in unique
-            if _vector_key(text, natural=natural) not in self._text_vector_cache
+            if self._cache_key(text, natural=natural) not in self._text_vector_cache
         ]
         resolved = {
             text: self._get_text_vector(text, natural=natural)
@@ -909,14 +1135,14 @@ class RetrievalService:
         return [resolved[text.strip()] for text in texts]
 
     def _put_text_vector(self, text: str, vector: list[float], *, natural: bool = False) -> None:
-        key = _vector_key(text, natural=natural)
+        key = self._cache_key(text, natural=natural)
         self._text_vector_cache[key] = vector
         self._text_vector_cache.move_to_end(key)
         while len(self._text_vector_cache) > self._text_vector_cache_max:
             self._text_vector_cache.popitem(last=False)
 
     def _get_text_vector(self, text: str, *, natural: bool = False) -> list[float]:
-        key = _vector_key(text, natural=natural)
+        key = self._cache_key(text, natural=natural)
         vector = self._text_vector_cache[key]
         self._text_vector_cache.move_to_end(key)
         return vector
@@ -1119,6 +1345,14 @@ class RetrievalService:
             current.tag_score = max(current.tag_score, candidate.tag_score)
             current.desc_score = max(current.desc_score, candidate.desc_score)
             current.match_count = max(current.match_count, candidate.match_count)
+            if "_retrieval_rank" in candidate.source:
+                current.source = {
+                    **current.source,
+                    "_retrieval_rank": min(
+                        current.source.get("_retrieval_rank", 10**9),
+                        candidate.source["_retrieval_rank"],
+                    ),
+                }
 
         dislike_vectors = (
             await self._encode_texts(disliked_tags)
@@ -1156,7 +1390,16 @@ class RetrievalService:
             ranked,
             disliked_tags=voice_filter_tags or disliked_tags,
         )
-        ranked.sort(key=lambda c: c.final_score, reverse=True)
+        if any("_retrieval_rank" in candidate.source for candidate in ranked):
+            ranked.sort(
+                key=lambda c: (
+                    -c.final_score,
+                    c.source.get("_retrieval_rank", 10**9),
+                    _candidate_key(c.source),
+                )
+            )
+        else:
+            ranked.sort(key=lambda c: c.final_score, reverse=True)
         if top_k is not None:
             ranked = ranked[:top_k]
         return ranked
@@ -1166,11 +1409,15 @@ class RetrievalService:
         query_text: str,
         query_vector: list[float],
         tag_vectors: list[dict[str, Any]],
+        *,
+        allow_vectors: bool = True,
     ) -> ExtractedQueryTags:
         tag_vectors = _canonical_dictionary(tag_vectors) or _canonical_dictionary(
             dictionary_records()
         )
 
+        if not allow_vectors:
+            tag_vectors = [{**tag, "vector": None} for tag in tag_vectors]
         negative_fragments = _extract_negative_fragments(query_text)
         negative_resolution = resolve_audio_preferences(disliked=negative_fragments)
         positive_text = _remove_negative_fragments(query_text)
@@ -1185,7 +1432,7 @@ class RetrievalService:
         if negative_fragments:
             positive_vector = (
                 await self._encode_one(positive_text)
-                if positive_text.strip()
+                if positive_text.strip() and allow_vectors
                 else [0.0] * len(query_vector)
             )
         color_intents = _detect_color_noise_from_text(positive_text)
@@ -1829,9 +2076,18 @@ def _canonical_dictionary(rows: Any) -> list[dict[str, Any]]:
     return result
 
 
-def _vector_key(text: str, *, natural: bool = False) -> str:
+def _vector_key(text: str, *, natural: bool = False, language: str = "zh", model: str = "") -> str:
     if natural:
-        return "text:" + hashlib.sha256(text.encode()).hexdigest()
+        return (
+            "text:"
+            + RECALL_VERSION
+            + ":"
+            + language
+            + ":"
+            + model
+            + ":"
+            + hashlib.sha256(text.encode()).hexdigest()
+        )
     code = tag_aliases().get(re.sub(r"[^a-z0-9\u3400-\u9fff]+", "_", text.casefold()).strip("_"))
     revision = audio_tag_contract_version()
     return (

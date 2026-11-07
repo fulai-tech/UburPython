@@ -40,12 +40,12 @@ from app.server.somni.audio.relevance_filter import (
     diversify_multi_color_noise,
     filter_conflicting_color_noise,
 )
-from app.server.somni.audio.rrf import rrf_merge
 from app.server.somni.audio.segment import (
     segment_dislike_phrases,
     segment_dislike_text,
     segment_dislike_text_en,
 )
+from app.services.hybrid_recall import encode_query, gather_lanes, merge_documents
 
 _TAG_ENABLED = "启用"
 _CONTENT_FORM = "content_form"
@@ -163,9 +163,7 @@ class AudioCatalogService:
         # 同时命中喜欢与讨厌时归讨厌段。
         docs = _order_like_neutral_dislike(docs, preferred_ids, disliked_ids)
         payload = _paginate_docs(docs, page, page_size, fetch_all, self._settings)
-        payload["list"] = [
-            _to_audio_list_item(item, language=language) for item in payload["list"]
-        ]
+        payload["list"] = [_to_audio_list_item(item, language=language) for item in payload["list"]]
         self._schedule_hot(
             query_text,
             language,
@@ -175,10 +173,7 @@ class AudioCatalogService:
         return payload
 
     def _search_path_enabled(self) -> bool:
-        return (
-            self._settings.get_audio_vector_enabled
-            or self._settings.get_audio_bm25_enabled
-        )
+        return self._settings.get_audio_vector_enabled or self._settings.get_audio_bm25_enabled
 
     async def _get_audio_hybrid_search(
         self,
@@ -193,9 +188,7 @@ class AudioCatalogService:
         es_search = self._require_es_search()
         # 检索字段/模型按输入文字语种；请求 language 只做可见性与展示
         query_language = resolve_query_language(text, language)
-        query_vector, degraded = await self._prepare_search_inputs(
-            text, language=query_language
-        )
+        query_vector, degraded = await self._prepare_search_inputs(text, language=query_language)
         bm25_docs, vector_docs, lane_degraded = await self._search_candidates(
             es_search=es_search,
             text=text,
@@ -249,9 +242,7 @@ class AudioCatalogService:
         if not fetch_all:
             mapped = mapped[: self._settings.get_audio_search_top_k]
         payload = _paginate_docs(mapped, page, page_size, fetch_all, self._settings)
-        payload["list"] = [
-            _to_audio_list_item(item, language=language) for item in payload["list"]
-        ]
+        payload["list"] = [_to_audio_list_item(item, language=language) for item in payload["list"]]
         self._schedule_hot(
             text,
             language,
@@ -266,9 +257,7 @@ class AudioCatalogService:
         self, text: str, *, language: str
     ) -> tuple[list[float] | None, list[str]]:
         degraded: list[str] = []
-        query_vector, encode_failed = await self._encode_query_if_needed(
-            text, language=language
-        )
+        query_vector, encode_failed = await self._encode_query_if_needed(text, language=language)
         if encode_failed:
             degraded.append("vector")
         return query_vector, degraded
@@ -279,7 +268,7 @@ class AudioCatalogService:
         if not self._settings.get_audio_vector_enabled:
             return None, False
         try:
-            vector = await self._require_encoder().encode_one(text, language=language)
+            vector = await encode_query(self._require_encoder(), text, language)
             return vector, False
         except Exception as exc:  # noqa: BLE001 — 编码失败不阻断 BM25
             logger.warning("GetAudio 向量编码失败，降级跳过 knn：{}", exc)
@@ -373,25 +362,10 @@ class AudioCatalogService:
         self,
         jobs: list[tuple[str, Any]],
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
-        if not jobs:
-            return [], [], []
-        results = await asyncio.gather(
-            *(coro for _, coro in jobs),
-            return_exceptions=True,
-        )
-        bm25_docs: list[dict[str, Any]] = []
-        vector_docs: list[dict[str, Any]] = []
-        degraded: list[str] = []
-        for (kind, _), result in zip(jobs, results):
-            if isinstance(result, BaseException):
-                logger.warning("GetAudio {} 检索失败，单路降级：{}", kind, result)
-                degraded.append(kind)
-                continue
-            if kind == "bm25":
-                bm25_docs = result
-            else:
-                vector_docs = result
-        return bm25_docs, vector_docs, degraded
+        bm25, vector, failed = await gather_lanes(jobs)
+        for lane in failed:
+            logger.warning("GetAudio recall lane unavailable: {}", lane)
+        return bm25, vector, failed
 
     def _raise_if_all_lanes_failed(self, degraded: list[str]) -> None:
         want_bm25 = self._settings.get_audio_bm25_enabled
@@ -480,10 +454,7 @@ class AudioCatalogService:
         # ES knn 的 num_candidates 上限 10000，检索侧按 size 的 3 倍取候选
         size = max(1, min(catalog_size, 3000))
         per_word = await asyncio.gather(
-            *(
-                self._disliked_ids_for_word(docs, tags, word, size=size)
-                for word in han_words
-            )
+            *(self._disliked_ids_for_word(docs, tags, word, size=size) for word in han_words)
         )
         for ids in per_word:
             found |= ids
@@ -512,9 +483,7 @@ class AudioCatalogService:
                 self._settings.get_audio_dislike_tag_sim_margin,
             ),
         )
-        described = await self._audio_ids_by_description(
-            docs, query, language="zh", size=size
-        )
+        described = await self._audio_ids_by_description(docs, query, language="zh", size=size)
         found |= described
         spread = _spread_tag_ids(
             docs,
@@ -706,7 +675,7 @@ class AudioCatalogService:
         )
         requested_top_k = request.top_k
         request.top_k = min(60, requested_top_k * 3)
-        materials = await self._retrieval.search(request)
+        materials = await self._retrieval.search_prescription(request)
         materials = self._filter_prescription_materials(materials)
         materials = [
             material
@@ -911,39 +880,11 @@ def _merge_hybrid_search_documents(
     *,
     rrf_k: int,
 ) -> list[dict[str, Any]]:
-    ranked_ids = [_hybrid_document_ids(bm25_docs), _hybrid_document_ids(vector_docs)]
-    merged = rrf_merge(ranked_ids, k=rrf_k)
-    docs_by_id: dict[str, dict[str, Any]] = {}
-    for doc in bm25_docs:
-        doc_id = _hybrid_document_id(doc)
-        if not doc_id:
-            continue
-        docs_by_id[doc_id] = dict(doc)
-    for doc in vector_docs:
-        doc_id = _hybrid_document_id(doc)
-        if not doc_id:
-            continue
-        existing = docs_by_id.get(doc_id)
-        if existing is None:
-            docs_by_id[doc_id] = dict(doc)
-            continue
-        if "_knn_score" in doc:
-            existing["_knn_score"] = doc["_knn_score"]
-        if "_bm25_score" in doc and "_bm25_score" not in existing:
-            existing["_bm25_score"] = doc["_bm25_score"]
+    # Keep the catalog's response shape: internal prescription ordering is not exposed.
     return [
-        {**docs_by_id[doc_id], "_rrf_score": rrf_score}
-        for doc_id, rrf_score in merged
-        if doc_id in docs_by_id
+        {k: v for k, v in doc.items() if k != "_retrieval_rank"}
+        for doc in merge_documents(bm25_docs, vector_docs, k=rrf_k)
     ]
-
-
-def _hybrid_document_ids(docs: list[dict[str, Any]]) -> list[str]:
-    return [doc_id for doc in docs if (doc_id := _hybrid_document_id(doc))]
-
-
-def _hybrid_document_id(doc: dict[str, Any]) -> str:
-    return str(doc.get("_id") or doc.get("id") or "")
 
 
 _AUDIO_LIST_PROJECTION = {
@@ -1061,11 +1002,7 @@ def _filter_docs_by_request_language(
 ) -> list[dict[str, Any]]:
     """只保留 language 为空/null，或与请求 language 相同的文档（路径 A/B 共用）。"""
     wanted = resolve_search_language(language)
-    return [
-        doc
-        for doc in docs
-        if (doc_lang := _doc_language(doc)) == "" or doc_lang == wanted
-    ]
+    return [doc for doc in docs if (doc_lang := _doc_language(doc)) == "" or doc_lang == wanted]
 
 
 def _to_audio_list_item(doc: dict[str, Any], *, language: str) -> dict[str, Any]:
@@ -1351,4 +1288,3 @@ def _has_content_form_tag_id(doc: dict[str, Any], tag_ids: set[str]) -> bool:
         if str(item.get("tag_id") or "") in tag_ids:
             return True
     return False
-
