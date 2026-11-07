@@ -635,7 +635,7 @@ async def test_get_audio_hybrid_filters_by_request_language() -> None:
     en_hit = {
         **_MUSIC,
         "_id": "en1",
-        "audio_name": "Piano",
+        "audio_name": "Rain Piano",
         "language": "en",
         "_knn_score": 0.89,
     }

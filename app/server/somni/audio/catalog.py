@@ -39,6 +39,8 @@ from app.server.somni.audio.relevance_filter import (
     detect_color_noise_intents,
     diversify_multi_color_noise,
     filter_conflicting_color_noise,
+    filter_docs_by_query_lexical_match,
+    is_bm25_query_blacklisted,
 )
 from app.server.somni.audio.segment import (
     segment_dislike_phrases,
@@ -205,21 +207,26 @@ class AudioCatalogService:
         vector_docs = _filter_docs_by_request_language(vector_docs, language)
         color_intents = detect_color_noise_intents(text)
         multi_color = len(color_intents) >= 2
-        cliff_ratio = self._settings.resolve_get_audio_score_cliff_ratio(query_language)
+        bm25_cliff = self._settings.resolve_get_audio_bm25_score_cliff_ratio(
+            query_language
+        )
+        knn_cliff = self._settings.resolve_get_audio_knn_score_cliff_ratio(
+            query_language
+        )
         # 多色：按色分别断崖，避免一色顶分把另一色整段砍掉
         lane_intents = color_intents if multi_color else None
         bm25_docs = apply_lane_relevance_filters(
             bm25_docs,
             score_field="_bm25_score",
             min_score=self._settings.get_audio_min_bm25_score,
-            cliff_ratio=cliff_ratio,
+            cliff_ratio=bm25_cliff,
             color_intents=lane_intents,
         )
         vector_docs = apply_lane_relevance_filters(
             vector_docs,
             score_field="_knn_score",
             min_score=self._settings.get_audio_min_vector_score,
-            cliff_ratio=cliff_ratio,
+            cliff_ratio=knn_cliff,
             color_intents=lane_intents,
         )
         merged_docs = _merge_hybrid_search_documents(
@@ -227,6 +234,8 @@ class AudioCatalogService:
             vector_docs,
             rrf_k=self._settings.get_audio_rrf_k,
         )
+        if self._settings.get_audio_hybrid_require_both_lanes:
+            merged_docs = _filter_docs_in_both_lanes(merged_docs)
         if multi_color:
             merged_docs = diversify_multi_color_noise(
                 merged_docs,
@@ -238,6 +247,13 @@ class AudioCatalogService:
                 merged_docs,
                 query_text=text,
             )
+        if self._settings.get_audio_lexical_match_enabled:
+            merged_docs = filter_docs_by_query_lexical_match(
+                merged_docs,
+                query_text=text,
+            )
+        if self._settings.get_audio_rerank_by_relevance:
+            merged_docs = _rerank_hybrid_docs_by_relevance(merged_docs)
         mapped = [_map_material(doc) for doc in merged_docs]
         if not fetch_all:
             mapped = mapped[: self._settings.get_audio_search_top_k]
@@ -298,6 +314,13 @@ class AudioCatalogService:
         fetch_all: bool,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
         jobs: list[tuple[str, Any]] = []
+        noise_query = is_bm25_query_blacklisted(
+            text,
+            blacklist=self._settings.resolve_get_audio_bm25_query_blacklist(),
+        )
+        # 虚词/英文极短词：双路都不跑，直接空结果（避免 knn+词法把「和」放进「温和」）
+        if noise_query:
+            return [], [], []
         if self._settings.get_audio_bm25_enabled:
             jobs.append(
                 (
@@ -885,6 +908,35 @@ def _merge_hybrid_search_documents(
         {k: v for k, v in doc.items() if k != "_retrieval_rank"}
         for doc in merge_documents(bm25_docs, vector_docs, k=rrf_k)
     ]
+
+
+def _filter_docs_in_both_lanes(docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """只保留合路后同时带有 BM25 与 knn 分的文档（两路名单交集）。"""
+    return [
+        doc
+        for doc in docs
+        if "_bm25_score" in doc and "_knn_score" in doc
+    ]
+
+
+def _rerank_hybrid_docs_by_relevance(docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    合路候选按相关度重排：knn 降序为主，BM25 降序为辅，RRF 仅作同分打散。
+    无 knn 分的文档排在有 knn 的后面（避免纯字面弱相关压过强语义命中）。
+    """
+    def _key(doc: dict[str, Any]) -> tuple[float, float, float, float, str]:
+        has_knn = 1.0 if "_knn_score" in doc else 0.0
+        knn = float(doc["_knn_score"]) if has_knn else 0.0
+        bm25 = float(doc["_bm25_score"]) if "_bm25_score" in doc else 0.0
+        rrf = float(doc.get("_rrf_score") or 0.0)
+        doc_id = _hybrid_document_id(doc)
+        return (has_knn, knn, bm25, rrf, doc_id)
+
+    return sorted(docs, key=_key, reverse=True)
+
+
+def _hybrid_document_id(doc: dict[str, Any]) -> str:
+    return str(doc.get("_id") or doc.get("id") or "")
 
 
 _AUDIO_LIST_PROJECTION = {
