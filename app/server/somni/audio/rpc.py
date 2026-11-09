@@ -40,6 +40,22 @@ class AudioRpc(uburnode_somni_pb2_grpc.AudioServiceServicer):
 
         return await run_rpc_call(context, _do)
 
+    async def GetAudioByIds(self, request, context):
+        service = await self._require(context)
+        try:
+            language = parse_language(request.language if request.HasField("language") else None)
+        except ValueError as exc:
+            await abort_invalid(context, str(exc))
+
+        async def _do():
+            payload = await service.get_audio_by_ids(
+                ids=list(request.ids),
+                language=language,
+            )
+            return _to_audio_by_ids_res(payload)
+
+        return await run_rpc_call(context, _do)
+
     async def GetAudioTag(self, request, context):
         del request
         service = await self._require(context)
@@ -215,6 +231,24 @@ def _to_audio_res(payload: dict[str, Any]) -> uburnode_somni_pb2.GetAudioRes:
             is_voice=bool(item.get("is_voice")),
             audio_name_en=str(item.get("audio_name_en") or ""),
             description_en=str(item.get("description_en") or ""),
+        )
+        for tag in item.get("tag") or []:
+            entry.tag.append(str(tag))
+        res.list.append(entry)
+    return res
+
+
+def _to_audio_by_ids_res(payload: dict[str, Any]) -> uburnode_somni_pb2.GetAudioByIdsRes:
+    res = uburnode_somni_pb2.GetAudioByIdsRes()
+    for item in payload.get("list") or []:
+        entry = uburnode_somni_pb2.AudioDetailItem(
+            id=str(item.get("id") or ""),
+            audio_name=str(item.get("audio_name") or ""),
+            audio_url=str(item.get("audio_url") or ""),
+            cover_url=str(item.get("cover_url") or ""),
+            description=str(item.get("description") or ""),
+            vip=int(item.get("vip") or 0),
+            is_voice=bool(item.get("is_voice")),
         )
         for tag in item.get("tag") or []:
             entry.tag.append(str(tag))

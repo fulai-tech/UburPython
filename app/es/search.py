@@ -566,6 +566,28 @@ class EsSearch:
         )
         return [_document_from_hit(hit) for hit in response["hits"]["hits"]]
 
+    async def get_audio_docs_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
+        """量产 GetAudioByIds：按文档 _id 批量取启用原料（不含向量）。"""
+        unique_ids = [doc_id for doc_id in ids if doc_id]
+        if not unique_ids:
+            return []
+        response = await self._client.search(
+            index=self.audio_index,
+            body={
+                "query": {
+                    "bool": {
+                        "filter": [
+                            {"term": {"status": True}},
+                            {"ids": {"values": unique_ids}},
+                        ]
+                    }
+                },
+                "size": len(unique_ids),
+                "_source": {"includes": list(GET_AUDIO_SOURCE_INCLUDES)},
+            },
+        )
+        return [_document_from_hit(hit) for hit in response["hits"]["hits"]]
+
     async def search_get_audio_bm25(
         self,
         query_text: str,

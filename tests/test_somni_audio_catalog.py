@@ -71,6 +71,34 @@ _MUSIC = {
     ],
 }
 
+# GetAudio 出参 tag 按 code 查词典；测试默认注入常用 content_form 条目。
+_TAG_DICTIONARY = [
+    {
+        "_id": "dict-natural",
+        "type": "content_form",
+        "code": "natural_sound",
+        "name": "自然声",
+        "name_en": "Natural Sound",
+        "status": "启用",
+    },
+    {
+        "_id": "dict-rain",
+        "type": "content_form",
+        "code": "steady_rain",
+        "name": "中雨/稳定雨声",
+        "name_en": "Steady Rain",
+        "status": "启用",
+    },
+    {
+        "_id": "dict-music",
+        "type": "content_form",
+        "code": "music",
+        "name": "音乐",
+        "name_en": "Music",
+        "status": "启用",
+    },
+]
+
 
 class _CatalogRedis:
     """按 ex 秒过期的内存 Redis，时钟由测试推进。"""
@@ -122,9 +150,31 @@ class _CatalogRedis:
         return None
 
 
+def _tag_dictionary_collection(docs: list | None = None) -> MagicMock:
+    rows = list(_TAG_DICTIONARY if docs is None else docs)
+
+    def _match(query: dict) -> list:
+        matched = list(rows)
+        if query.get("type") is not None:
+            matched = [doc for doc in matched if doc.get("type") == query["type"]]
+        if query.get("status") is not None:
+            matched = [doc for doc in matched if doc.get("status") == query["status"]]
+        codes = (query.get("code") or {}).get("$in") if isinstance(query.get("code"), dict) else None
+        if codes is not None:
+            wanted = {str(code) for code in codes}
+            matched = [doc for doc in matched if str(doc.get("code") or "") in wanted]
+        return matched
+
+    collection = MagicMock()
+    collection.count_documents = AsyncMock(side_effect=lambda query: len(_match(query)))
+    collection.find = MagicMock(side_effect=lambda query, *_a, **_k: _Cursor(_match(query)))
+    return collection
+
+
 def _service(
     collection: MagicMock,
     *,
+    tags_collection: MagicMock | None = None,
     es_search: MagicMock | None = None,
     encoder: MagicMock | None = None,
     hot: MagicMock | None = None,
@@ -132,13 +182,19 @@ def _service(
     cache_ttl_sec: float = 60.0,
     redis: _CatalogRedis | None = None,
 ) -> AudioCatalogService:
+    tags = tags_collection if tags_collection is not None else _tag_dictionary_collection()
+    collections = {
+        "somni_audio_materials": collection,
+        "somni_audio_tag_dictionary": tags,
+    }
     db = MagicMock()
-    db.__getitem__ = MagicMock(return_value=collection)
+    db.__getitem__ = MagicMock(side_effect=lambda name: collections.get(name, collection))
     client = MagicMock()
     client.__getitem__ = MagicMock(return_value=db)
     settings = Settings(
         somni_mongo_db="Somni",
         somni_mongo_materials_collection="somni_audio_materials",
+        somni_mongo_tag_dictionary_collection="somni_audio_tag_dictionary",
         default_page_size=1,
         max_page_size=200,
         fetch_all_hard_limit=fetch_all_hard_limit,
@@ -342,21 +398,21 @@ async def test_get_audio_maps_short_description_into_description() -> None:
 async def test_get_audio_tag_uses_english_name_when_language_en() -> None:
     doc = {
         **_RAIN,
-        # 空 language 对 en/zh 请求都可见；此处测展示语言走 name_en
+        # 空 language 对 en/zh 请求都可见；展示名只信词典 name_en，不信原料嵌套名
         "language": "",
         "content_form_tags": [
             {
                 "tag_id": "root-rain",
                 "code": "natural_sound",
-                "name": "自然声",
-                "name_en": "Natural Sound",
+                "name": "原料里的中文不应返回",
+                "en_name": "Material Embedded EN",
                 "parent_tag_id": None,
             },
             {
                 "tag_id": "child-rain",
                 "code": "steady_rain",
-                "name": "中雨/稳定雨声",
-                "name_en": "Steady Rain",
+                "name": "原料里的二级中文",
+                "en_name": "Material Nested EN",
                 "parent_tag_id": "root-rain",
             },
         ],
@@ -371,6 +427,87 @@ async def test_get_audio_tag_uses_english_name_when_language_en() -> None:
         language="en",
     )
     assert payload["list"][0]["tag"] == ["Natural Sound", "Steady Rain"]
+
+
+@pytest.mark.asyncio
+async def test_get_audio_tag_resolves_zh_name_from_dictionary_by_code() -> None:
+    doc = {
+        **_RAIN,
+        "language": "",
+        "content_form_tags": [
+            {
+                "tag_id": "child-rain",
+                "code": "steady_rain",
+                "name": "原料脏数据",
+                "parent_tag_id": "root-rain",
+            }
+        ],
+    }
+    svc = _service(_mongo_collection([doc]))
+    payload = await svc.get_audio(
+        page=1,
+        page_size=10,
+        fetch_all=False,
+        query_text="",
+        tag_code="",
+        language="zh",
+    )
+    assert payload["list"][0]["tag"] == ["中雨/稳定雨声"]
+
+
+@pytest.mark.asyncio
+async def test_get_audio_tag_empty_string_when_dictionary_name_en_missing() -> None:
+    doc = {
+        "_id": "a-brown",
+        "audio_name": "棕噪音",
+        "language": "",
+        "content_form_tags": [{"tag_id": "t1", "code": "brown_noise", "name": "忽略"}],
+    }
+    tags = _tag_dictionary_collection(
+        [
+            {
+                "_id": "dict-brown",
+                "type": "content_form",
+                "code": "brown_noise",
+                "name": "棕噪音",
+                "name_en": "",
+                "status": "启用",
+            }
+        ]
+    )
+    svc = _service(_mongo_collection([doc]), tags_collection=tags)
+    payload = await svc.get_audio(
+        page=1,
+        page_size=10,
+        fetch_all=False,
+        query_text="",
+        tag_code="",
+        language="en",
+    )
+    assert payload["list"][0]["tag"] == [""]
+
+
+@pytest.mark.asyncio
+async def test_get_audio_tag_empty_string_when_code_missing_in_dictionary() -> None:
+    doc = {
+        "_id": "a-orphan",
+        "audio_name": "孤儿标签",
+        "language": "",
+        "content_form_tags": [{"tag_id": "t1", "code": "not_in_dictionary", "name": "脏名"}],
+    }
+    svc = _service(
+        _mongo_collection([doc]),
+        tags_collection=_tag_dictionary_collection([]),
+    )
+    payload = await svc.get_audio(
+        page=1,
+        page_size=10,
+        fetch_all=False,
+        query_text="",
+        tag_code="",
+        language="zh",
+    )
+    assert payload["list"][0]["tag"] == [""]
 
 
 @pytest.mark.asyncio
@@ -1030,7 +1167,7 @@ async def test_get_audio_tag_maps_root_fields() -> None:
             ]
         )
     )
-    svc = _service(collection)
+    svc = _service(_mongo_collection([]), tags_collection=collection)
     payload = await svc.get_audio_tag()
     assert payload["tags"][0] == {
         "type": "content_form",

@@ -271,3 +271,37 @@ async def test_search_prescription_audio_batches_by_task_without_hot_api() -> No
     assert result.results[0].candidates[0].fields["id"].string_value == "audio-1"
     service.search_prescription_audio.assert_awaited_once()
     service.get_hot.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_get_audio_by_ids_maps_localized_detail() -> None:
+    rpc, service = _make_rpc()
+    service.get_audio_by_ids = AsyncMock(
+        return_value={
+            "list": [
+                {
+                    "id": "a1",
+                    "audio_name": "Night Rain",
+                    "audio_url": "https://cdn/a.mp3",
+                    "cover_url": "https://cdn/a.png",
+                    "description": "Gentle rain",
+                    "vip": 0,
+                    "tag": ["Steady Rain"],
+                    "is_voice": False,
+                }
+            ]
+        }
+    )
+    req = uburnode_somni_pb2.GetAudioByIdsReq(ids=["a1", "a1"], language="en")
+    res = await rpc.GetAudioByIds(req, _context())
+    service.get_audio_by_ids.assert_awaited_once_with(ids=["a1", "a1"], language="en")
+    assert len(res.list) == 1
+    assert res.list[0].id == "a1"
+    assert res.list[0].audio_name == "Night Rain"
+    assert res.list[0].description == "Gentle rain"
+    assert list(res.list[0].tag) == ["Steady Rain"]
+    assert not hasattr(res.list[0], "audio_name_en") or True
+    # AudioDetailItem 无平行英文场；DESCRIPTOR 可核对
+    field_names = {f.name for f in res.list[0].DESCRIPTOR.fields}
+    assert "audio_name_en" not in field_names
+    assert "description_en" not in field_names
