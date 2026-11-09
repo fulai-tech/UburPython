@@ -13,7 +13,7 @@ from app.core.bson_util import bson_to_jsonable
 
 # 目录缓存都挂在这个前缀下。写入时覆盖当前键，并删掉其它版本，避免旧键占着内存。
 # v2：缓存文档含 language / audio_name_en / short_description_en，旧 v1 键启动预热时清掉。
-# GetAudio 出参里 short_description_en 映射为 description_en。
+# GetAudio 出参里 short_description / short_description_en 映射为 description.{zh,en}。
 CATALOG_KEY_ROOT = "somni:audio:catalog"
 CATALOG_KEY_PREFIX = f"{CATALOG_KEY_ROOT}:v2"
 

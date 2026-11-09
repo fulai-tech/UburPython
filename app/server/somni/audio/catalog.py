@@ -165,7 +165,7 @@ class AudioCatalogService:
         # 同时命中喜欢与讨厌时归讨厌段。
         docs = _order_like_neutral_dislike(docs, preferred_ids, disliked_ids)
         payload = _paginate_docs(docs, page, page_size, fetch_all, self._settings)
-        payload["list"] = [_to_audio_list_item(item, language=language) for item in payload["list"]]
+        payload["list"] = [_to_audio_list_item(item) for item in payload["list"]]
         self._schedule_hot(
             query_text,
             language,
@@ -258,7 +258,7 @@ class AudioCatalogService:
         if not fetch_all:
             mapped = mapped[: self._settings.get_audio_search_top_k]
         payload = _paginate_docs(mapped, page, page_size, fetch_all, self._settings)
-        payload["list"] = [_to_audio_list_item(item, language=language) for item in payload["list"]]
+        payload["list"] = [_to_audio_list_item(item) for item in payload["list"]]
         self._schedule_hot(
             text,
             language,
@@ -1057,40 +1057,41 @@ def _filter_docs_by_request_language(
     return [doc for doc in docs if (doc_lang := _doc_language(doc)) == "" or doc_lang == wanted]
 
 
-def _to_audio_list_item(doc: dict[str, Any], *, language: str) -> dict[str, Any]:
+def _to_audio_list_item(doc: dict[str, Any]) -> dict[str, Any]:
+    zh_name = str(doc.get("audio_name") or "")
+    en_name = str(doc.get("audio_name_en") or "")
     return {
         "id": str(doc.get("id") or ""),
-        "audio_name": str(doc.get("audio_name") or ""),
-        "audio_name_en": str(doc.get("audio_name_en") or ""),
+        "audio_name": {"zh": zh_name, "en": en_name},
         "audio_url": str(doc.get("audio_url") or ""),
         "cover_url": str(doc.get("cover_url") or ""),
         # 量产列表展示用短描述，写入 description 出参（不单独返回 short_description）
-        "description": str(doc.get("short_description") or ""),
-        "description_en": str(doc.get("short_description_en") or ""),
+        "description": {
+            "zh": str(doc.get("short_description") or ""),
+            "en": str(doc.get("short_description_en") or ""),
+        },
         "vip": _to_vip(doc.get("vip")),
-        "tag": _map_audio_tags(doc.get("content_form_tags"), language=language),
+        "tag": _map_audio_tags(doc.get("content_form_tags")),
         "is_voice": _is_voice(doc.get("acoustic_metrics")),
     }
 
 
-def _map_audio_tags(raw: Any, *, language: str) -> list[str]:
+def _map_audio_tags(raw: Any) -> list[dict[str, str]]:
     if not isinstance(raw, list):
         return []
-    names: list[str] = []
+    tags: list[dict[str, str]] = []
     for item in raw:
         if not isinstance(item, dict):
             continue
-        names.append(_tag_display_name(item, language))
-    return names
+        tags.append(_localized_tag(item))
+    return tags
 
 
-def _tag_display_name(item: dict[str, Any], language: str) -> str:
-    """zh 返回 name；en 优先 name_en，缺省回退 name。"""
-    name = str(item.get("name") or "")
-    name_en = str(item.get("name_en") or "")
-    if language == "en":
-        return name_en or name
-    return name
+def _localized_tag(item: dict[str, Any]) -> dict[str, str]:
+    """标签展示：zh=name；en 优先 name_en / en_name，缺省回退 name。"""
+    zh = str(item.get("name") or "")
+    en = str(item.get("name_en") or item.get("en_name") or "") or zh
+    return {"zh": zh, "en": en}
 
 
 def _acoustic_metrics(value: Any) -> dict[str, Any] | None:

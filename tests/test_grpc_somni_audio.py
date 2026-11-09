@@ -62,12 +62,15 @@ async def test_get_audio_passes_page_and_query() -> None:
             "list": [
                 {
                     "id": "m1",
-                    "audio_name": "雨声",
+                    "audio_name": {"zh": "雨声", "en": "Rain"},
                     "audio_url": "https://cdn.example/a.mp3",
                     "cover_url": "https://cdn.example/a.png",
-                    "description": "短描述",
+                    "description": {"zh": "短描述", "en": "Short desc"},
                     "vip": 0,
-                    "tag": ["自然声", "中雨/稳定雨声"],
+                    "tag": [
+                        {"zh": "自然声", "en": "Natural Sound"},
+                        {"zh": "中雨/稳定雨声", "en": "Steady Rain"},
+                    ],
                     "is_voice": True,
                 }
             ],
@@ -89,13 +92,18 @@ async def test_get_audio_passes_page_and_query() -> None:
         dislike_text="",
         language="zh",
     )
-    assert res.list[0].audio_name == "雨声"
+    assert res.list[0].audio_name.zh == "雨声"
+    assert res.list[0].audio_name.en == "Rain"
     assert res.list[0].vip == 0
-    assert res.list[0].description == "短描述"
+    assert res.list[0].description.zh == "短描述"
+    assert res.list[0].description.en == "Short desc"
     assert res.total == 1
     assert res.page == 1
     assert res.page_size == 20
-    assert list(res.list[0].tag) == ["自然声", "中雨/稳定雨声"]
+    assert [(t.zh, t.en) for t in res.list[0].tag] == [
+        ("自然声", "Natural Sound"),
+        ("中雨/稳定雨声", "Steady Rain"),
+    ]
     assert res.list[0].HasField("is_voice")
     assert res.list[0].is_voice is True
 

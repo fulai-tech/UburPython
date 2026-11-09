@@ -229,7 +229,7 @@ def build_somni_audio_materials_mapping(
                 "description": "中文音频描述，说明内容、声音特点或适用场景",
                 "description_en": "英文音频描述；英文混合文本用，可暂空",
                 "short_description": "音频短描述；量产 GetAudio 写入 description 出参",
-                "short_description_en": "英文短描述；量产 GetAudio 写入 description_en 出参",
+                "short_description_en": "英文短描述；量产 GetAudio 写入 description.en 出参",
                 "description_text": "中文语义检索拼接文本：名称 + 描述 + 标签名",
                 "description_text_en": "英文语义检索拼接文本：英文名 + 英文描述 + 英文标签",
                 "description_vector": f"description_text 的 {embedding_dim} 维 embedding（zh）",
@@ -291,7 +291,7 @@ def build_somni_audio_materials_mapping(
             ),
             "short_description_en": _field(
                 "text",
-                "英文短描述；量产 GetAudio 写入 description_en 出参",
+                "英文短描述；量产 GetAudio 写入 description.en 出参",
             ),
             "description_text": _field(
                 "text",

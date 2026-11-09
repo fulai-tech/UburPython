@@ -285,22 +285,24 @@ async def test_get_audio_filters_content_form_code_then_pages() -> None:
     assert set(payload["list"][0]) == {
         "id",
         "audio_name",
-        "audio_name_en",
         "audio_url",
         "cover_url",
         "description",
-        "description_en",
         "vip",
         "tag",
         "is_voice",
     }
     assert payload["list"][0]["vip"] == 0
-    assert payload["list"][0]["description"] == ""
-    assert payload["list"][0]["tag"] == ["自然声", "中雨/稳定雨声"]
+    assert payload["list"][0]["description"] == {"zh": "", "en": ""}
+    assert payload["list"][0]["audio_name"] == {"zh": "雨夜", "en": ""}
+    assert payload["list"][0]["tag"] == [
+        {"zh": "自然声", "en": "自然声"},
+        {"zh": "中雨/稳定雨声", "en": "中雨/稳定雨声"},
+    ]
 
 
 @pytest.mark.asyncio
-async def test_get_audio_returns_english_display_fields() -> None:
+async def test_get_audio_returns_localized_display_fields() -> None:
     rain = {
         **_RAIN,
         "language": "",
@@ -313,10 +315,11 @@ async def test_get_audio_returns_english_display_fields() -> None:
         page=1, page_size=10, fetch_all=False, query_text="", tag_code="", language="en"
     )
     item = payload["list"][0]
-    assert item["audio_name"] == "雨夜"
-    assert item["audio_name_en"] == "Night Rain"
-    assert item["description"] == "轻柔雨声助眠"
-    assert item["description_en"] == "Gentle rain for sleep"
+    assert item["audio_name"] == {"zh": "雨夜", "en": "Night Rain"}
+    assert item["description"] == {
+        "zh": "轻柔雨声助眠",
+        "en": "Gentle rain for sleep",
+    }
 
 
 @pytest.mark.asyncio
@@ -334,15 +337,15 @@ async def test_get_audio_maps_short_description_into_description() -> None:
         query_text="",
         tag_code="",
     )
-    assert payload["list"][0]["description"] == "轻柔雨声助眠"
+    assert payload["list"][0]["description"] == {"zh": "轻柔雨声助眠", "en": ""}
     assert "short_description" not in payload["list"][0]
 
 
 @pytest.mark.asyncio
-async def test_get_audio_tag_uses_english_name_when_language_en() -> None:
+async def test_get_audio_tag_returns_zh_and_en_objects() -> None:
     doc = {
         **_RAIN,
-        # 空 language 对 en/zh 请求都可见；此处测展示语言走 name_en
+        # 空 language 对 en/zh 请求都可见；标签始终同时返回中英文
         "language": "",
         "content_form_tags": [
             {
@@ -370,7 +373,10 @@ async def test_get_audio_tag_uses_english_name_when_language_en() -> None:
         tag_code="",
         language="en",
     )
-    assert payload["list"][0]["tag"] == ["Natural Sound", "Steady Rain"]
+    assert payload["list"][0]["tag"] == [
+        {"zh": "自然声", "en": "Natural Sound"},
+        {"zh": "中雨/稳定雨声", "en": "Steady Rain"},
+    ]
 
 
 @pytest.mark.asyncio

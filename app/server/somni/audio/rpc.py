@@ -207,16 +207,24 @@ def _to_audio_res(payload: dict[str, Any]) -> uburnode_somni_pb2.GetAudioRes:
     for item in payload.get("list") or []:
         entry = uburnode_somni_pb2.AudioListItem(
             id=str(item.get("id") or ""),
-            audio_name=str(item.get("audio_name") or ""),
+            audio_name=_to_localized_text(item.get("audio_name")),
             audio_url=str(item.get("audio_url") or ""),
             cover_url=str(item.get("cover_url") or ""),
-            description=str(item.get("description") or ""),
+            description=_to_localized_text(item.get("description")),
             vip=int(item.get("vip") or 0),
             is_voice=bool(item.get("is_voice")),
-            audio_name_en=str(item.get("audio_name_en") or ""),
-            description_en=str(item.get("description_en") or ""),
         )
         for tag in item.get("tag") or []:
-            entry.tag.append(str(tag))
+            entry.tag.append(_to_localized_text(tag))
         res.list.append(entry)
     return res
+
+
+def _to_localized_text(value: Any) -> uburnode_somni_pb2.LocalizedText:
+    if isinstance(value, dict):
+        return uburnode_somni_pb2.LocalizedText(
+            zh=str(value.get("zh") or ""),
+            en=str(value.get("en") or ""),
+        )
+    text = str(value or "")
+    return uburnode_somni_pb2.LocalizedText(zh=text, en="")

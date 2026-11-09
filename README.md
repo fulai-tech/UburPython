@@ -474,8 +474,9 @@ catalogue cliff thresholds or removing a separately requested rain/nature channe
 
 ES candidate projections and response Structs preserve `audio_name_en` and `short_description_en`
 when present; missing English fields do not trigger translation or synthetic values.
-`GetAudio` continues mapping the short English text to `AudioListItem.description_en` (field 10),
-and English name to `audio_name_en` (field 9). No new language request field or device-node field.
+`GetAudio` returns `audio_name` / `description` / `tag` as localized objects with `zh` and `en`
+keys (`tag` is an array of such objects). Former `audio_name_en` / `description_en` response
+fields are removed. No new language request field or device-node field.
 Sleep-stage candidate cache namespaces are v4 to preserve the new projection; natural-text vector
 keys include recall version, language and model identity. No migration, index rewrite or bulk cache
 clear is required. Hard enabled/stage/dislike validation and no-hot-accounting remain in force.

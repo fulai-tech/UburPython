@@ -297,17 +297,23 @@ message GetAudioReq {
   optional string dislike_text = 9;       // 问卷讨厌的声音原文；分词后按标签名命中并排到最后；与 query_text 同时出现时忽略
 }
 
+// GetAudio 列表展示用的多语言文案；键固定为 zh / en。
+message LocalizedText {
+  string zh = 1;
+  string en = 2;
+}
+
 message AudioListItem {
   optional string id = 1;
-  optional string audio_name = 2;
+  LocalizedText audio_name = 2;  // zh=audio_name，en=audio_name_en
   optional string audio_url = 3;
   optional string cover_url = 4;
-  optional string description = 5;  // 量产列表用短描述 short_description 填充；缺省空串
+  LocalizedText description = 5;  // zh=short_description，en=short_description_en；缺省空串
   optional int32 vip = 6;  // 库无该字段时显式返回 0
-  repeated string tag = 7;  // 内容形态标签名；zh 取 name，en 取 name_en（缺省回退 name）
+  repeated LocalizedText tag = 7;  // 内容形态标签；zh=name，en=name_en（缺省回退 name）
   optional bool is_voice = 8;  // voice_presence_ratio 为 0 或缺失时 false，其余数值为 true
-  optional string audio_name_en = 9;  // 英文名；前端按 language 切换展示
-  optional string description_en = 10;  // 英文短描述（库字段 short_description_en）；前端按 language 切换展示
+  reserved 9, 10;
+  reserved "audio_name_en", "description_en";
 }
 
 message GetAudioRes {
