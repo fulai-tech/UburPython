@@ -267,25 +267,54 @@ def format_local_ms_hhmm(ms: int) -> str:
     return datetime.fromtimestamp(ms / 1000.0, tz=UTC).strftime("%H:%M")
 
 
+def _on_bed_segment_ms(item: Any) -> tuple[int, int, int]:
+    """解析单段 on_bed，返回 (from, to, duration_ms)；非法返回 (0, 0, 0)。"""
+    if not isinstance(item, dict):
+        return 0, 0, 0
+    start = as_ms(item.get("from"))
+    end = as_ms(item.get("to"))
+    if start <= 0 or end <= start:
+        return 0, 0, 0
+    duration = as_ms(item.get("duration_ms"))
+    if duration <= 0:
+        duration = end - start
+    return start, end, duration
+
+
 def on_bed_bounds(on_bed: Any) -> tuple[int, int]:
-    """取第一段 on_bed 的 from/to；非法返回 (0, 0)。"""
+    """取第一段 from 与最后一段 to；非法返回 (0, 0)。"""
     if not isinstance(on_bed, list) or not on_bed:
         return 0, 0
-    first = on_bed[0]
-    if not isinstance(first, dict):
+    first_from = 0
+    last_to = 0
+    for item in on_bed:
+        start, end, _duration = _on_bed_segment_ms(item)
+        if start <= 0:
+            continue
+        if first_from <= 0:
+            first_from = start
+        last_to = end
+    if first_from <= 0 or last_to <= first_from:
         return 0, 0
-    start = as_ms(first.get("from"))
-    end = as_ms(first.get("to"))
-    if start <= 0 or end <= start:
-        return 0, 0
-    return start, end
+    return first_from, last_to
+
+
+def on_bed_duration_ms(on_bed: Any) -> int:
+    """多段 on_bed 原始时长求和（不含离床间隙）。"""
+    if not isinstance(on_bed, list):
+        return 0
+    total = 0
+    for item in on_bed:
+        _start, _end, duration = _on_bed_segment_ms(item)
+        total += duration
+    return total
 
 
 def normalize_segments(
     on_bed: Any,
     segments: Any,
 ) -> list[dict[str, Any]]:
-    """归一 segments：补 start_ts_ms；若 on_bed.from 早于首段则前置 AWAKE。"""
+    """归一 segments：补 start_ts_ms；若首段 on_bed.from 早于首段则前置 AWAKE。"""
     bed_from, _bed_to = on_bed_bounds(on_bed)
     raw_list = segments if isinstance(segments, list) else []
     normalized: list[dict[str, Any]] = []
@@ -333,25 +362,30 @@ def sleep_structure_from_segments(
     on_bed: Any,
     segments: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    bed_from, bed_to = on_bed_bounds(on_bed)
-    tib_min = ms_to_minutes(bed_to - bed_from) if bed_to > bed_from else 0
-    mins = {
+    tib_ms = on_bed_duration_ms(on_bed)
+    tib_min = ms_to_minutes(tib_ms)
+    stage_ms = {
         "awake": 0,
         "rem_sleep": 0,
         "light_sleep": 0,
         "deep_sleep": 0,
     }
     for seg in segments:
-        minutes = ms_to_minutes(as_ms(seg.get("duration_ms")))
+        duration = as_ms(seg.get("duration_ms"))
         stage = as_int(seg.get("stage"))
         if stage == STAGE_AWAKE:
-            mins["awake"] += minutes
+            stage_ms["awake"] += duration
         elif stage == STAGE_REM:
-            mins["rem_sleep"] += minutes
+            stage_ms["rem_sleep"] += duration
         elif stage == STAGE_LIGHT:
-            mins["light_sleep"] += minutes
+            stage_ms["light_sleep"] += duration
         elif stage == STAGE_DEEP:
-            mins["deep_sleep"] += minutes
+            stage_ms["deep_sleep"] += duration
+
+    sleep_ms = (
+        stage_ms["rem_sleep"] + stage_ms["light_sleep"] + stage_ms["deep_sleep"]
+    )
+    mins = {key: ms_to_minutes(value) for key, value in stage_ms.items()}
 
     def part(key: str) -> dict[str, int]:
         m = mins[key]
@@ -363,7 +397,7 @@ def sleep_structure_from_segments(
         "rem_sleep": part("rem_sleep"),
         "light_sleep": part("light_sleep"),
         "deep_sleep": part("deep_sleep"),
-        "total_minutes": mins["rem_sleep"] + mins["light_sleep"] + mins["deep_sleep"],
+        "total_minutes": ms_to_minutes(sleep_ms),
         "tib_minutes": tib_min,
     }
 
@@ -384,9 +418,14 @@ def sleep_quality_from_session(
             sol = ms_to_minutes(as_ms(seg.get("start_ts_ms")) - bed_from)
             break
 
+    # WASO = 最后一条 on_bed.to − 最后一个清醒阶段 start
     waso = 0
-    if segments and bed_to > 0:
-        waso = ms_to_minutes(bed_to - as_ms(segments[-1].get("start_ts_ms")))
+    last_awake_start = 0
+    for seg in segments:
+        if as_int(seg.get("stage")) == STAGE_AWAKE:
+            last_awake_start = as_ms(seg.get("start_ts_ms"))
+    if last_awake_start > 0 and bed_to > last_awake_start:
+        waso = ms_to_minutes(bed_to - last_awake_start)
 
     return {
         "time_in_bed_minutes": tib,
@@ -402,7 +441,7 @@ def idf_from_segments(
     segments: list[dict[str, Any]],
     on_bed: Any = None,
 ) -> list[dict[str, str]]:
-    """把 segments 转成 idf 行；末段 end 若早于 on_bed.to 则补齐到 to（仅展示，不改分钟统计）。"""
+    """把 segments 转成 idf 行；末段 end 若早于最后一条 on_bed.to 则补齐（仅展示）。"""
     _, bed_to = on_bed_bounds(on_bed)
     rows: list[dict[str, str]] = []
     last_i = len(segments) - 1
