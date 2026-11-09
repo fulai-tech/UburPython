@@ -60,14 +60,25 @@ jobs:
             # -f 必须：否则工作区有改动（如 docker-compose.yml）时 checkout 会直接失败
             git checkout -f -B "$DEPLOY_BRANCH" "origin/$DEPLOY_BRANCH"
             git reset --hard "origin/$DEPLOY_BRANCH"
-            # 清理会挡住检出的未跟踪文件，但保留 .env / logs / data（部署机本地配置、日志、同步备份）
-            git clean -fd -e .env -e .env.* -e logs -e logs/ -e data -e data/
+            # 清理会挡住检出的未跟踪文件；保留 .env / logs / data / models（本地配置、日志、同步备份、已上传 ONNX）
+            git clean -fd -e .env -e .env.* -e logs -e logs/ -e data -e data/ -e models -e models/
 
             if [ ! -f .env ]; then
               echo "缺少 $DEPLOY_DIR/.env，请从 .env.example 复制并填写后重试"
               exit 1
             fi
 
-            docker compose up -d --build --remove-orphans
+            # 与测试机一致：预置 ONNX（Dockerfile.server），避免构建期装 CUDA torch / 导出模型
+            for model_dir in \
+              models/onnx/bge-small-zh-v1.5-int8 \
+              models/onnx/bge-small-en-v1.5-int8
+            do
+              if [ ! -f "$model_dir/model.onnx" ]; then
+                echo "缺少 $DEPLOY_DIR/$model_dir/model.onnx，请先上传 INT8 模型后再部署"
+                exit 1
+              fi
+            done
+
+            docker compose -f docker-compose.yml -f docker-compose.prebuilt.yml up -d --build --remove-orphans
             docker image prune -f
-            docker compose ps
+            docker compose -f docker-compose.yml -f docker-compose.prebuilt.yml ps
