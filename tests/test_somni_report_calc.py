@@ -5,6 +5,10 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 
 from app.server.somni.report.calc import (
+    STAGE_AWAKE,
+    STAGE_DEEP,
+    STAGE_LIGHT,
+    STAGE_REM,
     align_weekly_days,
     baseline_start,
     coerce_datetime,
@@ -16,8 +20,12 @@ from app.server.somni.report.calc import (
     idf_from_segments,
     local_day_utc_range,
     minutes_between,
+    on_bed_bounds,
+    on_bed_duration_ms,
     resolve_report_timezone_name,
+    sleep_quality_from_session,
     sleep_stage_parts,
+    sleep_structure_from_segments,
     stage_minutes,
     trailing_week_bounds,
     weekly_day_metric,
@@ -195,3 +203,104 @@ def test_idf_last_end_padded_to_on_bed_to() -> None:
     # 不传 on_bed 时仍按 duration
     raw = idf_from_segments(segments)
     assert raw[-1]["end"] == "06:59"
+
+
+def test_on_bed_bounds_uses_first_from_and_last_to() -> None:
+    on_bed = [
+        {"from": 1_000_000, "to": 1_600_000, "duration_ms": 600_000},
+        {"from": 2_000_000, "to": 2_900_000, "duration_ms": 900_000},
+    ]
+    assert on_bed_bounds(on_bed) == (1_000_000, 2_900_000)
+    assert on_bed_duration_ms(on_bed) == 1_500_000
+
+
+def test_multi_on_bed_structure_sums_raw_ms_then_floors() -> None:
+    # 两段在床：10.5min + 20.4min = 30.9 → TIB 30；离床间隙不算
+    base = 10_000_000
+    on_bed = [
+        {"from": base, "to": base + 630_000, "duration_ms": 630_000},
+        {"from": base + 1_000_000, "to": base + 2_224_000, "duration_ms": 1_224_000},
+    ]
+    # 每段不足整分的毫秒：先按阶段汇总再 floor，避免按段 floor 丢时长
+    segments = [
+        {
+            "stage": STAGE_AWAKE,
+            "stage_name": "AWAKE",
+            "duration_ms": 90_000,
+            "start_ts_ms": base,
+        },
+        {
+            "stage": STAGE_LIGHT,
+            "stage_name": "LIGHT",
+            "duration_ms": 590_000,
+            "start_ts_ms": base + 90_000,
+        },
+        {
+            "stage": STAGE_DEEP,
+            "stage_name": "DEEP",
+            "duration_ms": 610_000,
+            "start_ts_ms": base + 1_000_000,
+        },
+        {
+            "stage": STAGE_REM,
+            "stage_name": "REM",
+            "duration_ms": 500_000,
+            "start_ts_ms": base + 1_610_000,
+        },
+        {
+            "stage": STAGE_AWAKE,
+            "stage_name": "AWAKE",
+            "duration_ms": 120_000,
+            "start_ts_ms": base + 2_110_000,
+        },
+    ]
+    structure = sleep_structure_from_segments(on_bed, segments)
+    assert structure["tib_minutes"] == 30
+    assert structure["awake"]["minutes"] == 3  # 210000ms
+    assert structure["light_sleep"]["minutes"] == 9  # 590000ms
+    assert structure["deep_sleep"]["minutes"] == 10  # 610000ms
+    assert structure["rem_sleep"]["minutes"] == 8  # 500000ms
+    assert structure["total_minutes"] == 28  # 1700000ms，而非 9+10+8 的展示加总
+    assert structure["awake"]["percent"] == 10
+    assert structure["light_sleep"]["percent"] == 30
+
+
+def test_sleep_quality_wake_to_leave_bed_uses_last_on_bed_to_minus_last_awake_start() -> None:
+    on_bed = [
+        {"from": 1_000_000, "to": 1_600_000, "duration_ms": 600_000},
+        {"from": 2_000_000, "to": 3_200_000, "duration_ms": 1_200_000},
+    ]
+    segments = [
+        {
+            "stage": STAGE_AWAKE,
+            "stage_name": "AWAKE",
+            "duration_ms": 300_000,
+            "start_ts_ms": 1_000_000,
+        },
+        {
+            "stage": STAGE_LIGHT,
+            "stage_name": "LIGHT",
+            "duration_ms": 900_000,
+            "start_ts_ms": 1_300_000,
+        },
+        {
+            "stage": STAGE_AWAKE,
+            "stage_name": "AWAKE",
+            "duration_ms": 120_000,
+            "start_ts_ms": 2_500_000,
+        },
+        {
+            "stage": STAGE_LIGHT,
+            "stage_name": "LIGHT",
+            "duration_ms": 480_000,
+            "start_ts_ms": 2_620_000,
+        },
+    ]
+    quality = sleep_quality_from_session(on_bed, segments)
+    assert quality["time_in_bed_minutes"] == 30
+    assert quality["sleep_onset_latency_minutes"] == 5  # 300000ms
+    # 醒后到离床 = last on_bed.to(3200000) - last awake start(2500000) = 700000ms → 11
+    assert quality["wake_to_leave_bed_minutes"] == 11
+    assert quality["bedtime"] == "00:16"
+    assert quality["wake_up_time"] == "00:53"
+    assert quality["sleep_efficiency"] == 76  # TST 23 / TIB 30

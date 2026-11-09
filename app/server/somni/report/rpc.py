@@ -254,7 +254,7 @@ def _to_sleep_quality_res(
             sleep_efficiency=int(item.get("sleep_efficiency") or 0),
             bedtime=str(item.get("bedtime") or ""),
             wake_up_time=str(item.get("wake_up_time") or ""),
-            awake_after_onset_minutes=int(item.get("awake_after_onset_minutes") or 0),
+            wake_to_leave_bed_minutes=int(item.get("wake_to_leave_bed_minutes") or 0),
         )
     )
 

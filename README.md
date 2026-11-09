@@ -446,7 +446,7 @@ SearchPrescriptionAudio及SearchAudioRequest在检索前完成兼容归一化和
 
 `somni_sleep_reports` supports reading `sleep_quality` and its nested paths via
 `filter_key`, including `sleep_onset_latency_minutes` (minutes),
-`sleep_efficiency` (0–100 percent), and `awake_after_onset_minutes` (minutes).
+`sleep_efficiency` (0–100 percent), and `wake_to_leave_bed_minutes` (minutes).
 An empty `filter_key` includes this module when present. Explicitly requested
 missing paths return `NOT_FOUND`; measured zero values are preserved.
 `sleep_quality` is registered as a `document` in the existing report field dictionary,

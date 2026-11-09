@@ -164,7 +164,7 @@ message SleepQuality {
   int32 sleep_efficiency = 3;
   string bedtime = 4;
   string wake_up_time = 5;
-  int32 awake_after_onset_minutes = 6;
+  int32 wake_to_leave_bed_minutes = 6;
 }
 
 message GetSleepQualityRes {

@@ -327,7 +327,7 @@ async def test_failure_log_includes_reason() -> None:
         [
             "sleep_quality.sleep_onset_latency_minutes",
             "sleep_quality.sleep_efficiency",
-            "sleep_quality.awake_after_onset_minutes",
+            "sleep_quality.wake_to_leave_bed_minutes",
         ],
         [],
     ],
@@ -336,7 +336,7 @@ async def test_sleep_quality_readable_without_exposing_other_modules(paths: list
     quality = {
         "sleep_onset_latency_minutes": 18,
         "sleep_efficiency": 87.5,
-        "awake_after_onset_minutes": 0,
+        "wake_to_leave_bed_minutes": 0,
     }
     doc = {
         "_id": ObjectId(REPORT_ID),
