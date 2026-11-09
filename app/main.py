@@ -19,6 +19,8 @@ if TYPE_CHECKING:
     from elasticsearch import AsyncElasticsearch
     from motor.motor_asyncio import AsyncIOMotorClient
 
+    from app.server.somni.facts.service import GenerationDataService
+
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _VENV_PYTHON = _PROJECT_ROOT / ".venv" / "bin" / "python"
 
@@ -56,7 +58,7 @@ from app.core.config import Settings, get_settings
 from app.core.exception_handlers import register_exception_handlers
 from app.core.logging import setup_logging
 from app.core.somni_redis import create_somni_redis
-from app.embedding.encoder import Encoder, create_encoder
+from app.embedding.encoder import Encoder, LanguageRouterEncoder, create_encoder
 from app.es.client import create_es_client
 from app.es.search import EsSearch
 from app.es.search_events import SearchEventsStore
@@ -65,8 +67,11 @@ from app.middleware.request_log import register_request_log_middleware
 from app.server.bootstrap import GrpcServers, start_grpc_servers, stop_grpc_servers
 from app.server.handboard.audio.service import AudioService
 from app.server.handboard.audio.store import MaterialsStore, create_materials_store
+from app.server.somni.applewatch.service import AppleWatchService as SomniAppleWatchService
+from app.server.somni.ask.service import AskContextService
 from app.server.somni.audio.catalog import AudioCatalogService as SomniAudioService
 from app.server.somni.audio.hot import HotTracker
+from app.server.somni.profile.service import ProfileService as SomniProfileService
 from app.server.somni.quiz.service import QuizService as SomniQuizService
 from app.server.somni.report.service import ReportService as SomniReportService
 from app.services.retrieval import RetrievalService
@@ -87,7 +92,11 @@ class AppState:
     audio_service: AudioService | None = None
     somni_quiz_service: SomniQuizService | None = None
     somni_report_service: SomniReportService | None = None
+    somni_profile_service: SomniProfileService | None = None
+    generation_data_service: GenerationDataService | None = None
     somni_audio_service: SomniAudioService | None = None
+    somni_applewatch_service: SomniAppleWatchService | None = None
+    ask_context_service: AskContextService | None = None
     search_cache: AudioSearchCache | None = None
     sleep_stage_cache: SleepStageCandidateCache | None = None
     grpc_servers: GrpcServers | None = None
@@ -102,6 +111,8 @@ def get_app_state() -> AppState:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    from app.server.somni.facts.service import GenerationDataService
+
     settings = get_settings()
     setup_logging(settings)
     _app_state.settings = settings
@@ -114,6 +125,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     encoder = create_encoder(settings)
     if not settings.app_debug:
         encoder.load()
+    if isinstance(encoder, LanguageRouterEncoder) and not encoder.supports_english:
+        logger.warning("英文标签向量模型未加载，英文自由输入不会按标签向量排序")
     _app_state.encoder = encoder
 
     es_search = EsSearch(es_client, settings)
@@ -181,16 +194,39 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     _app_state.somni_quiz_service = SomniQuizService(somni_mongo, settings)
     _app_state.somni_report_service = SomniReportService(somni_mongo, settings)
+    _app_state.somni_profile_service = SomniProfileService(somni_mongo, settings)
+    _app_state.generation_data_service = GenerationDataService(somni_mongo, settings)
+    _app_state.somni_applewatch_service = SomniAppleWatchService(somni_mongo, settings)
+    _app_state.ask_context_service = AskContextService(somni_mongo, settings)
     somni_es_client = create_es_client(
         settings,
         node=settings.effective_somni_es_node,
     )
+    try:
+        if not await somni_es_client.ping():
+            raise RuntimeError(f"量产 Elasticsearch 连不上：{settings.effective_somni_es_node}")
+    except Exception as exc:
+        if settings.app_debug:
+            logger.warning("量产 Elasticsearch 不可用（调试模式，继续启动）：{}", exc)
+        else:
+            raise
     _app_state.somni_es_client = somni_es_client
     somni_es_search = EsSearch(
         somni_es_client,
         settings,
         audio_index=settings.somni_es_audio_index,
         tag_dictionary_index=settings.somni_es_tag_vectors_index,
+        index_profile="somni",
+    )
+    somni_sleep_stage_cache = await create_sleep_stage_candidate_cache(
+        settings,
+        redis_url=settings.somni_redis_url,
+    )
+    somni_retrieval = RetrievalService(
+        somni_es_search,
+        encoder,
+        settings,
+        sleep_stage_cache=somni_sleep_stage_cache,
     )
     somni_redis = await create_somni_redis(settings)
     events_store = SearchEventsStore(somni_es_client, settings)
@@ -201,7 +237,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         es_search=somni_es_search,
         encoder=encoder,
         hot=hot_tracker,
+        retrieval=somni_retrieval,
+        redis=somni_redis,
     )
+    if somni_redis is not None:
+        try:
+            await _app_state.somni_audio_service.warm_audio_catalog()
+        except Exception as exc:
+            if settings.app_debug:
+                logger.warning("启动重建量产 GetAudio 目录缓存失败（调试模式，继续启动）：{}", exc)
+            else:
+                raise
 
     start_sync_scheduler(_app_state, settings)
     _app_state.grpc_servers = await start_grpc_servers(_app_state, settings)
@@ -220,6 +266,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         materials_store.close()
     if somni_mongo is not None:
         somni_mongo.close()
+    if somni_sleep_stage_cache is not None:
+        await somni_sleep_stage_cache.aclose()
     if somni_redis is not None:
         await somni_redis.aclose()
     await somni_es_client.close()

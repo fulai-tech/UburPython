@@ -7,6 +7,7 @@ from loguru import logger
 
 from app.core.codes import HttpStatus
 from app.core.exceptions import AppError, ElasticsearchUnavailableError
+from app.core.logging import rpc_access_logger
 
 _STATUS_BY_HTTP: dict[int, grpc.StatusCode] = {
     HttpStatus.BAD_REQUEST: grpc.StatusCode.INVALID_ARGUMENT,
@@ -51,8 +52,14 @@ async def run_rpc_call(context: grpc.aio.ServicerContext, action):
         mapped = _maybe_es_error(exc)
         if mapped is not None:
             await abort_from_app_error(context, mapped)
-        logger.exception("gRPC 处理失败：{}", exc)
+        _rpc_logger().exception("gRPC 处理失败：{}", exc)
         await abort_internal(context)
+
+
+def _rpc_logger():
+    """RPC 进行中时用控制层 logger，使异常栈进该服务的 controller 文件。"""
+    bound = rpc_access_logger.get()
+    return bound if bound is not None else logger
 
 
 def _maybe_es_error(exc: Exception) -> AppError | None:

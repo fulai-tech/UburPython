@@ -1,4 +1,7 @@
-# 与 docker-compose.yml 叠加使用：跳过构建期 ONNX 导出（需已上传 models/onnx/bge-small-zh-v1.5）
+# 与 docker-compose.yml 叠加使用：跳过构建期 ONNX 导出
+# 宿主机需已上传：
+#   models/onnx/bge-small-zh-v1.5-int8
+#   models/onnx/bge-small-en-v1.5-int8
 # docker compose -f docker-compose.yml -f docker-compose.prebuilt.yml up -d --build
 
 services:

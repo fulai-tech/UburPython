@@ -16,7 +16,7 @@ def test_audio_tags_content_labels() -> None:
         mechanism=[TagItem(vector_id="v2", label="放松")],
     )
     labels = tags.content_labels()
-    assert labels == {"白噪音", "放松"}
+    assert labels == {"white_noise", "unwind"}
 
 
 def test_resolve_flat_tag_with_prefix() -> None:
@@ -148,9 +148,7 @@ def test_audio_material_data_from_material_like() -> None:
         operation_type=0,
         created_by="agent",
         updated_by="",
-        sleep_stage_tags=[
-            SimpleNamespace(tag_id="t1", code="unwind", name="放松")
-        ],
+        sleep_stage_tags=[SimpleNamespace(tag_id="t1", code="unwind", name="放松")],
         content_form_tags=[],
         mechanism_tags=[],
         audio_engineering_tags=[],
@@ -162,9 +160,7 @@ def test_audio_material_data_from_material_like() -> None:
     assert data.audio_name == "深夜雨声"
     assert data.audio_url == "https://cdn.example.com/a.mp3"
     assert data.status is True
-    assert data.sleep_stage_tags == [
-        {"tag_id": "t1", "code": "unwind", "name": "放松"}
-    ]
+    assert data.sleep_stage_tags == [{"tag_id": "t1", "code": "unwind", "name": "放松"}]
 
 
 def test_evidence_level_values() -> None:

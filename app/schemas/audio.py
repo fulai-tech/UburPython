@@ -7,8 +7,14 @@
 from enum import StrEnum
 from typing import Any, Self
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
+from app.core.audio_tags import (
+    canonical_disliked_tags,
+    canonical_tags,
+    resolve_audio_preferences,
+    validated_audio_tags,
+)
 from app.core.tags import (
     DIMENSION_FIELDS,
     dimensions_from_flat_tags,
@@ -82,11 +88,11 @@ class AudioTags(BaseModel):
         """内容形态准入精确交集使用的标签集合（四维度并集）。"""
         labels: set[str] = set()
         for dim in (self.content_form, self.mechanism, self.audio_feat, self.rhythm):
-            labels.update(item.label for item in dim)
+            labels.update(canonical_tags([item.label for item in dim], strict=False))
         return labels
 
     def sleep_stage_labels(self) -> set[str]:
-        return {item.label for item in self.sleep_stage}
+        return set(canonical_tags([item.label for item in self.sleep_stage], strict=False))
 
     def to_label_tags(self) -> AudioTagsInput:
         """检索出参：六维标签仅保留 label 字符串。"""
@@ -183,14 +189,39 @@ class SearchAudioRequest(BaseModel):
     query_text: str | None = None
     sleep_stage_tags: list[str] = Field(default_factory=list)
     content_tags: list[str] = Field(default_factory=list)
+    content_tag_codes: list[str] = Field(default_factory=list)
     disliked_tags: list[str] = Field(default_factory=list)
     top_k: int | None = Field(default=None, ge=1)
 
+    @field_validator(
+        "sleep_stage_tags", "content_tags", "content_tag_codes", "disliked_tags", mode="before"
+    )
+    @classmethod
+    def normalize_machine_tags(cls, values: Any, info: ValidationInfo) -> list[str]:
+        if not isinstance(values, (list, tuple)) or not all(
+            isinstance(value, str) for value in values
+        ):
+            raise ValueError("audio tags must be an array of strings")
+        if info.field_name == "disliked_tags":
+            return canonical_disliked_tags(values)
+        if info.field_name == "content_tags":
+            resolved = resolve_audio_preferences(preferred=values)
+            if resolved["sound_disabled"]:
+                raise ValueError("unresolved_audio_preference")
+            return resolved["preferred_codes"]
+        allowed = (
+            frozenset({"sleep_stage"})
+            if info.field_name == "sleep_stage_tags"
+            else frozenset({"content_form", "mechanism", "audio_engineering"})
+        )
+        return validated_audio_tags(values, allowed_types=allowed)
+
 
 class SearchAudioData(BaseModel):
-    """检索成功时写入 ApiResponse.data。"""
+    """检索成功时写入 ApiResponse.data。fallback 仅 HTTP 兜底时出现。"""
 
     materials: list[dict[str, Any]] = Field(default_factory=list)
+    fallback: str | None = None
 
 
 class AudioMetaDataOut(BaseModel):
@@ -245,9 +276,7 @@ class AudioMaterialData(BaseModel):
             sleep_stage_tags=_tag_messages_to_dicts(material.sleep_stage_tags),
             content_form_tags=_tag_messages_to_dicts(material.content_form_tags),
             mechanism_tags=_tag_messages_to_dicts(material.mechanism_tags),
-            audio_engineering_tags=_tag_messages_to_dicts(
-                material.audio_engineering_tags
-            ),
+            audio_engineering_tags=_tag_messages_to_dicts(material.audio_engineering_tags),
             medical_risk_tags=_tag_messages_to_dicts(material.medical_risk_tags),
             evidence_level_tags=_tag_messages_to_dicts(material.evidence_level_tags),
         )

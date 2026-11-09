@@ -9,9 +9,14 @@ import grpc
 from grpc_reflection.v1alpha import reflection
 from loguru import logger
 
+from app.server.grpc_logging import GrpcAccessLogInterceptor
 from app.server.handboard.audio.rpc import AudioRpc as HandboardAudioRpc
 from app.server.handboard.quiz.rpc import QuizRpc as HandboardQuizRpc
+from app.server.somni.applewatch.rpc import AppleWatchRpc as SomniAppleWatchRpc
+from app.server.somni.ask.rpc import AskContextRpc
 from app.server.somni.audio.rpc import AudioRpc as SomniAudioRpc
+from app.server.somni.facts.rpc import GenerationDataRpc
+from app.server.somni.profile.rpc import ProfileRpc as SomniProfileRpc
 from app.server.somni.quiz.rpc import QuizRpc as SomniQuizRpc
 from app.server.somni.report.rpc import ReportRpc as SomniReportRpc
 from app.uburnode_grpc.grpc_gen import (
@@ -56,7 +61,7 @@ async def stop_grpc_servers(servers: GrpcServers | None, *, grace: float = 5.0) 
 
 
 async def _start_handboard(state: AppState, settings: Settings) -> grpc.aio.Server:
-    server = grpc.aio.server()
+    server = _new_grpc_server()
     uburnode_pb2_grpc.add_AudioServiceServicer_to_server(
         HandboardAudioRpc(getattr(state, "audio_service", None)),
         server,
@@ -70,7 +75,7 @@ async def _start_handboard(state: AppState, settings: Settings) -> grpc.aio.Serv
 
 
 async def _start_somni(state: AppState, settings: Settings) -> grpc.aio.Server:
-    server = grpc.aio.server()
+    server = _new_grpc_server(unlimited_messages=True)
     uburnode_somni_pb2_grpc.add_QuizServiceServicer_to_server(
         SomniQuizRpc(getattr(state, "somni_quiz_service", None)),
         server,
@@ -83,11 +88,39 @@ async def _start_somni(state: AppState, settings: Settings) -> grpc.aio.Server:
         SomniAudioRpc(getattr(state, "somni_audio_service", None)),
         server,
     )
+    uburnode_somni_pb2_grpc.add_ProfileServiceServicer_to_server(
+        SomniProfileRpc(getattr(state, "somni_profile_service", None)),
+        server,
+    )
+    uburnode_somni_pb2_grpc.add_GenerationDataServiceServicer_to_server(
+        GenerationDataRpc(
+            getattr(state, "generation_data_service", None),
+        ),
+        server,
+    )
+    uburnode_somni_pb2_grpc.add_AppleWatchServiceServicer_to_server(
+        SomniAppleWatchRpc(getattr(state, "somni_applewatch_service", None)),
+        server,
+    )
+    uburnode_somni_pb2_grpc.add_AskContextServiceServicer_to_server(
+        AskContextRpc(getattr(state, "ask_context_service", None)),
+        server,
+    )
     _enable_reflection(server, uburnode_somni_pb2)
     bind = f"{settings.grpc_host}:{settings.somni_grpc_port}"
     _bind(server, bind, "量产")
     await server.start()
     return server
+
+
+def _new_grpc_server(*, unlimited_messages: bool = False) -> grpc.aio.Server:
+    options = None
+    if unlimited_messages:
+        options = [
+            ("grpc.max_send_message_length", -1),
+            ("grpc.max_receive_message_length", -1),
+        ]
+    return grpc.aio.server(interceptors=[GrpcAccessLogInterceptor()], options=options)
 
 
 def _enable_reflection(server: grpc.aio.Server, proto_module) -> None:

@@ -9,6 +9,7 @@ import pytest
 from app.core.config import Settings
 from app.main import AppState
 from app.server.bootstrap import start_grpc_servers, stop_grpc_servers
+from app.server.grpc_logging import GrpcAccessLogInterceptor
 
 
 @pytest.mark.asyncio
@@ -20,10 +21,13 @@ async def test_start_both_servers_when_enabled(monkeypatch: pytest.MonkeyPatch) 
     fake_sm.add_insecure_port = MagicMock(return_value=50064)
     fake_sm.start = AsyncMock()
     servers = iter([fake_hb, fake_sm])
-    monkeypatch.setattr(
-        "app.server.bootstrap.grpc.aio.server",
-        lambda: next(servers),
-    )
+    captured: list[dict] = []
+
+    def fake_server(*_args, **kwargs):
+        captured.append(kwargs)
+        return next(servers)
+
+    monkeypatch.setattr("app.server.bootstrap.grpc.aio.server", fake_server)
     settings = Settings(grpc_enabled=True, somni_grpc_enabled=True)
     state = AppState(settings=settings)
     result = await start_grpc_servers(state, settings)
@@ -31,6 +35,10 @@ async def test_start_both_servers_when_enabled(monkeypatch: pytest.MonkeyPatch) 
     assert result.somni is fake_sm
     fake_hb.start.assert_awaited_once()
     fake_sm.start.assert_awaited_once()
+    assert len(captured) == 2
+    for kwargs in captured:
+        interceptors = kwargs.get("interceptors") or []
+        assert any(isinstance(item, GrpcAccessLogInterceptor) for item in interceptors)
     fake_hb.stop = AsyncMock()
     fake_sm.stop = AsyncMock()
     await stop_grpc_servers(result)

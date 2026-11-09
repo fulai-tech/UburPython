@@ -106,15 +106,34 @@ class _FakeRedis:
 
 def test_build_cache_key_is_sha_of_prefix_plus_body() -> None:
     request = SearchAudioRequest(query_text="雨声", top_k=5)
+    from app.core.audio_tags import audio_tag_contract_version
+
+    normalized = request.model_dump(mode="json")
+    normalized["tag_contract_version"] = audio_tag_contract_version()
     body = json.dumps(
-        request.model_dump(mode="json"),
+        normalized,
         sort_keys=True,
         ensure_ascii=False,
         separators=(",", ":"),
     )
-    assert AUDIO_SEARCH_KEY_PREFIX == "audio_search_v2+"
+    assert AUDIO_SEARCH_KEY_PREFIX == "audio_search_v5+"
     expected = hashlib.sha256(f"{AUDIO_SEARCH_KEY_PREFIX}{body}".encode()).hexdigest()
     assert build_audio_search_cache_key(request) == expected
+
+
+@pytest.mark.asyncio
+async def test_fallback_cache_is_separate_from_primary() -> None:
+    redis = _FakeRedis()
+    cache = AudioSearchCache(redis, max_size=3, ttl_sec=60)
+    request = SearchAudioRequest(query_text="海浪")
+    materials = [{"_id": "r1", "audio_name": "随机"}]
+
+    await cache.set_fallback(request, "random", materials)
+
+    assert await cache.get(request) is None
+    assert await cache.get_fallback(request) == ("random", materials)
+    await cache.clear_all()
+    assert await cache.get_fallback(request) is None
 
 
 @pytest.mark.asyncio

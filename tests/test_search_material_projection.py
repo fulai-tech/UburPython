@@ -41,10 +41,11 @@ def test_project_keeps_only_api_fields() -> None:
         "description": "轻柔雨声",
         "audio_url": "https://cdn/a.mp3",
         "cover_url": "https://cdn/a-cover.jpg",
-        "content_form_tags": [{"name": "雨声", "parent_tag_id": "p1"}],
-        "audio_engineering_tags": [
-            {"code": "event_density", "value": {"code": "low"}}
-        ],
+        "status": True,
+        "sleep_stage_tags": [{"tag_id": "s1", "name": "放松"}],
+        "content_form_tags": raw["content_form_tags"],
+        "audio_engineering_tags": raw["audio_engineering_tags"],
+        "evidence_level_tags": [{"code": "B"}],
     }
 
 
@@ -66,7 +67,5 @@ def test_project_missing_value_is_null() -> None:
 
 
 def test_project_cover_url_empty_when_absent() -> None:
-    out = project_search_material(
-        {"_id": "1", "audio_name": "a", "audio_url": "u"}
-    )
+    out = project_search_material({"_id": "1", "audio_name": "a", "audio_url": "u"})
     assert out["cover_url"] == ""

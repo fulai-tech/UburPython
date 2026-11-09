@@ -1,6 +1,6 @@
 """按睡眠阶段拆分的候选文档 Redis 缓存。
 
-文档全局只存一份（sleep_stage_v2_doc:*），各阶段仅存 audio_url 索引；
+文档全局只存一份（sleep_stage_v4_doc:*），各阶段仅存 audio_url 索引；
 多阶段查询合并索引后 MGET 文档，按 audio_url 去重。
 """
 
@@ -14,12 +14,13 @@ from typing import Any, Protocol
 
 from loguru import logger
 
+from app.core.audio_tags import audio_tag_contract_version, canonical_tag, canonical_tags
 from app.core.config import Settings
 
-SLEEP_STAGES = ("放松", "入睡", "守护", "唤醒")
-_CACHE_CLEANUP_STAGES = (*SLEEP_STAGES, "清醒")
-SLEEP_STAGE_INDEX_KEY_PREFIX = "sleep_stage_v2_index:"
-SLEEP_STAGE_DOC_KEY_PREFIX = "sleep_stage_v2_doc:"
+SLEEP_STAGES = ("unwind", "soothe", "guard", "wake")
+_CACHE_CLEANUP_STAGES = SLEEP_STAGES
+SLEEP_STAGE_INDEX_KEY_PREFIX = "sleep_stage_v4_index:"
+SLEEP_STAGE_DOC_KEY_PREFIX = "sleep_stage_v4_doc:"
 # 兼容旧测试/调用名
 SLEEP_STAGE_CANDIDATE_KEY_PREFIX = SLEEP_STAGE_INDEX_KEY_PREFIX
 _LEGACY_SLEEP_STAGE_INDEX_KEY_PREFIX = "sleep_stage_index:"
@@ -41,7 +42,7 @@ class RedisLike(Protocol):
 
 
 def build_sleep_stage_index_key(stage: str) -> str:
-    return f"{SLEEP_STAGE_INDEX_KEY_PREFIX}{stage}"
+    return f"{SLEEP_STAGE_INDEX_KEY_PREFIX}{audio_tag_contract_version()}:{canonical_tag(stage)}"
 
 
 def build_sleep_stage_cache_key(stage: str) -> str:
@@ -51,7 +52,7 @@ def build_sleep_stage_cache_key(stage: str) -> str:
 
 def build_sleep_stage_doc_key(audio_url: str) -> str:
     digest = hashlib.sha256(audio_url.encode("utf-8")).hexdigest()
-    return f"{SLEEP_STAGE_DOC_KEY_PREFIX}{digest}"
+    return f"{SLEEP_STAGE_DOC_KEY_PREFIX}{audio_tag_contract_version()}:{digest}"
 
 
 def merge_urls_preserve_order(groups: list[list[str]]) -> list[str]:
@@ -89,12 +90,24 @@ def merge_candidates_by_audio_url(
 class SleepStageCandidateCache:
     """文档单份存储 + 四阶段 url 索引。"""
 
-    def __init__(self, redis: RedisLike, *, ttl_sec: int = _WEEK_SECONDS) -> None:
+    def __init__(
+        self,
+        redis: RedisLike,
+        *,
+        ttl_sec: int = _WEEK_SECONDS,
+        owns_client: bool = False,
+    ) -> None:
         if ttl_sec < 1:
             raise ValueError("ttl_sec must be >= 1")
         self._redis = redis
         self._ttl_sec = ttl_sec
+        self._owns_client = owns_client
         self._mutation_lock = asyncio.Lock()
+
+    async def aclose(self) -> None:
+        close = getattr(self._redis, "aclose", None)
+        if self._owns_client and close is not None:
+            await close()
 
     async def get(self, stages: list[str]) -> list[dict[str, Any]] | None:
         """全部阶段索引命中且文档齐全才返回；否则 None。"""
@@ -191,7 +204,7 @@ class SleepStageCandidateCache:
     async def warm(self, loader: StageLoader) -> None:
         """清空后按四个阶段从数据源重建索引与文档。"""
         async with self._mutation_lock:
-            await self._clear_all_unlocked()
+            await self._clear_all_unlocked(include_legacy=False)
             for stage in SLEEP_STAGES:
                 docs = await loader(stage)
                 await self.set_stage(stage, docs)
@@ -202,9 +215,11 @@ class SleepStageCandidateCache:
         async with self._mutation_lock:
             await self._clear_all_unlocked()
 
-    async def _clear_all_unlocked(self) -> None:
+    async def _clear_all_unlocked(self, *, include_legacy: bool = True) -> None:
         urls: set[str] = set()
         index_keys = [build_sleep_stage_index_key(stage) for stage in _CACHE_CLEANUP_STAGES]
+        if include_legacy:
+            index_keys.append(f"{SLEEP_STAGE_INDEX_KEY_PREFIX}清醒")
         for key in index_keys:
             raw = await self._redis.get(key)
             if raw is None:
@@ -213,9 +228,24 @@ class SleepStageCandidateCache:
             if isinstance(items, list):
                 urls.update(str(item) for item in items if item)
 
+        if not include_legacy:
+            await self._redis.delete(*index_keys, *[build_sleep_stage_doc_key(url) for url in urls])
+            return
+
         legacy_urls: set[str] = set()
+        legacy_v2_indexes = [
+            f"sleep_stage_v2_index:{stage}"
+            for stage in (*SLEEP_STAGES, "放松", "入睡", "守护", "唤醒", "清醒")
+        ]
+        for key in legacy_v2_indexes:
+            raw = await self._redis.get(key)
+            if raw is not None:
+                items = json.loads(raw)
+                if isinstance(items, list):
+                    legacy_urls.update(str(item) for item in items if item)
         legacy_index_keys = [
-            f"{_LEGACY_SLEEP_STAGE_INDEX_KEY_PREFIX}{stage}" for stage in _CACHE_CLEANUP_STAGES
+            f"{_LEGACY_SLEEP_STAGE_INDEX_KEY_PREFIX}{stage}"
+            for stage in (*_CACHE_CLEANUP_STAGES, "放松", "入睡", "守护", "唤醒", "清醒")
         ]
         for key in legacy_index_keys:
             raw = await self._redis.get(key)
@@ -228,12 +258,18 @@ class SleepStageCandidateCache:
         doc_keys = [build_sleep_stage_doc_key(url) for url in urls]
         legacy_doc_keys = [_build_legacy_sleep_stage_doc_key(url) for url in legacy_urls]
         legacy_candidate_keys = [
-            f"{_LEGACY_SLEEP_STAGE_CANDIDATE_KEY_PREFIX}{stage}" for stage in _CACHE_CLEANUP_STAGES
+            f"{_LEGACY_SLEEP_STAGE_CANDIDATE_KEY_PREFIX}{stage}"
+            for stage in (*_CACHE_CLEANUP_STAGES, "放松", "入睡", "守护", "唤醒", "清醒")
         ]
         to_delete = [
             *index_keys,
             *doc_keys,
             *legacy_index_keys,
+            *legacy_v2_indexes,
+            *[
+                "sleep_stage_v2_doc:" + hashlib.sha256(url.encode()).hexdigest()
+                for url in legacy_urls
+            ],
             *legacy_doc_keys,
             *legacy_candidate_keys,
         ]
@@ -256,33 +292,37 @@ def _build_legacy_sleep_stage_doc_key(audio_url: str) -> str:
 
 
 def _normalize_stages(stages: list[str]) -> list[str]:
-    seen: set[str] = set()
-    result: list[str] = []
-    for stage in stages:
-        name = stage.strip()
-        if not name or name in seen:
-            continue
-        seen.add(name)
-        result.append(name)
-    return result
+    return canonical_tags(stages)
 
 
 async def create_sleep_stage_candidate_cache(
     settings: Settings,
     redis: Any | None = None,
+    *,
+    redis_url: str | None = None,
 ) -> SleepStageCandidateCache | None:
-    """复用已有 Redis 客户端；否则按 REDIS_URL 新建。空 URL 返回 None。"""
+    """复用已有 Redis 客户端；否则按 URL 新建。空 URL 返回 None。
+
+    redis_url 为 None 时使用手板 REDIS_URL。传入字符串（含空串）时只用该地址，不回退。
+    """
     if redis is not None:
         return SleepStageCandidateCache(redis, ttl_sec=settings.search_cache_ttl_sec)
-    if not settings.redis_url.strip():
-        logger.warning("未配置 REDIS_URL，睡眠阶段候选缓存已关闭")
+    url = settings.redis_url if redis_url is None else redis_url
+    url_name = "REDIS_URL" if redis_url is None else "SOMNI_REDIS_URL"
+    if not url.strip():
+        logger.warning("未配置 {}，睡眠阶段候选缓存已关闭", url_name)
         return None
     from redis.asyncio import Redis
 
     client = Redis.from_url(
-        settings.redis_url,
+        url.strip(),
         decode_responses=False,
-        max_connections=max(1, settings.redis_max_connections),
+        max_connections=max(
+            1,
+            settings.redis_max_connections
+            if redis_url is None
+            else settings.somni_redis_max_connections,
+        ),
     )
     try:
         await client.ping()
@@ -292,4 +332,8 @@ async def create_sleep_stage_candidate_cache(
             logger.warning("Redis 不可用（调试模式，跳过睡眠阶段缓存）：{}", exc)
             return None
         raise
-    return SleepStageCandidateCache(client, ttl_sec=settings.search_cache_ttl_sec)
+    return SleepStageCandidateCache(
+        client,
+        ttl_sec=settings.search_cache_ttl_sec,
+        owns_client=True,
+    )

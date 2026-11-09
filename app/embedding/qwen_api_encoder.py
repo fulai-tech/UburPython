@@ -37,7 +37,10 @@ class QwenApiEncoder(EncoderBase):
     def is_loaded(self) -> bool:
         return self._loaded and bool(self._settings.dashscope_api_key)
 
-    async def encode(self, texts: list[str]) -> list[list[float]]:
+    async def encode(
+        self, texts: list[str], *, language: str = "zh"
+    ) -> list[list[float]]:
+        del language
         if not texts:
             return []
         if not self.is_loaded:
@@ -50,8 +53,8 @@ class QwenApiEncoder(EncoderBase):
             vectors.extend(await self._embed_batch(batch))
         return vectors
 
-    async def encode_one(self, text: str) -> list[float]:
-        results = await self.encode([text])
+    async def encode_one(self, text: str, *, language: str = "zh") -> list[float]:
+        results = await self.encode([text], language=language)
         return results[0]
 
     async def _embed_batch(self, texts: list[str]) -> list[list[float]]:

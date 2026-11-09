@@ -5,7 +5,9 @@
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Optional
 
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -36,7 +38,7 @@ class Settings(BaseSettings):
     es_request_timeout_sec: float = 30.0
     search_max_concurrency: int = 25  # 同时执行的检索流水线上限，防止打满 ES
 
-    # 量产 ES（与手板向量/节点隔离）
+    # 量产 ES（独立节点；空则不可用，不回退 ES_NODE）
     somni_es_node: str = ""
     somni_es_audio_index: str = "somni_audio_materials"
     somni_es_tag_vectors_index: str = "somni_audio_tag_dictionary"
@@ -53,15 +55,101 @@ class Settings(BaseSettings):
     somni_mongo_materials_collection: str = "somni_audio_materials"
     somni_mongo_tag_dictionary_collection: str = "somni_audio_tag_dictionary"
     somni_mongo_answers_collection: str = "somni_quiz_answers"
+    somni_mongo_questions_collection: str = "somni_quiz_questions"
     somni_mongo_devices_collection: str = "somni_devices"
     somni_mongo_telemetry_collection: str = "somni_telemetry"
     somni_mongo_records_collection: str = "somni_records"
     somni_mongo_sleep_reports_collection: str = "somni_sleep_reports"
     somni_mongo_events_collection: str = "somni_events"
+    somni_mongo_user_profiles_collection: str = "somni_user_profiles"
+    somni_mongo_user_profile_long_terms_collection: str = "somni_user_profile_long_terms"
+    somni_mongo_user_profiles_short_terms_collection: str = "somni_user_profiles_short_terms"
+    somni_mongo_wearable_raw_points_collection: str = "somni_wearable_raw_points"
+    somni_mongo_calendar_daily_data_collection: str = "somni_calendar_daily_data"
+    somni_mongo_alarms_collection: str = "somni_alarms"
+
+    somni_mongo_users_collection: str = "somni_users"
+    somni_mongo_schedules_collection: str = "somni_schedules"
+    somni_mongo_quiz_results_collection: str = "somni_quiz_results"
+    somni_mongo_wearable_daily_collection: str = "somni_wearable_daily_profiles"
+    somni_mongo_uploads_collection: str = "somni_wearable_uploads"
+    somni_mongo_observations_collection: str = "somni_user_observations"
+    somni_mongo_generations_collection: str = "somni_plan_generations"
+    somni_mongo_snapshots_collection: str = "somni_plans_snapshots"
+    somni_mongo_plans_collection: str = "somni_plans"
+    somni_mongo_acoustic_clips_collection: str = "somni_acoustic_clips"
+    somni_mongo_chat_messages_collection: str = "somni_chat_messages"
+    ask_context_deadline_sec: float = Field(default=8.0, gt=0, le=30)
+    somni_mongo_sessions_collection: str = "somni_sessions"
+    somni_mongo_session_payloads_collection: str = "somni_session_payloads"
+    somni_mongo_operations_collection: str = "somni_device_operations"
+    somni_mongo_downlinks_collection: str = "somni_device_downlinks"
+    generation_query_limit: int = Field(default=20000, ge=1, le=100000)
+    generation_query_timeout_ms: int = Field(default=5000, ge=1, le=60000)
+    generation_deadline_sec: float = Field(default=15.0, gt=0, le=120)
+    generation_response_bytes: int = Field(default=2000000, ge=1, le=4000000)
+    generation_cursor_ttl_sec: int = Field(default=900, ge=1, le=86400)
+    generation_cursor_secret: str = ""
+
+    # Apple Watch 步数 tonight_risk 阈值
+    applewatch_steps_level_low: int = 5000
+    applewatch_steps_level_medium: int = 10000
+
+    # GetEvents：会话遥测按总时长百分比分桶（默认 10% → 约 10 个点）
+    somni_report_series_bucket_percent: float = Field(default=10.0, gt=0, le=100)
 
     sim_threshold: float = 0.7  # 内容形态向量模糊命中阈值（规范 §五-2）
     # GetAudio query_text 与内容形态标签（含二级）向量相似度下限
     get_audio_root_tag_sim_threshold: float = 0.75
+    # 有 query_text 时：BM25（混合文本）+ knn（混合向量）RRF 合并
+    get_audio_search_top_k: int = 30
+    get_audio_bm25_enabled: bool = True
+    get_audio_bm25_size: int = 50
+    get_audio_vector_enabled: bool = True
+    get_audio_rrf_k: int = 60
+    get_audio_knn_k: int = 50
+    get_audio_knn_num_candidates: int = 150
+    # 合路后只保留同时出现在 BM25 与 knn 名单的文档（双路共识）
+    get_audio_hybrid_require_both_lanes: bool = False
+    # 合路过滤后按相关度重排：knn 主序、BM25 辅序（避免 RRF 双路共识把强相关挤到后面）
+    get_audio_rerank_by_relevance: bool = True
+    # ES knn _score=(1+cosine)/2；0.80 ≈ 真实余弦 0.60，过滤弱语义邻居（如单字母误召）
+    get_audio_min_vector_score: float = 0.80
+    # BM25 绝对门槛；0 会放行英文冠词 a 等弱命中。
+    # 「人声」命中分多在 0.21～0.29（词频 1～2），0.2 可放行主档。
+    get_audio_min_bm25_score: float = 0.2
+    # 分路断崖：相对该路最高分的保留比例；未设时回退共享断崖
+    get_audio_bm25_score_cliff_ratio: Optional[float] = 0.78
+    get_audio_knn_score_cliff_ratio: Optional[float] = 0.95
+    get_audio_score_cliff_ratio: float = 0.97
+    get_audio_score_cliff_ratio_zh: Optional[float] = None
+    get_audio_score_cliff_ratio_en: Optional[float] = None
+    get_audio_color_noise_mutex_enabled: bool = True
+    # 虚词/噪声 query 跳过双路检索（逗号/空白分隔；空串=用代码内置默认；另有纯英文≤2 字母规则）
+    get_audio_bm25_query_blacklist: str = (
+        "了,的,啊,呢,吧,吗,呀,嘛,哦,嗯,我,你,他,她,它,您,咱,"
+        "和,与,或,是,在,有,就,还,很,太,最,不,没,也,都,把,被,让,给,从,向,对,比,好,行,"
+        "可以,好的,随便,你好,在吗,哈哈,呵呵,嗯嗯,"
+        "a,an,the,i,me,you,and,or,no,yes,ok,hi,lol,omg,idk,wtf,foo,bar,test,car"
+    )
+    # 合路后要求标题/标签与 query 有弱字面重合，压制描述误召
+    get_audio_lexical_match_enabled: bool = True
+    # knn 向量字段覆盖；空=按检索语言选 description_vector / description_vector_en
+    get_audio_description_vector_field: str = ""
+
+    def resolve_get_audio_bm25_query_blacklist(self) -> frozenset[str]:
+        """解析黑名单；空配置返回空集合，由 is_bm25_query_blacklisted 回退内置默认。"""
+        raw = (self.get_audio_bm25_query_blacklist or "").replace("，", ",")
+        return frozenset(part.strip() for part in raw.split(",") if part.strip())
+    # 问卷自定义输入：描述向量得分不低于最高分的该比例才进入优先组，不按条数截断
+    get_audio_preference_score_ratio: float = 0.945
+    # 问卷「不喜欢」对音频描述向量：余弦不低于下限，且与该词最高分相差不超过 margin
+    get_audio_dislike_desc_sim_floor: float = 0.65
+    get_audio_dislike_desc_sim_margin: float = 0.06
+    # 问卷「不喜欢」对标签名向量：不低于根标签阈值，且与最高分相差不超过 margin
+    get_audio_dislike_tag_sim_margin: float = 0.06
+    # 描述命中音频身上的二级标签，名字与该词相似度不低于此值时，挂这个标签的音频一起排到最后
+    get_audio_dislike_tag_spread_sim: float = 0.60
     # 多路文本检索厌恶硬剔除阈值；≥ 该值 penalty=1.0 丢弃候选
     strong_dislike_sim_threshold: float = 0.85
     search_sleep_stage_filter_enabled: bool = True  # 检索步骤 1 是否按睡眠阶段过滤
@@ -69,19 +157,35 @@ class Settings(BaseSettings):
 
     embedding_backend: str = "onnx"  # onnx | torch | qwen_api（DashScope/OpenAI 兼容）
     embedding_model: str = "BAAI/bge-small-zh-v1.5"
-    embedding_dim: int = 512  # 与 ES dense_vector.dims 一致
-    embedding_onnx_dir: str = "models/onnx/bge-small-zh-v1.5"
+    embedding_dim: int = 512  # zh；与 ES description_vector.dims 一致
+    embedding_dim_en: int = 384  # en；与 ES description_vector_en.dims 一致
+    embedding_onnx_dir: str = "models/onnx/bge-small-zh-v1.5-int8"
+    # 英文混合向量 / 英文标签名。空则用中文模型目录同级的 bge-small-en-v1.5-int8。
+    embedding_onnx_dir_en: str = "models/onnx/bge-small-en-v1.5-int8"
     dashscope_api_key: str = ""
     dashscope_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     embedding_api_timeout_sec: float = 30.0
     embedding_api_batch_size: int = 10
     embedding_text_cache_size: int = 4096  # 请求侧文本→向量 LRU，降低重复 ONNX
-    embedding_onnx_pool_size: int = 4  # ONNX InferenceSession 池大小，提高并发 encode
+    embedding_onnx_pool_size: int = 1  # ONNX InferenceSession 池；1=省内存串行，>1 提高并发但倍增模型内存
     embedding_onnx_intra_op_threads: int = 1  # 单 session 内线程数；池化后宜保持较小避免 CPU 过订阅
+
+    @field_validator(
+        "get_audio_score_cliff_ratio_zh",
+        "get_audio_score_cliff_ratio_en",
+        "get_audio_bm25_score_cliff_ratio",
+        "get_audio_knn_score_cliff_ratio",
+        mode="before",
+    )
+    @classmethod
+    def _empty_optional_float(cls, value: object) -> object:
+        if value is None or value == "":
+            return None
+        return value
 
     log_level: str = "INFO"
     log_dir: str = "logs"
-    # 按日命名 YYYY-MM-DD_ubur_log；超大小则同日再开新文件，见 app.core.logging
+    # 公共日志 YYYY-MM-DD_ubur_log；gRPC 另见 logs/{handboard|somni}/{服务}/日期_log
     log_rotation_size: str = "100 MB"
     log_retention: str = "7 days"
 
@@ -92,6 +196,9 @@ class Settings(BaseSettings):
     sync_backup_dir: str = "data/sync_backup"
     sync_backup_filename: str = "somni_audio_materials_backup.json"
     sync_tag_dictionary_backup_filename: str = "somni_audio_tag_dictionary_backup.json"
+    # 量产 CLI 同步备份（与手板文件名隔离，避免互相覆盖）
+    somni_sync_backup_filename: str = "somni_prod_audio_materials_backup.json"
+    somni_sync_tag_dictionary_backup_filename: str = "somni_prod_audio_tag_dictionary_backup.json"
 
     # 功能手板 Redis（空 URL 表示关闭）
     redis_url: str = ""
@@ -107,13 +214,41 @@ class Settings(BaseSettings):
     redis_max_connections: int = 512
     search_cache_max_size: int = 2048
     search_cache_ttl_sec: int = 604800  # 7 天
-    somni_audio_catalog_cache_ttl_sec: float = 60.0
+    # 量产 GetAudio 目录 Redis 缓存 TTL（秒）。≤0 表示不过期，由同步脚本删除
+    somni_audio_catalog_cache_ttl_sec: float = 0
     # CUD 后延时重建睡眠阶段候选缓存，窗口内多次写入只重建一次
     sleep_stage_cache_rewarm_delay_sec: float = 5.0
 
     default_page_size: int = 20
     max_page_size: int = 200
     fetch_all_hard_limit: int = 5000
+
+    def resolve_get_audio_score_cliff_ratio(self, language: str) -> float:
+        """按检索语言解析共享断崖；zh/en 覆盖未设时回退 get_audio_score_cliff_ratio。"""
+        lang = (language or "").strip().lower()
+        if lang.startswith("zh") and self.get_audio_score_cliff_ratio_zh is not None:
+            return float(self.get_audio_score_cliff_ratio_zh)
+        if lang.startswith("en") and self.get_audio_score_cliff_ratio_en is not None:
+            return float(self.get_audio_score_cliff_ratio_en)
+        return float(self.get_audio_score_cliff_ratio)
+
+    def resolve_get_audio_bm25_score_cliff_ratio(self, language: str) -> float:
+        """BM25 断崖；未单独配置时回退共享断崖（含 zh/en 覆盖）。"""
+        if self.get_audio_bm25_score_cliff_ratio is not None:
+            return float(self.get_audio_bm25_score_cliff_ratio)
+        return self.resolve_get_audio_score_cliff_ratio(language)
+
+    def resolve_get_audio_knn_score_cliff_ratio(self, language: str) -> float:
+        """knn 断崖；未单独配置时回退共享断崖（含 zh/en 覆盖）。"""
+        if self.get_audio_knn_score_cliff_ratio is not None:
+            return float(self.get_audio_knn_score_cliff_ratio)
+        return self.resolve_get_audio_score_cliff_ratio(language)
+
+    def resolve_embedding_onnx_dir_en(self) -> str:
+        directory = self.embedding_onnx_dir_en.strip()
+        if directory:
+            return directory
+        return str(Path(self.embedding_onnx_dir).parent / "bge-small-en-v1.5-int8")
 
     @property
     def embedding_onnx_path(self) -> Path:
@@ -132,13 +267,24 @@ class Settings(BaseSettings):
         return Path(self.sync_backup_dir) / self.sync_tag_dictionary_backup_filename
 
     @property
+    def somni_sync_backup_path(self) -> Path:
+        return Path(self.sync_backup_dir) / self.somni_sync_backup_filename
+
+    @property
+    def somni_sync_tag_dictionary_backup_path(self) -> Path:
+        return Path(self.sync_backup_dir) / self.somni_sync_tag_dictionary_backup_filename
+
+    @property
     def log_dir_path(self) -> Path:
         return Path(self.log_dir)
 
     @property
     def effective_somni_es_node(self) -> str:
-        """量产 ES 节点；未配置时回退手板（仅本地兜底，生产应显式配置）。"""
-        return self.somni_es_node or self.es_node
+        """量产 ES 节点。未配置时不使用手板 ES_NODE。"""
+        node = self.somni_es_node.strip()
+        if not node:
+            raise RuntimeError("未配置 SOMNI_ES_NODE，量产 ES 不能使用手板 ES_NODE")
+        return node
 
 
 @lru_cache

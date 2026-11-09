@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -21,8 +22,38 @@ from scripts.sync_es_from_comm import (
     start_sync_scheduler,
     tag_doc_to_es,
     wipe_and_recreate_index,
+    write_backup,
     zero_vector,
 )
+
+
+def test_write_backup_keeps_previous_snapshot(tmp_path) -> None:
+    path = tmp_path / "somni_audio_materials_backup.json"
+    write_backup(path, [{"_id": "old"}])
+    write_backup(path, [{"_id": "new"}])
+
+    assert json.loads(path.read_text(encoding="utf-8")) == [{"_id": "new"}]
+    archived = [item for item in tmp_path.iterdir() if item != path]
+    assert len(archived) == 1
+    assert json.loads(archived[0].read_text(encoding="utf-8")) == [{"_id": "old"}]
+
+
+def test_write_backup_keeps_only_latest_ten(tmp_path) -> None:
+    path = tmp_path / "somni_audio_materials_backup.json"
+    path.write_text("[]", encoding="utf-8")
+    for day in range(1, 13):
+        archived = tmp_path / f"{path.stem}_202001{day:02d}_120000{path.suffix}"
+        archived.write_text("[]", encoding="utf-8")
+    prod = tmp_path / "somni_prod_audio_materials_backup_20200101_120000.json"
+    prod.write_text("[]", encoding="utf-8")
+
+    write_backup(path, [{"_id": "new"}])
+
+    kept = [item for item in tmp_path.iterdir() if item.name.startswith(f"{path.stem}_")]
+    assert json.loads(path.read_text(encoding="utf-8")) == [{"_id": "new"}]
+    assert len(kept) == 9
+    assert not (tmp_path / f"{path.stem}_20200104_120000{path.suffix}").exists()
+    assert prod.is_file()
 
 
 def test_redact_mongo_uri_hides_password() -> None:

@@ -2,7 +2,7 @@
 FROM python:3.12-slim-bookworm AS exporter
 
 ARG APT_MIRROR=mirrors.tencent.com
-ARG PIP_INDEX_URL=https://mirrors.cloud.tencent.com/pypi/simple
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 ARG HF_ENDPOINT=https://hf-mirror.com
 
 WORKDIR /export
@@ -20,7 +20,19 @@ RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
     && apt-get install -y --no-install-recommends build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir -i "${PIP_INDEX_URL}" "sentence-transformers>=3.3.0" torch onnxscript
+# 只走清华源。直接调用 pip，避免 $$ 被原样传给 /bin/sh 造成语法错误。
+RUN ( pip install --no-cache-dir --timeout 120 --retries 5 \
+        --trusted-host pypi.tuna.tsinghua.edu.cn \
+        -i "${PIP_INDEX_URL}" --upgrade pip \
+    || pip install --no-cache-dir --timeout 120 --retries 5 \
+        --trusted-host pypi.tuna.tsinghua.edu.cn \
+        -i "${PIP_INDEX_URL}" --upgrade pip ) \
+ && ( pip install --no-cache-dir --timeout 120 --retries 5 \
+        --trusted-host pypi.tuna.tsinghua.edu.cn \
+        -i "${PIP_INDEX_URL}" "sentence-transformers>=3.3.0" torch onnxscript \
+    || pip install --no-cache-dir --timeout 120 --retries 5 \
+        --trusted-host pypi.tuna.tsinghua.edu.cn \
+        -i "${PIP_INDEX_URL}" "sentence-transformers>=3.3.0" torch onnxscript )
 
 COPY scripts/export_onnx_model.py ./scripts/
 RUN python scripts/export_onnx_model.py --output-dir /export/onnx
@@ -29,7 +41,7 @@ RUN python scripts/export_onnx_model.py --output-dir /export/onnx
 FROM python:3.12-slim-bookworm AS builder
 
 ARG APT_MIRROR=mirrors.tencent.com
-ARG PIP_INDEX_URL=https://mirrors.cloud.tencent.com/pypi/simple
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 
 WORKDIR /app
 
@@ -47,7 +59,19 @@ RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
 COPY pyproject.toml README.md ./
 COPY app ./app
 
-RUN pip install --no-cache-dir -i "${PIP_INDEX_URL}" .
+# 只走清华源。直接调用 pip，避免 $$ 被原样传给 /bin/sh 造成语法错误。
+RUN ( pip install --no-cache-dir --timeout 120 --retries 5 \
+        --trusted-host pypi.tuna.tsinghua.edu.cn \
+        -i "${PIP_INDEX_URL}" --upgrade pip \
+    || pip install --no-cache-dir --timeout 120 --retries 5 \
+        --trusted-host pypi.tuna.tsinghua.edu.cn \
+        -i "${PIP_INDEX_URL}" --upgrade pip ) \
+ && ( pip install --no-cache-dir --timeout 120 --retries 5 \
+        --trusted-host pypi.tuna.tsinghua.edu.cn \
+        -i "${PIP_INDEX_URL}" . \
+    || pip install --no-cache-dir --timeout 120 --retries 5 \
+        --trusted-host pypi.tuna.tsinghua.edu.cn \
+        -i "${PIP_INDEX_URL}" . )
 
 FROM python:3.12-slim-bookworm AS runtime
 

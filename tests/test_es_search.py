@@ -151,7 +151,8 @@ async def test_warm_dictionary_vectors_cache_seeds_from_content_tags() -> None:
                     {
                         "_id": "t1",
                         "_source": {
-                            "name": "雨声",
+                            "code": "steady_light_rain",
+                            "name": "均匀小雨",
                             "name_vector": [0.1, 0.2],
                             "type": "content_form",
                             "status": "启用",
@@ -181,7 +182,8 @@ async def test_list_content_tag_vectors_uses_process_cache() -> None:
                     {
                         "_id": "t1",
                         "_source": {
-                            "name": "雨声",
+                            "code": "steady_light_rain",
+                            "name": "均匀小雨",
                             "name_vector": [0.1],
                             "type": "content_form",
                             "status": "启用",
@@ -197,7 +199,7 @@ async def test_list_content_tag_vectors_uses_process_cache() -> None:
     second = await search.list_content_tag_vectors()
 
     assert first == second
-    assert first[0]["label"] == "雨声"
+    assert first[0]["label"] == "steady_light_rain"
     client.search.assert_awaited_once()
     search.clear_content_tag_vectors_cache()
     await search.list_content_tag_vectors()
@@ -220,9 +222,7 @@ async def test_filter_by_sleep_stage_uses_terms_and_includes_pipeline_fields() -
                             "sleep_stage_tags": [
                                 {"tag_id": "s1", "code": "unwind", "name": "放松"}
                             ],
-                            "content_form_tags": [
-                                {"tag_id": "c1", "code": "rain", "name": "雨声"}
-                            ],
+                            "content_form_tags": [{"tag_id": "c1", "code": "rain", "name": "雨声"}],
                         },
                     }
                 ]
@@ -238,11 +238,23 @@ async def test_filter_by_sleep_stage_uses_terms_and_includes_pipeline_fields() -
     assert results[0]["audio_name"] == "雨声"
     assert "status" not in results[0]
     body = client.search.await_args.kwargs["body"]
-    assert body["query"] == {"terms": {"sleep_stage_names": ["放松", "入睡"]}}
+    assert body["query"] == {
+        "bool": {
+            "filter": [{"term": {"status": True}}],
+            "must": [
+                {
+                    "nested": {
+                        "path": "sleep_stage_tags",
+                        "query": {"terms": {"sleep_stage_tags.code": ["unwind", "soothe"]}},
+                    }
+                }
+            ],
+        }
+    }
     assert body["_source"]["includes"] == list(SEARCH_CANDIDATE_SOURCE_INCLUDES)
-    assert "status" not in body["_source"]["includes"]
+    assert "status" in body["_source"]["includes"]
     assert "description_vector" not in body["_source"]["includes"]
-    assert "nested" not in str(body)
+    assert "sleep_stage_names" not in str(body)
 
 
 @pytest.mark.asyncio
@@ -280,7 +292,9 @@ async def test_list_all_audio_candidates_includes_pipeline_fields() -> None:
     assert results[0]["_id"] == "a1"
     assert "id" not in results[0]
     body = client.search.await_args.kwargs["body"]
-    assert body["query"] == {"match_all": {}}
+    assert body["query"] == {
+        "bool": {"filter": [{"term": {"status": True}}], "must": [{"match_all": {}}]}
+    }
     assert body["_source"]["includes"] == list(SEARCH_CANDIDATE_SOURCE_INCLUDES)
     assert "description_vector" not in body["_source"]["includes"]
 
@@ -323,3 +337,52 @@ async def test_search_by_description_vector_includes_pipeline_fields() -> None:
     assert "description_vector" not in body["_source"]["includes"]
     assert body["knn"]["field"] == "description_vector"
     assert body["knn"]["query_vector"] == query_vector
+    assert body["knn"]["filter"] == {
+        "bool": {
+            "filter": [
+                {"term": {"status": True}},
+                {"exists": {"field": "description_vector"}},
+                {
+                    "nested": {
+                        "path": "sleep_stage_tags",
+                        "query": {"terms": {"sleep_stage_tags.code": ["unwind"]}},
+                    }
+                },
+            ]
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_search_by_description_vector_routes_field_by_language() -> None:
+    client = MagicMock()
+    client.search = AsyncMock(return_value={"hits": {"hits": []}})
+    search = EsSearch(client, Settings())
+
+    await search.search_by_description_vector(
+        [0.1, 0.2],
+        sleep_stage_tags=[],
+        size=5,
+        language="en",
+        include_source=False,
+    )
+
+    body = client.search.await_args.kwargs["body"]
+    assert body["knn"]["field"] == "description_vector_en"
+    assert {"exists": {"field": "description_vector_en"}} in body["knn"]["filter"]["bool"]["filter"]
+    assert not any(
+        isinstance(item, dict) and item.get("term", {}).get("language")
+        for item in body["knn"]["filter"]["bool"]["filter"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_search_get_audio_bm25_matches_phrase() -> None:
+    client = MagicMock()
+    client.search = AsyncMock(return_value={"hits": {"hits": []}})
+    search = EsSearch(client, Settings())
+
+    await search.search_get_audio_bm25("雨声", language="zh", size=50)
+
+    must = client.search.await_args.kwargs["body"]["query"]["bool"]["must"]
+    assert must == [{"match_phrase": {"description_text": "雨声"}}]

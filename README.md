@@ -2,11 +2,90 @@
 
 **Somni / 功能手板音频检索服务**：三维度检索为核心；HTTP 保留；同进程再对外暴露功能手板与量产两套 gRPC。
 
+新版音频素材字段、标签兼容与联调说明见 [音频读取契约](AUDIO_SCHEMA_CONTRACT.md)。
+
 - **核心**：三维度音频检索（ES 召回 + 标签词典向量 + 精排）
 - **功能手板**：`MONGO_*` + `ES_NODE` + `REDIS_URL`；HTTP `:8080` + gRPC `:50065`
 - **量产**：`SOMNI_MONGO_*` + `SOMNI_ES_*` + `SOMNI_REDIS_URL`（独立 Redis 实例）；gRPC `:50064`
 - **写路径**：直连 Mongo，再同步本侧 ES（不再调用 BioNode）
 - **接口文档**：`docs/功能手板接口文档.md`、`docs/量产接口文档.md`
+
+### Profile and plan hashes as metadata (local, not deployed)
+
+All `GetProfileInputs` purposes and inline profiles in `GetPlanInputs` skip stored
+body and transport-envelope hash comparisons. Original bodies and hash values are
+returned without database writes; envelope hashes are still generated. The section
+reason is `long_term_hash_verification_skipped`. Owner/schema/version-link/status,
+object shape, finite JSON, visibility, source and snapshot-ambiguity checks remain.
+The user explicitly retained existing UID/schema/hash database association queries.
+Missing linked records and malformed bodies do not become empty successful profiles.
+This does not repair missing preferences, obsolete dates or duplicate active snapshots.
+DPH must also use the metadata-only policy; updating only DPH cannot change this service.
+
+Regression: `python -m pytest tests/test_somni_facts_service.py -q`.
+
+### Current-version profile and plan inputs
+
+Profile/plan generation no longer accepts or emits `data_cutoff_at`,
+`data_cutoff_at_utc` or `cutoff_policy_version`. Old JSON/DB metadata is ignored;
+retired protobuf field numbers and names are reserved. Source receipt/update times
+are provenance, without an implicit read-start visibility cap. Business-date windows,
+active status, revision/association rules, ownership, finite values, quality checks and
+query budgets remain. Historical business dates use currently available versions;
+this is a best-effort read, not an archival or transactional snapshot. No DB migration
+or repair is performed. Same-day unchanged profiles can be reused independent of
+read time; changed business evidence can produce a new revision.
+
+The policy is scoped to each async profile/plan request and resets on errors.
+Reminder and evidence-pagination read boundaries retain their independent behavior.
+Observation validity uses the target business date at the supplied fixed UTC offset.
+Both middleware and DeepHealth must be updated together; no deployment is included.
+
+Regression: `uv run --no-sync pytest tests/test_cutoff_removal.py tests/test_grpc_generation_data.py -q`.
+
+### Legacy `somni_records` profile-facts fallback (local, not deployed)
+
+When report or normalized daily metrics do not cover a metric/date, `build_facts`
+can project validated `somni_records.raw_data` fields into the existing typed
+daily series. The projection reuses the current report definitions: total sleep
+is the floored sum of REM/light/deep stage minutes over bed-to-final-wake time;
+SOL uses `sleep_latency`; WASO uses `wake_time` to `wake_up_time`; sleep
+efficiency uses `sleep_efficiency` percent. It requires finite in-range values,
+an aware ordered sleep interval, a wake time whose local date
+matches `record_date`, and source refs. The row's `timezone_offset` is used when
+present; otherwise the request's fixed offset is used and historical travel/DST
+cannot be reconstructed. If a quality object explicitly marks the record
+invalid/unverified, it is rejected; absence of a legacy quality object is not
+proof of device quality. Values only certify the field projection checks, not
+clinical accuracy. Missing fields stay missing, never zero.
+
+Per metric and local wake date, a validated normalized wearable value wins,
+then a validated daily-report value, then a validated legacy-record projection.
+Only one source contributes a value for a given date; conflicting duplicate
+records remain missing/partial. The internal `facts.series` shape is unchanged;
+top-level source/method metadata is `mixed` when daily rows use more than one
+source, while each daily value retains its own source and refs. This does not
+generate reports or aggregate raw radar/HR/RR/IBI signals. The facts section
+continues to report unrelated pending aggregation/visibility limitations.
+
+### v6 presleep evidence (local, not deployed)
+
+Internal Somni Proto adds `InputFacts.metric_windows=7` and optional
+`InputNumericStats.std_dev=6`; absent fields remain readable, not zero evidence.
+`InputMetricWindow` carries metric/unit/source/method/definition, date/episode,
+UTC bounds, optional value/coverage/count, quality/measurement condition,
+HRV method and source refs.
+
+`normalize_metric_windows` validates existing aggregate `metric_windows` from
+records/wearable_daily (or records raw_data). Full duration coverage, provenance,
+presleep awake-rest condition and RMSSD/ms for HRV are required; conflicting
+duplicates are excluded; profile/plan reads do not filter by read time. Raw HR/RR/IBI aggregation and
+main-sleep inference remain pending. Missing windows adds
+`presleep_metric_windows_unavailable`, retaining original partial reasons.
+Generic numeric aggregation does not populate std_dev; DeepHealth computes
+reviewed sample SD from seven preceding nights. No database writes, migration
+or seeding. Stable questionnaire/DQ codes and device-quality/window producers
+remain dependencies. Producer/consumer rollout requires separate authorization.
 
 ## 架构
 
@@ -38,7 +117,8 @@ UburPython/
 │   ├── cache/
 │   └── middleware/
 ├── scripts/
-│   ├── sync_es_from_comm.py    # Mongo → ES 差异同步
+│   ├── sync_es_from_comm.py    # 手板 Mongo → ES 全量同步
+│   ├── sync_es_from_somni.py   # 量产 Mongo → ES 全量同步
 │   └── gen_uburnode_proto.sh   # 生成对外 gRPC stub
 ├── proto/
 │   ├── uburnode.proto
@@ -69,9 +149,13 @@ cp .env.example .env
 # 5. 导出 ONNX 模型（若 models/ 目录尚无模型）
 # 见 scripts/export_onnx_model.py
 
-# 6. Mongo → ES 同步（手板库）
+# 6. Mongo → ES 同步
+# 手板库
 uv run python scripts/sync_es_from_comm.py --dry-run
 uv run python scripts/sync_es_from_comm.py
+# 量产库
+uv run python scripts/sync_es_from_somni.py --dry-run
+uv run python scripts/sync_es_from_somni.py
 
 # 7. 启动服务
 uv run uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
@@ -178,15 +262,20 @@ OpenAPI 文档：启动后访问 `http://localhost:8080/docs`。
 ## Mongo → ES 同步
 
 ```bash
+# 手板（MONGO_URI / ES_NODE）
 uv run python scripts/sync_es_from_comm.py          # 正式同步
 uv run python scripts/sync_es_from_comm.py --dry-run # 仅比对统计
+
+# 量产（SOMNI_MONGO_URI / SOMNI_ES_NODE）
+uv run python scripts/sync_es_from_somni.py
+uv run python scripts/sync_es_from_somni.py --dry-run
 ```
 
 - 先同步 `somni_audio_tag_dictionary`（写入 `name_vector`、`name_en_vector`）
 - 再同步 `somni_audio_materials`（1:1 镜像 Mongo 文档）
 - 启动时删除旧索引 `audio_materials`、`tag_vectors`
 
-服务内按 `SYNC_INTERVAL_DAYS` 定时执行（需配置 `MONGO_URI`）。
+手板服务内按 `SYNC_INTERVAL_DAYS` 定时执行（需配置 `MONGO_URI`）。量产同步目前仅 CLI。
 
 ## 环境变量（节选）
 
@@ -212,8 +301,9 @@ uv run python scripts/sync_es_from_comm.py --dry-run # 仅比对统计
 | `LOG_DIR` | `logs` | 日志目录（部署时挂载到宿主机项目 `logs/`） |
 | `LOG_RETENTION` | `7 days` | 历史按日日志保留时长 |
 
-文件命名为 `YYYY-MM-DD_ubur_log`（如 `2026-07-15_ubur_log`），每天一个明文文件，零点滚动。  
-响应头回传 `X-Request-Id` 便于链路追踪。
+公共日志命名为 `YYYY-MM-DD_ubur_log`（HTTP、启动、ES 等），每天一个明文文件，零点滚动。  
+gRPC 按服务再拆成 `logs/{handboard|somni}/{服务}/YYYY-MM-DD_controller`（控制层）和 `_service`（服务层）。  
+响应头回传 `X-Request-Id` 便于链路追踪；gRPC 读取 metadata `x-request-id`，没有则自行生成。
 
 ## Docker 部署
 
@@ -224,8 +314,168 @@ cd /opt/uburpython && docker compose up -d --build
 生产访问：`http://<服务器IP>:8001/docs`（nginx 映射宿主机 8001 → 容器 80）。
 
 
+## GenerationData Internal Access
+
+GenerationData RPCs are internal interfaces for DeepHealth. They do not authenticate
+callers; network access to the Somni gRPC port must be restricted to trusted services.
+Do not expose this port publicly. The caller supplies the UID. UID validation,
+record ownership, profile/hash links, plan versions, cursor signatures and query
+budgets remain enforced. Account eligibility and user consent are enforced by the
+caller; GenerationData does not require a `somni_users` record or `privacy_switches`.
+
+Saved-profile bodies must remain finite JSON objects, but hashes are output metadata,
+not validation gates in either profile or plan generation. DPH retains existing hash
+generation algorithms and returns stored hashes without comparing body/envelope
+digests. The middleware generates normalized envelope metadata without digest rejection.
+Hash mismatches no longer produce partial/long_term_hash_mismatch; missing bodies,
+invalid dates, ownership failures and duplicate snapshots remain separate errors.
+Existing UID/schema/hash association queries remain; no historical-data repair or
+checksum rewrite is performed. Hash fields are not authentication or proof of integrity.
+
+`GetProfileInputs` and `GetPlanInputs` use the current-version generation policy above.
+The envelope's `read_started_at_utc` and `generated_at_utc` retain actual audit times.
+
+Database writers may preserve receipt times and immutable versions; this change does not create an archive.
+
+Mongo compatibility: when no `received_at` exists, the persisted `update_time`
+(otherwise `create_time`) is a provenance timestamp, not proof
+of network receipt. Later updates are eligible in current-version profile/plan reads. Completed
+answer ObjectIds map to `answer_id`; completion time uses the persisted version
+time when absent. Missing optional survey versions are omitted without inventing
+values or rejecting the completed answer. `InputAnswer` adds stored `title` (field 8),
+`input_type` (field 9) and `extra_input` (field 10); fields 1-7 are unchanged, so older
+clients can ignore the additional fields. No database migration is required.
+Current `profile_snapshot_id` and legacy `snapshot_id` are supported,
+but conflicts/ambiguous exact matches are rejected. Schema0.0.1 keeps its original
+`sha256:` long-body digest; a digest mismatch remains an integrity failure.
+
 ## 测试
 
 ```bash
 uv run pytest
 ```
+
+### 偏好证据聚合接入状态（2026-10-16）
+
+`app/server/somni/facts/preference.py` 和 `FactsStore.load_preference_sources` 已提供独立的只读聚合：
+按 UID、本地14晚业务窗口查询 UTC 数据，保留预算；重复包去重、近时旋钮首尾合并，
+精确关联方案版本、设备和完整会话，输出快照人工差异及暴露事实。
+偏好确认阈值归 DeepHealth；本仓不决定是否自动调整。
+
+已接入 gRPC。用户批准新增可选 `InputPreferenceEvidenceSection`，在 `ProfileInputsData` 使用字段8、
+`PlanInputsData` 使用字段6，两仓proto和生成文件已同步；旧端缺失证据时不能推断确认。
+真实快照字段、节点完成覆盖及硬件保持时长证明尚待数据核验，缺失时保守降级。
+本仓只返回事实证据，偏好判定与画像/方案候选由DPH完成；没有创建调度器、自动修改已保存方案或数据库迁移。
+
+### 生产结构偏好适配与验证数据
+
+偏好聚合支持快照`date/create_time/edit_source=app`。BioNode数字状态为`0=未应用、1=已读、2=已应用`；`status=2`在应用状态无冲突时转换为`lifecycle=committed`，其中App历史留档的`apply_status=recorded`也支持。兼容既有`status=0`或未保存status的历史格式，但它们仍须由完整执行会话证明实际采用，不能仅凭状态计为执行。显式`pending/queued/declined/discarded/device_rejected`均排除，即使数字状态为2或已有committed标记；不向数据库补字段或改写状态。
+
+会话通过唯一归属的`plan_id + plan_version`关联。完整暴露必须同时验证completed、非预览、设备、时区、方案时间及节点总数；停止/失败/缺少时区不计。已采纳App修改仅比较连续唯一版本；排队/丢弃/拒绝快照不作采纳证据。硬件成功记录可归并为观察，但缺少持续生效证明仍不自动确认。状态兼容修复不会绕过版本归属、执行证明或DeepHealth的独立夜数/一致率阈值。
+
+daily兼容没有generation链接的旧当前方案，通过用户/日期/版本/快照正文一致核验返回现有目标协议；weekly/realtime的独立读取语义不扩展。当前方案内可选null占位不构成正文差异，真正数值/节点差异仍拒绝。候选保存需版本和正文hash CAS，并写`trigger_reason=daily_preference`防重复递减。
+
+五人包由DeepHealth的`scripts/somni_preference_seed.py`生成；本仓`scripts/somni_preference_fixture_import.py`默认只检查包、不连接数据库，只有`--apply`才会导入，连接通过已有`SOMNI_MONGODB_URI`进程环境读取。包采用Extended JSON BSON UTC日期、确定性隔离UID和_id，覆盖问卷、长短画像、7天方案、5晚会话、App修订及硬件重传。测试日期必须与daily请求当日一致（建议09:00），过期包需重新生成；不创建登录账户或真实设备绑定。
+
+导入工具已随分支补齐。以下两种用法都只检查本地包，不连接 MongoDB；`--remove` 单独使用也不会删除数据：
+
+```bash
+python scripts/somni_preference_fixture_import.py /path/to/fixture_package
+python scripts/somni_preference_fixture_import.py /path/to/fixture_package --remove
+```
+
+只有显式添加 `--apply` 才执行数据库操作，`--apply --remove` 按包内精确 `_id` 删除。该脚本是操作人员工具，不由服务启动或部署流程自动执行；只能使用受信任的隔离测试包和测试数据库。
+
+### 画像关联不完整的默认读取
+
+未指定画像快照 ID 时，按原日期与 revision 排序，在现有两个候选的查询预算内选择第一组短期画像与长期画像哈希精确关联且长期状态有效的记录。跳过较新不完整关联时返回 `newer_profile_link_incomplete`；不会将较新的短期正文与较旧长期正文拼接。显式 ID 继续精确读取，关联缺失返回 partial，不替换其他快照。哈希重算仍跳过，UID、schema、有效状态和关联检查保留。保存方仍须原子保存新的长期记录和引用它的短期记录；本次读取兼容不修复数据库。
+
+
+### 2026-10-20 音频标签 code 与缓存兼容
+
+检索入口的 `sleep_stage_tags`、`content_tags`、`disliked_tags` 以及处方 RPC 的 `content_tag_codes` 统一归一为英文 dictionary code，独立于 UI language。比如 `soothe` / `breathing_guidance` / `steady_light_rain`。自然语言 `query_text` 和素材展示名称保留原语言。结构化素材优先 code；旧 name 通过 `app/core/audio_tag_aliases.json` 的已审计别名读取，未识别的明确排除返回参数错误，机器请求中的英文 code 也必须已存在、启用且类型合适。素材历史记录的code优先读取与机器请求校验分开处理。别名资产与 DeepHealth conf/somni/audio_tag_aliases.json 同步，来源为 2026-10-20 Somni 字典只读审计。不可把 `voice`（泛人声）与 `voice_guidance`（引导内容）合并；拒绝泛人声只接受工程 value.code=none，缺失信息不放行。
+
+阶段 ES 读取使用现有 nested `sleep_stage_tags.code`，无需新增索引字段。标签向量使用字典现有向量，进程缓存采用英文 code；自然句使用文本摘要 key。Redis 阶段缓存升级为 `sleep_stage_v3_index:<字典映射摘要>:<unwind|soothe|guard|wake>`、`sleep_stage_v3_doc:<hash>`；检索结果缓存升级 `audio_search_v5+`，LRU 使用独立 `audio_search_v5:_lru_index`。启动正常预热与按需加载都使用英文阶段 key，旧 namespace 不被新版本读取；正常启动预热只更新当前 v3 阶段缓存；显式管理 clear_all 才清理旧阶段 namespace，滚动发布时保留旧版本缓存。此次没有执行远端清理、重建、DB/ES 写入或部署；上线须与 DeepHealth 出站参数配套验证，允许新 namespace 冷启动。
+
+`GetAudio.tag_code`、问卷 `content_form_codes` 和热点标签记账也使用相同英文 code；已审计中英文别名先归一，再按素材 code 匹配。展示名称改变不改变选中分类，同 code 的多条素材仍按原排序规则排列。自由输入 preference_text/dislike_text 继续作为自然语言处理。
+
+
+别名来源与偏好映射分开维护：aliases仅由真实词典字段派生；rain等广义偏好按下文规则映射为多个现有code，不缩窄成单一小雨标签；2026-10-21按产品确认，piano/钢琴作为自由文本近义词对齐库内slow_piano，不改变正式词典code身份。当前字典已重新从Mongo只读导出，168条运行时记录加2条显式隔离测试记录，均有来源证据。U/S/G/W-S*仍是独立阶段协议别名。具体更新与跨仓校验方式见下文“检索前的音频标签对齐”。
+
+拒绝条件支持中文和英文子句，例如 不要人声 / no voice / without vocals / do not include voice。明确拒绝片段从正向扩展文本中移除，精确拒绝不参与模糊扩展且不受自动 TOP_K=5 截断。向量服务不可用时退回精确准入和硬拒绝；无向量的精确路径无需编码器。自然句与标签向量缓存分开。重复/冲突/缺失的 voice.value.code 不能证明无人声，仅唯一 none 可通过；显式空白/符号拒绝项返回参数错误。颜色噪音内部标签和拒绝标签统一为英文 code。
+
+0.62/0.65 是自动正向/负向标签的相似度阈值，0.2 是弱厌恶扣分，并非语言转换规则；本次不调数值。人工明确标签由 code 精确匹配，英文自由句的模糊质量需要真实双语标注集单独评估，不能用离线替身结果声称向量召回质量达标。
+
+
+2026-10-20 素材一致性加固：SearchPrescriptionAudio在ES/缓存排序后，对候选批量读取Mongo现有somni_audio_materials，按真实_id与status=true确认。缺失/停用项不返回；阶段、内容、工程、机制或风险标签与排序时不一致的候选必须重新同步/排序，不沿用旧准入。仅URL更新且标签一致时用Mongo最新URL与展示/标签元数据返回，保持原排序分数/顺序；适度超取候选后再截断请求数量，Mongo不可用时失败关闭。每次请求均验证，旧缓存不能绕过；不改DB/ES、不自动迁移或重建。disliked_tags里的无/none/no dislikes是无厌恶答复，不转换成工程none拒绝项，其他工程none归一化不变。
+
+
+### 检索前的音频标签对齐（2026-10-20）
+
+`somni_audio_tag_dictionary`是合法code来源。`app/core/audio_tag_aliases.json`保留type/id/parent/status；170条源记录中纯数字测试阶段213/1321显式隔离，168条用于运行时。字典本身的别名只从code/name/name_en派生；`audio_preference_rules.json`独立维护审核的日常表达与广义集合，目标必须存在且启用。雨声/rain sounds覆盖现有雨类及含雷雨的storm_ambience，后者保守额外排除强风暴；不排除整个natural_sound。父级内容标签展开为启用后代，喜欢为OR，厌恶命中任一即排除。无厌恶答复与工程none值分开；不明确工程维度的重复取值不作声音类别。
+
+SearchPrescriptionAudio及SearchAudioRequest在检索前完成兼容归一化和存在/类型校验，英文格式不是合法性证明。2026-10-21起，未知自由文本厌恶忽略，query中未解析否定不阻断召回，已识别排除继续保留；不以向量猜测硬禁忌。标准标签决定硬排除；向量只作软惩罚和召回/排序。处方结果按ES/缓存返回的素材字段检查厌恶及内容合法性，不再回查Mongo素材或覆盖ID/链接；最新状态和标签依赖索引、缓存同步。query继续使用中文原文，不翻译已有embedding。结果缓存audio_search_v5+，标签排序去重并绑定字典/映射摘要；阶段索引及标签向量缓存绑定相同摘要。更改配置后需同步产物和重启，不支持请求中隐式热更新。
+
+维护源为本仓解析器和配置，使用 `PYTHONPATH=. python scripts/export_audio_tag_contract.py --mirror-root <DeepHealth根目录>` 校验共享产物；`--write`同步配置与解析器；`--refresh --write --env-file <operator profile>`从Mongo只读重导出。工具不写数据库、不重建embedding，输出不含连接凭据。原GetAudioTag仍返回顶层类别，未改变Proto或DB schema。部署前需对两个仓库配套验证。
+
+
+### 声音自由文本偏好（2026-10-21）
+
+`content_tags` / `disliked_tags` 作为兼容自然语言偏好字段，在检索前按 `app/core/audio_preference_rules.json` 的审核中英文近义词映射到真实词典英文 code。例如钢琴/piano→slow_piano、鸟叫→bird_calls/dawn_chorus、海浪→ocean_wave_ambience/gentle_ocean_wave。正式词典code/name优先，不被口语分组扩大；原始词典导出aliases不改造为人工近义词表。
+
+未命中的自由文本（如库内无类别的吉他、摇滚）忽略，已识别的排除保持生效；query中的未识别否定不再让检索直接返回空候选。不做任意子串或向量猜测硬排除。明确静音控制和人声/其他安全约束仍有效；`content_tag_codes`、`sleep_stage_tags` 等机器字段继续严格验证。列表支持常规标点、换行、and/和等，整词先于切分，避免破坏ASMR/耳语。
+
+自然语言embedding query保持原文；所有结构化标签、缓存身份和阶段索引仍用英文code。规则与resolver版本参与缓存契约摘要，新旧缓存自动隔离；必须同步DeepHealth中的偏好规则。此变更不修改素材embedding或数据库词典。
+
+
+### 每日微调的目标方案选择（2026-10-26）
+
+`GetPlanInputs(scope=daily)`读取`somni_plans`中同UID、同目标日期的目标方案。
+方案记录的`scope`已不参与准入判断：`user`、`device`或缺少该字段均可参与选择。
+请求参数`scope=daily`仍用于区分每日任务，不能与方案记录的旧`scope`字段混淆。
+查询同时接受`status=active`和无`status`的兼容记录，按`update_time`、`create_time`、`version`、
+`_id`依次降序取第一份；缺少时间的记录按Mongo排序位于有时间的记录之后。
+不同plan_id的版本号并非全局时间序列，因此更新时间优先于版本号。
+多份同日方案仍按上述排序确定最新项，不依赖scope筛选或另行回退查询。
+没有符合用户、日期和有效状态的方案返回目标缺失。选中最新项后仍校验版本、快照及正文关联，
+最新项关联错误则明确失败，不静默回退旧方案。其他路径的active方案读取语义保持原样。
+没有修改Proto、持久化结构或写库逻辑；现有数据不迁移、不删除，需发布中间件代码后生效。
+
+
+### Ask GetContext: sleep quality projections
+
+`somni_sleep_reports` supports reading `sleep_quality` and its nested paths via
+`filter_key`, including `sleep_onset_latency_minutes` (minutes),
+`sleep_efficiency` (0–100 percent), and `wake_to_leave_bed_minutes` (minutes).
+An empty `filter_key` includes this module when present. Explicitly requested
+missing paths return `NOT_FOUND`; measured zero values are preserved.
+`sleep_quality` is registered as a `document` in the existing report field dictionary,
+following the same whole-object equality rules as `sleep_summary`. Nested query keys
+and operators inside document values remain unsupported. The protobuf wire format is unchanged. Deploy the updated middleware before clients use these paths.
+
+Regression: `python -m pytest tests/test_ask_context_service.py tests/test_ask_context_query_builder.py -q`.
+
+### Prescription hybrid recall and bilingual metadata
+
+`SearchPrescriptionAudio` uses the dedicated `RetrievalService.search_prescription` path.
+Natural queries recall BM25 and description vectors concurrently, merge identities by RRF,
+and combine with existing tag candidates. Generic `SearchAudio` keeps its existing ranking path.
+The catalogue and prescription paths share encoding, lane collection and RRF primitives;
+`GetAudio` keeps its catalogue-specific relevance thresholds, sorting and hot-list behavior.
+
+Prescription final-score formulas/weights are unchanged. BM25-only hits have zero description
+similarity; keyword scores and RRF ranks are never substituted for vector similarity.
+RRF determines recall budget/order and final-score ties. Source language determines the description
+encoder/field; tag vectors stay on the reviewed dictionary's original semantic basis.
+An unavailable lane can degrade to the other; both unavailable returns dependency failure, while
+successful empty results remain empty. Logs record lane counts and degradation without exceptions.
+Pure color-noise requests reuse sibling-color exclusion and diversification, without applying
+catalogue cliff thresholds or removing a separately requested rain/nature channel.
+
+ES candidate projections and response Structs preserve `audio_name_en` and `short_description_en`
+when present; missing English fields do not trigger translation or synthetic values.
+`GetAudio` continues mapping the short English text to `AudioListItem.description_en` (field 10),
+and English name to `audio_name_en` (field 9). No new language request field or device-node field.
+Sleep-stage candidate cache namespaces are v4 to preserve the new projection; natural-text vector
+keys include recall version, language and model identity. No migration, index rewrite or bulk cache
+clear is required. Hard enabled/stage/dislike validation and no-hot-accounting remain in force.

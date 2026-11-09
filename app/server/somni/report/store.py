@@ -52,11 +52,43 @@ class ReportStore:
             {"uid": uid, "record_date": record_date}
         )
 
+    async def list_records(
+        self, uid: str, start_date: str, end_date: str
+    ) -> list[dict[str, Any]]:
+        cursor = (
+            self._db()[self._settings.somni_mongo_records_collection]
+            .find(
+                {
+                    "uid": uid,
+                    "record_date": {"$gte": start_date, "$lte": end_date},
+                }
+            )
+            .sort("record_date", 1)
+        )
+        return await cursor.to_list(length=100)
+
+    async def find_user_timezone(self, uid: str) -> str:
+        doc = await self._db()[self._settings.somni_mongo_users_collection].find_one(
+            {"uid": uid},
+            {"timezone": 1},
+        )
+        if not doc:
+            return ""
+        value = doc.get("timezone")
+        return str(value).strip() if value else ""
+
     async def find_sleep_report(
         self, uid: str, record_date: str
     ) -> dict[str, Any] | None:
         return await self._db()[
             self._settings.somni_mongo_sleep_reports_collection
+        ].find_one({"uid": uid, "record_date": record_date})
+
+    async def find_user_profile(
+        self, uid: str, record_date: str
+    ) -> dict[str, Any] | None:
+        return await self._db()[
+            self._settings.somni_mongo_user_profiles_collection
         ].find_one({"uid": uid, "record_date": record_date})
 
     async def list_events(self, uid: str, record_date: str) -> list[dict[str, Any]]:
@@ -69,3 +101,53 @@ class ReportStore:
         if isinstance(nested, list):
             return [item for item in nested if isinstance(item, dict)]
         return [doc]
+
+    async def list_device_ids_by_uid(self, uid: str) -> list[str]:
+        cursor = self._db()[self._settings.somni_mongo_devices_collection].find(
+            {"bind_uid": uid},
+            {"device_id": 1},
+        )
+        docs = await cursor.to_list(length=1000)
+        result: list[str] = []
+        for doc in docs:
+            device_id = doc.get("device_id")
+            if device_id:
+                result.append(str(device_id))
+        return result
+
+    async def list_telemetry_by_filter(
+        self, query: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        cursor = (
+            self._db()[self._settings.somni_mongo_telemetry_collection]
+            .find(query)
+            .sort("ts", 1)
+        )
+        return await cursor.to_list(length=50_000)
+
+    async def find_session_payload(self, session_id: str) -> dict[str, Any] | None:
+        sid = session_id.strip()
+        if not sid:
+            return None
+        return await self._db()[
+            self._settings.somni_mongo_session_payloads_collection
+        ].find_one(
+            {
+                "session_id": sid,
+                "kind": "session",
+                "ignored": {"$ne": True},
+            }
+        )
+
+    async def list_telemetry_by_session(
+        self,
+        session_id: str,
+        metric: str | None = None,
+    ) -> list[dict[str, Any]]:
+        sid = session_id.strip()
+        if not sid:
+            return []
+        query: dict[str, Any] = {"session_id": sid}
+        if metric:
+            query["metric"] = metric
+        return await self.list_telemetry_by_filter(query)

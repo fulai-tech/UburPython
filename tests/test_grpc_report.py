@@ -61,7 +61,25 @@ def _make_rpc() -> tuple[ReportRpc, MagicMock]:
                 "rem_sleep": {"minutes": 100, "percent": 20},
                 "light_sleep": {"minutes": 250, "percent": 50},
                 "deep_sleep": {"minutes": 90, "percent": 18},
-            }
+            },
+            "weekly_report": {
+                "timezone": "Asia/Shanghai",
+                "start_date": "2026-09-22",
+                "end_date": "2026-09-28",
+                "week_days": [
+                    {
+                        "record_date": "2026-09-28",
+                        "bed_time": "2026-09-27T23:15:00+08:00",
+                        "wake_up_time": "2026-09-28T07:18:00+08:00",
+                        "total_sleep_minutes": 450,
+                        "sleep_efficiency": 90,
+                        "rem_percent": 20,
+                        "deep_sleep_percent": 18,
+                    }
+                ],
+                "baseline_days": [],
+                "daytime_activity": {},
+            },
         }
     )
     service.get_sleep_quality = AsyncMock(
@@ -72,9 +90,12 @@ def _make_rpc() -> tuple[ReportRpc, MagicMock]:
                 "sleep_efficiency": 92,
                 "bedtime": "23:30",
                 "wake_up_time": "07:30",
-                "awake_after_onset_minutes": 18,
+                "wake_to_leave_bed_minutes": 18,
             }
         }
+    )
+    service.get_profile = AsyncMock(
+        return_value={"profile_text": "画像摘要文本"}
     )
     return ReportRpc(service), service
 
@@ -94,10 +115,9 @@ async def test_report_requires_uid_and_record_date() -> None:
     ("method_name", "service_name"),
     [
         ("GetSummary", "get_summary"),
-        ("GetEvents", "get_events"),
         ("GetEnvironment", "get_environment"),
-        ("GetStructure", "get_structure"),
         ("GetSleepQuality", "get_sleep_quality"),
+        ("GetProfile", "get_profile"),
     ],
 )
 async def test_report_rpcs_call_service(method_name: str, service_name: str) -> None:
@@ -106,6 +126,77 @@ async def test_report_rpcs_call_service(method_name: str, service_name: str) -> 
     res = await getattr(rpc, method_name)(req, _context())
     getattr(service, service_name).assert_awaited_once_with("u1", "2026-08-24")
     assert res is not None
+
+
+@pytest.mark.asyncio
+async def test_get_events_requires_session_id() -> None:
+    rpc, service = _make_rpc()
+    with pytest.raises(grpc.aio.AbortError):
+        await rpc.GetEvents(
+            uburnode_somni_pb2.ReportDateReq(uid="u1", record_date="2026-08-24"),
+            _context(),
+        )
+    service.get_events.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_events_calls_service_with_session() -> None:
+    rpc, service = _make_rpc()
+    req = uburnode_somni_pb2.ReportDateReq(
+        uid="u1", record_date="2026-08-24", session_id="sess-1"
+    )
+    res = await rpc.GetEvents(req, _context())
+    service.get_events.assert_awaited_once_with("u1", "2026-08-24", "sess-1")
+    assert res is not None
+
+
+@pytest.mark.asyncio
+async def test_get_structure_requires_uid_only() -> None:
+    rpc, service = _make_rpc()
+    with pytest.raises(grpc.aio.AbortError):
+        await rpc.GetStructure(
+            uburnode_somni_pb2.ReportDateReq(uid="", record_date="2026-08-24"),
+            _context(),
+        )
+    service.get_structure.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_structure_rejects_partial_range() -> None:
+    rpc, service = _make_rpc()
+    with pytest.raises(grpc.aio.AbortError):
+        await rpc.GetStructure(
+            uburnode_somni_pb2.ReportDateReq(
+                uid="u1", start_date="2026-09-22", end_date=""
+            ),
+            _context(),
+        )
+    service.get_structure.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_structure_maps_weekly_report() -> None:
+    rpc, service = _make_rpc()
+    res = await rpc.GetStructure(
+        uburnode_somni_pb2.ReportDateReq(
+            uid="u1",
+            record_date="2026-09-28",
+            start_date="2026-09-22",
+            end_date="2026-09-28",
+        ),
+        _context(),
+    )
+    service.get_structure.assert_awaited_once_with(
+        "u1",
+        record_date="2026-09-28",
+        start_date="2026-09-22",
+        end_date="2026-09-28",
+    )
+    payload = MessageToDict(res, preserving_proto_field_name=True)
+    assert payload["sleep_structure"]["deep_sleep"]["minutes"] == 90
+    assert payload["weekly_report"]["timezone"] == "Asia/Shanghai"
+    assert payload["weekly_report"]["week_days"][0]["total_sleep_minutes"] == 450
+    assert payload["weekly_report"]["daytime_activity"] == {}
 
 
 @pytest.mark.asyncio
@@ -118,3 +209,30 @@ async def test_get_summary_maps_fields() -> None:
     payload = MessageToDict(res, preserving_proto_field_name=True)
     assert payload["sleep_summary"]["avg_heart_rate"] == 62
     assert payload["sleep_summary"]["body_battery_status"] == "Energy At Its Peak"
+
+
+@pytest.mark.asyncio
+async def test_get_profile_maps_profile_text() -> None:
+    rpc, _service = _make_rpc()
+    res = await rpc.GetProfile(
+        uburnode_somni_pb2.ReportDateReq(uid="u1", record_date="2026-08-30"),
+        _context(),
+    )
+    assert res.profile_text == "画像摘要文本"
+
+
+@pytest.mark.asyncio
+async def test_get_profile_not_found_aborts() -> None:
+    from app.core.codes import HttpStatus
+    from app.core.exceptions import AppError
+
+    service = MagicMock()
+    service.get_profile = AsyncMock(
+        side_effect=AppError(message="画像不存在：u1/2026-08-30", status_code=HttpStatus.NOT_FOUND)
+    )
+    rpc = ReportRpc(service)
+    with pytest.raises(grpc.aio.AbortError):
+        await rpc.GetProfile(
+            uburnode_somni_pb2.ReportDateReq(uid="u1", record_date="2026-08-30"),
+            _context(),
+        )

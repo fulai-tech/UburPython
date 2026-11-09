@@ -1,11 +1,16 @@
-# 服务器构建（跳过 ONNX 在线导出）：需先将 models/onnx/bge-small-zh-v1.5 放到构建上下文
-# 本机导出后上传：scp -r models/onnx/bge-small-zh-v1.5 root@服务器:/opt/uburnode/models/onnx/
+# 服务器构建（跳过 ONNX 在线导出）：
+# 运行时由 docker-compose 挂载 INT8 双语模型，宿主机需先准备：
+#   models/onnx/bge-small-zh-v1.5-int8
+#   models/onnx/bge-small-en-v1.5-int8
+# 本机上传示例：
+#   scp -r models/onnx/bge-small-zh-v1.5-int8 models/onnx/bge-small-en-v1.5-int8 \
+#     root@服务器:/opt/uburpython/models/onnx/
 # 构建：docker compose -f docker-compose.yml -f docker-compose.prebuilt.yml up -d --build
 
 FROM python:3.12-slim-bookworm AS builder
 
 ARG APT_MIRROR=mirrors.tencent.com
-ARG PIP_INDEX_URL=https://mirrors.cloud.tencent.com/pypi/simple
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 
 WORKDIR /app
 
@@ -23,7 +28,19 @@ RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
 COPY pyproject.toml README.md ./
 COPY app ./app
 
-RUN pip install --no-cache-dir -i "${PIP_INDEX_URL}" .
+# 只走清华源。直接调用 pip，避免 $$ 被原样传给 /bin/sh 造成语法错误。
+RUN ( pip install --no-cache-dir --timeout 120 --retries 5 \
+        --trusted-host pypi.tuna.tsinghua.edu.cn \
+        -i "${PIP_INDEX_URL}" --upgrade pip \
+    || pip install --no-cache-dir --timeout 120 --retries 5 \
+        --trusted-host pypi.tuna.tsinghua.edu.cn \
+        -i "${PIP_INDEX_URL}" --upgrade pip ) \
+ && ( pip install --no-cache-dir --timeout 120 --retries 5 \
+        --trusted-host pypi.tuna.tsinghua.edu.cn \
+        -i "${PIP_INDEX_URL}" . \
+    || pip install --no-cache-dir --timeout 120 --retries 5 \
+        --trusted-host pypi.tuna.tsinghua.edu.cn \
+        -i "${PIP_INDEX_URL}" . )
 
 FROM python:3.12-slim-bookworm AS runtime
 
