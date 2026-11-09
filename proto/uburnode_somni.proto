@@ -304,7 +304,7 @@ message AudioListItem {
   optional string cover_url = 4;
   optional string description = 5;  // 量产列表用短描述 short_description 填充；缺省空串
   optional int32 vip = 6;  // 库无该字段时显式返回 0
-  repeated string tag = 7;  // 内容形态标签名；zh 取 name，en 取 name_en（缺省回退 name）
+  repeated string tag = 7;  // 内容形态标签名；按 code 查词典，zh 取 name，en 取 name_en（缺省空串，不回退）
   optional bool is_voice = 8;  // voice_presence_ratio 为 0 或缺失时 false，其余数值为 true
   optional string audio_name_en = 9;  // 英文名；前端按 language 切换展示
   optional string description_en = 10;  // 英文短描述（库字段 short_description_en）；前端按 language 切换展示
@@ -315,6 +315,26 @@ message GetAudioRes {
   int32 page = 2;
   int32 page_size = 3;
   int32 total = 4;
+}
+
+message GetAudioByIdsReq {
+  repeated string ids = 1;       // 原料文档 id；空则返回空 list；去重后上限 100
+  optional string language = 2;  // zh / en；缺省 zh
+}
+
+message AudioDetailItem {
+  optional string id = 1;
+  optional string audio_name = 2;   // 按 language 就地填充；无平行 *_en
+  optional string audio_url = 3;
+  optional string cover_url = 4;
+  optional string description = 5;  // 短描述；按 language 就地填充
+  optional int32 vip = 6;
+  repeated string tag = 7;          // 按 code 查词典后按 language 取名
+  optional bool is_voice = 8;
+}
+
+message GetAudioByIdsRes {
+  repeated AudioDetailItem list = 1;
 }
 
 message GetAudioTagReq {}
@@ -381,6 +401,7 @@ message SearchPrescriptionAudioRes { repeated PrescriptionAudioSearchResult resu
 
 service AudioService {
   rpc GetAudio (GetAudioReq) returns (GetAudioRes);
+  rpc GetAudioByIds (GetAudioByIdsReq) returns (GetAudioByIdsRes);
   rpc GetAudioTag (GetAudioTagReq) returns (GetAudioTagRes);
   rpc GetHot (GetHotReq) returns (GetHotRes);
   rpc SearchAudio (SearchAudioReq) returns (SearchAudioRes);

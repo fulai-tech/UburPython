@@ -51,6 +51,7 @@ from app.services.hybrid_recall import encode_query, gather_lanes, merge_documen
 
 _TAG_ENABLED = "启用"
 _CONTENT_FORM = "content_form"
+_GET_AUDIO_BY_IDS_LIMIT = 100
 
 
 class InvalidAudioQueryError(AppError):
@@ -76,6 +77,7 @@ class AudioCatalogService:
         self._encoder = encoder
         self._hot = hot
         self._content_form_tag_bank_cache: list[dict[str, Any]] | None = None
+        self._content_form_tag_labels_cache: dict[str, dict[str, str]] | None = None
         self._retrieval = retrieval
         self._catalog_cache = (
             SomniAudioCatalogCache(redis, ttl_sec=settings.somni_audio_catalog_cache_ttl_sec)
@@ -106,6 +108,42 @@ class AudioCatalogService:
         )
         docs = [bson_to_jsonable(doc) async for doc in cursor]
         return {"tags": [_map_tag_dict(doc) for doc in docs]}
+
+    async def get_audio_by_ids(
+        self,
+        *,
+        ids: list[str],
+        language: str = "zh",
+    ) -> dict[str, Any]:
+        """按 id 数组从 ES 取启用原料详情；language 就地填展示字段。"""
+        language = resolve_search_language(language)
+        ordered_ids = _normalize_audio_ids(ids)
+        if len(ordered_ids) > _GET_AUDIO_BY_IDS_LIMIT:
+            raise InvalidAudioQueryError(
+                f"ids 去重后不得超过 {_GET_AUDIO_BY_IDS_LIMIT} 个"
+            )
+        if not ordered_ids:
+            return {"list": []}
+        if self._es_search is None:
+            raise AppError(
+                message="Elasticsearch 未就绪，无法查询音频",
+                status_code=HttpStatus.SERVICE_UNAVAILABLE,
+            )
+        docs = await self._es_search.get_audio_docs_by_ids(ordered_ids)
+        by_id = {
+            str(doc.get("id") or doc.get("_id") or ""): _map_material(doc) for doc in docs
+        }
+        tag_labels = await self._content_form_tag_labels_by_code()
+        items = [
+            _to_audio_detail_item(
+                by_id[audio_id],
+                language=language,
+                tag_labels_by_code=tag_labels,
+            )
+            for audio_id in ordered_ids
+            if audio_id in by_id
+        ]
+        return {"list": items}
 
     async def get_audio(
         self,
@@ -165,7 +203,11 @@ class AudioCatalogService:
         # 同时命中喜欢与讨厌时归讨厌段。
         docs = _order_like_neutral_dislike(docs, preferred_ids, disliked_ids)
         payload = _paginate_docs(docs, page, page_size, fetch_all, self._settings)
-        payload["list"] = [_to_audio_list_item(item, language=language) for item in payload["list"]]
+        tag_labels = await self._content_form_tag_labels_by_code()
+        payload["list"] = [
+            _to_audio_list_item(item, language=language, tag_labels_by_code=tag_labels)
+            for item in payload["list"]
+        ]
         self._schedule_hot(
             query_text,
             language,
@@ -258,7 +300,11 @@ class AudioCatalogService:
         if not fetch_all:
             mapped = mapped[: self._settings.get_audio_search_top_k]
         payload = _paginate_docs(mapped, page, page_size, fetch_all, self._settings)
-        payload["list"] = [_to_audio_list_item(item, language=language) for item in payload["list"]]
+        tag_labels = await self._content_form_tag_labels_by_code()
+        payload["list"] = [
+            _to_audio_list_item(item, language=language, tag_labels_by_code=tag_labels)
+            for item in payload["list"]
+        ]
         self._schedule_hot(
             text,
             language,
@@ -628,6 +674,26 @@ class AudioCatalogService:
         bank = [dict(tag) for tag in raw if isinstance(tag, dict) and _is_content_form_dict(tag)]
         self._content_form_tag_bank_cache = bank
         return bank
+
+    async def _content_form_tag_labels_by_code(self) -> dict[str, dict[str, str]]:
+        """启用 content_form 词典：code → {name, name_en}，供 GetAudio 出参 tag 展示。"""
+        if self._content_form_tag_labels_cache is not None:
+            return self._content_form_tag_labels_cache
+        cursor = self._tags().find(
+            {"type": _CONTENT_FORM, "status": _TAG_ENABLED},
+            {"code": 1, "name": 1, "name_en": 1},
+        )
+        labels: dict[str, dict[str, str]] = {}
+        async for row in cursor:
+            code = str(row.get("code") or "").strip().casefold()
+            if not code:
+                continue
+            labels[code] = {
+                "name": str(row.get("name") or ""),
+                "name_en": str(row.get("name_en") or ""),
+            }
+        self._content_form_tag_labels_cache = labels
+        return labels
 
     async def search_audio(self, request: SearchAudioRequest) -> list[dict[str, Any]]:
         """与 POST /api/audio/search 相同的检索流水线，数据源是量产 ES。"""
@@ -1057,7 +1123,25 @@ def _filter_docs_by_request_language(
     return [doc for doc in docs if (doc_lang := _doc_language(doc)) == "" or doc_lang == wanted]
 
 
-def _to_audio_list_item(doc: dict[str, Any], *, language: str) -> dict[str, Any]:
+def _normalize_audio_ids(ids: list[str]) -> list[str]:
+    """trim、丢空串、去重且保首次出现顺序。"""
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for raw in ids:
+        audio_id = str(raw or "").strip()
+        if not audio_id or audio_id in seen:
+            continue
+        seen.add(audio_id)
+        ordered.append(audio_id)
+    return ordered
+
+
+def _to_audio_list_item(
+    doc: dict[str, Any],
+    *,
+    language: str,
+    tag_labels_by_code: dict[str, dict[str, str]],
+) -> dict[str, Any]:
     return {
         "id": str(doc.get("id") or ""),
         "audio_name": str(doc.get("audio_name") or ""),
@@ -1068,29 +1152,68 @@ def _to_audio_list_item(doc: dict[str, Any], *, language: str) -> dict[str, Any]
         "description": str(doc.get("short_description") or ""),
         "description_en": str(doc.get("short_description_en") or ""),
         "vip": _to_vip(doc.get("vip")),
-        "tag": _map_audio_tags(doc.get("content_form_tags"), language=language),
+        "tag": _map_audio_tags(
+            doc.get("content_form_tags"),
+            language=language,
+            tag_labels_by_code=tag_labels_by_code,
+        ),
         "is_voice": _is_voice(doc.get("acoustic_metrics")),
     }
 
 
-def _map_audio_tags(raw: Any, *, language: str) -> list[str]:
+def _to_audio_detail_item(
+    doc: dict[str, Any],
+    *,
+    language: str,
+    tag_labels_by_code: dict[str, dict[str, str]],
+) -> dict[str, Any]:
+    """详情就地切语言：无平行 *_en 出参。"""
+    if language == "en":
+        audio_name = str(doc.get("audio_name_en") or "")
+        description = str(doc.get("short_description_en") or "")
+    else:
+        audio_name = str(doc.get("audio_name") or "")
+        description = str(doc.get("short_description") or "")
+    return {
+        "id": str(doc.get("id") or ""),
+        "audio_name": audio_name,
+        "audio_url": str(doc.get("audio_url") or ""),
+        "cover_url": str(doc.get("cover_url") or ""),
+        "description": description,
+        "vip": _to_vip(doc.get("vip")),
+        "tag": _map_audio_tags(
+            doc.get("content_form_tags"),
+            language=language,
+            tag_labels_by_code=tag_labels_by_code,
+        ),
+        "is_voice": _is_voice(doc.get("acoustic_metrics")),
+    }
+
+
+def _map_audio_tags(
+    raw: Any,
+    *,
+    language: str,
+    tag_labels_by_code: dict[str, dict[str, str]],
+) -> list[str]:
+    """按原料 content_form_tags.code 查词典；zh→name，en→name_en；缺省空串（不回退）。"""
     if not isinstance(raw, list):
         return []
     names: list[str] = []
     for item in raw:
         if not isinstance(item, dict):
             continue
-        names.append(_tag_display_name(item, language))
+        code = str(item.get("code") or "").strip().casefold()
+        labels = tag_labels_by_code.get(code) or {}
+        names.append(_tag_display_name_from_labels(labels, language))
     return names
 
 
-def _tag_display_name(item: dict[str, Any], language: str) -> str:
-    """zh 返回 name；en 优先 name_en，缺省回退 name。"""
-    name = str(item.get("name") or "")
-    name_en = str(item.get("name_en") or "")
+def _tag_display_name_from_labels(labels: dict[str, str], language: str) -> str:
+    """zh 取 name；en 取 name_en；对应语言缺失时返回空串，不跨语言回退。"""
     if language == "en":
-        return name_en or name
-    return name
+        return str(labels.get("name_en") or "")
+    return str(labels.get("name") or "")
 
 
 def _acoustic_metrics(value: Any) -> dict[str, Any] | None:

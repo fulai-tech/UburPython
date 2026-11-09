@@ -513,6 +513,11 @@ class AudioServiceStub:
                 request_serializer=uburnode__somni__pb2.GetAudioReq.SerializeToString,
                 response_deserializer=uburnode__somni__pb2.GetAudioRes.FromString,
                 _registered_method=True)
+        self.GetAudioByIds = channel.unary_unary(
+                '/uburnode.somni.v1.AudioService/GetAudioByIds',
+                request_serializer=uburnode__somni__pb2.GetAudioByIdsReq.SerializeToString,
+                response_deserializer=uburnode__somni__pb2.GetAudioByIdsRes.FromString,
+                _registered_method=True)
         self.GetAudioTag = channel.unary_unary(
                 '/uburnode.somni.v1.AudioService/GetAudioTag',
                 request_serializer=uburnode__somni__pb2.GetAudioTagReq.SerializeToString,
@@ -539,6 +544,12 @@ class AudioServiceServicer:
     """Missing associated documentation comment in .proto file."""
 
     def GetAudio(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetAudioByIds(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -575,6 +586,11 @@ def add_AudioServiceServicer_to_server(servicer, server):
                     servicer.GetAudio,
                     request_deserializer=uburnode__somni__pb2.GetAudioReq.FromString,
                     response_serializer=uburnode__somni__pb2.GetAudioRes.SerializeToString,
+            ),
+            'GetAudioByIds': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetAudioByIds,
+                    request_deserializer=uburnode__somni__pb2.GetAudioByIdsReq.FromString,
+                    response_serializer=uburnode__somni__pb2.GetAudioByIdsRes.SerializeToString,
             ),
             'GetAudioTag': grpc.unary_unary_rpc_method_handler(
                     servicer.GetAudioTag,
@@ -624,6 +640,33 @@ class AudioService:
             '/uburnode.somni.v1.AudioService/GetAudio',
             uburnode__somni__pb2.GetAudioReq.SerializeToString,
             uburnode__somni__pb2.GetAudioRes.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetAudioByIds(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/uburnode.somni.v1.AudioService/GetAudioByIds',
+            uburnode__somni__pb2.GetAudioByIdsReq.SerializeToString,
+            uburnode__somni__pb2.GetAudioByIdsRes.FromString,
             options,
             channel_credentials,
             insecure,
