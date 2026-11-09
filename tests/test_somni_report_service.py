@@ -289,7 +289,7 @@ async def test_get_structure_and_sleep_quality() -> None:
     assert quality["time_in_bed_minutes"] == 540
     assert quality["bedtime"] == "23:30"
     assert quality["wake_up_time"] == "08:30"
-    assert quality["awake_after_onset_minutes"] == 18
+    assert quality["wake_to_leave_bed_minutes"] == 18
     assert quality["sleep_onset_latency_minutes"] == 20
 
 

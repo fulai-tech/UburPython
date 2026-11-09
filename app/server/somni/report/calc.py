@@ -418,14 +418,14 @@ def sleep_quality_from_session(
             sol = ms_to_minutes(as_ms(seg.get("start_ts_ms")) - bed_from)
             break
 
-    # WASO = 最后一条 on_bed.to − 最后一个清醒阶段 start
-    waso = 0
+    # 醒后到离床：最后一条 on_bed.to − 最后一个清醒阶段 start
+    wake_to_leave_bed = 0
     last_awake_start = 0
     for seg in segments:
         if as_int(seg.get("stage")) == STAGE_AWAKE:
             last_awake_start = as_ms(seg.get("start_ts_ms"))
     if last_awake_start > 0 and bed_to > last_awake_start:
-        waso = ms_to_minutes(bed_to - last_awake_start)
+        wake_to_leave_bed = ms_to_minutes(bed_to - last_awake_start)
 
     return {
         "time_in_bed_minutes": tib,
@@ -433,7 +433,7 @@ def sleep_quality_from_session(
         "sleep_efficiency": max(0, min(100, efficiency)),
         "bedtime": format_local_ms_hhmm(bed_from),
         "wake_up_time": format_local_ms_hhmm(bed_to),
-        "awake_after_onset_minutes": max(0, waso),
+        "wake_to_leave_bed_minutes": max(0, wake_to_leave_bed),
     }
 
 

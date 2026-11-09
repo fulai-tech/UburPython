@@ -90,7 +90,7 @@ def _make_rpc() -> tuple[ReportRpc, MagicMock]:
                 "sleep_efficiency": 92,
                 "bedtime": "23:30",
                 "wake_up_time": "07:30",
-                "awake_after_onset_minutes": 18,
+                "wake_to_leave_bed_minutes": 18,
             }
         }
     )

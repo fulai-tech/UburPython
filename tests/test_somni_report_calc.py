@@ -265,7 +265,7 @@ def test_multi_on_bed_structure_sums_raw_ms_then_floors() -> None:
     assert structure["light_sleep"]["percent"] == 30
 
 
-def test_sleep_quality_waso_uses_last_on_bed_to_minus_last_awake_start() -> None:
+def test_sleep_quality_wake_to_leave_bed_uses_last_on_bed_to_minus_last_awake_start() -> None:
     on_bed = [
         {"from": 1_000_000, "to": 1_600_000, "duration_ms": 600_000},
         {"from": 2_000_000, "to": 3_200_000, "duration_ms": 1_200_000},
@@ -299,8 +299,8 @@ def test_sleep_quality_waso_uses_last_on_bed_to_minus_last_awake_start() -> None
     quality = sleep_quality_from_session(on_bed, segments)
     assert quality["time_in_bed_minutes"] == 30
     assert quality["sleep_onset_latency_minutes"] == 5  # 300000ms
-    # WASO = last on_bed.to(3200000) - last awake start(2500000) = 700000ms → 11
-    assert quality["awake_after_onset_minutes"] == 11
+    # 醒后到离床 = last on_bed.to(3200000) - last awake start(2500000) = 700000ms → 11
+    assert quality["wake_to_leave_bed_minutes"] == 11
     assert quality["bedtime"] == "00:16"
     assert quality["wake_up_time"] == "00:53"
     assert quality["sleep_efficiency"] == 76  # TST 23 / TIB 30
