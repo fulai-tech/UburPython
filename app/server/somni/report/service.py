@@ -45,7 +45,7 @@ class ReportService:
         self, uid: str, record_date: str, session_id: str = ""
     ) -> dict[str, Any]:
         _ = uid, record_date
-        on_bed, segments = await self._session_segments(session_id)
+        on_bed, segments, _tz = await self._session_segments(session_id)
         structure = calc.sleep_structure_from_segments(on_bed, segments)
         docs = await self._store.list_telemetry_by_session(session_id, "sleep")
         return {
@@ -78,7 +78,7 @@ class ReportService:
     ) -> dict[str, Any]:
         events = await self._store.list_events(uid, record_date)
         sleep_events, abnormal_count, intervention_count = _assemble_sleep_events(events)
-        on_bed, segments = await self._session_segments(session_id)
+        on_bed, segments, timezone_name = await self._session_segments(session_id)
         sid = session_id.strip()
         sleep_docs = await self._store.list_telemetry_by_session(sid, "sleep")
         env_docs = await self._store.list_telemetry_by_session(sid, "env")
@@ -89,7 +89,9 @@ class ReportService:
             "event_count": abnormal_count,
             "abnormal_count": abnormal_count,
             "intervention_count": intervention_count,
-            "idf_data": calc.idf_from_segments(segments, on_bed),
+            "idf_data": calc.idf_from_segments(
+                segments, on_bed, timezone_name=timezone_name
+            ),
             "physio_data": _physio_data(sleep_docs, percent),
             "env_data": _env_data(env_docs, percent),
         }
@@ -109,7 +111,7 @@ class ReportService:
             "deep_sleep": {"minutes": 0, "percent": 0},
         }
         if record_date.strip() or session_id.strip():
-            on_bed, segments = await self._session_segments(session_id)
+            on_bed, segments, _tz = await self._session_segments(session_id)
             if segments:
                 parts = calc.sleep_structure_from_segments(on_bed, segments)
                 sleep_structure = {
@@ -164,8 +166,12 @@ class ReportService:
         self, uid: str, record_date: str, session_id: str = ""
     ) -> dict[str, Any]:
         _ = uid, record_date
-        on_bed, segments = await self._session_segments(session_id)
-        return {"sleep_quality": calc.sleep_quality_from_session(on_bed, segments)}
+        on_bed, segments, timezone_name = await self._session_segments(session_id)
+        return {
+            "sleep_quality": calc.sleep_quality_from_session(
+                on_bed, segments, timezone_name=timezone_name
+            )
+        }
 
     async def get_vitals(
         self,
@@ -198,10 +204,11 @@ class ReportService:
 
     async def _session_segments(
         self, session_id: str
-    ) -> tuple[Any, list[dict[str, Any]]]:
+    ) -> tuple[Any, list[dict[str, Any]], str]:
         doc = await self._store.find_session_payload(session_id)
         body = calc.session_body(doc)
-        return calc.final_stages_segments(body)
+        on_bed, segments = calc.final_stages_segments(body)
+        return on_bed, segments, calc.session_timezone_name(body, doc)
 
 
 def _data_floats(docs: list[dict[str, Any]], key: str) -> list[float]:
