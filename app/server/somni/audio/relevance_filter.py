@@ -171,16 +171,17 @@ def _doc_title_en(doc: dict[str, Any]) -> str:
     return str(doc.get("audio_name_en") or "").lower()
 
 
-def _doc_tag_blob(doc: dict[str, Any]) -> str:
+def _doc_tag_blob(doc: dict[str, Any], *, language: str = "zh") -> str:
+    """标签字面块；language=en 只用英文名，否则只用中文名（不含 code）。"""
     parts: list[str] = []
     tags = doc.get("content_form_tags") or doc.get("tag") or []
     if isinstance(tags, list):
         for tag in tags:
             if isinstance(tag, dict):
-                parts.append(str(tag.get("name") or ""))
-                parts.append(str(tag.get("name_en") or ""))
-                parts.append(str(tag.get("en_name") or ""))
-                parts.append(str(tag.get("code") or ""))
+                if language == "en":
+                    parts.append(str(tag.get("en_name") or tag.get("name_en") or ""))
+                else:
+                    parts.append(str(tag.get("name") or ""))
             else:
                 parts.append(str(tag))
     return " ".join(parts).lower()
@@ -311,12 +312,18 @@ def filter_docs_by_min_score(
     return out
 
 
-def doc_matches_query_lexically(doc: dict[str, Any], query_text: str) -> bool:
-    """标题/英文名/标签是否与 query 有弱字面重合（整词或中文单字）。"""
+def doc_matches_query_lexically(
+    doc: dict[str, Any],
+    query_text: str,
+    *,
+    language: str = "zh",
+) -> bool:
+    """标题/标签是否与 query 有弱字面重合（整词或中文单字）；按 language 只比对应语种。"""
     q = normalize_get_audio_query(query_text)
     if not q:
         return True
-    blob = f"{_doc_title(doc)} {_doc_title_en(doc)} {_doc_tag_blob(doc)}"
+    title = _doc_title_en(doc) if language == "en" else _doc_title(doc)
+    blob = f"{title} {_doc_tag_blob(doc, language=language)}"
     ql = q.lower()
     if ql in blob:
         return True
@@ -336,12 +343,17 @@ def filter_docs_by_query_lexical_match(
     docs: list[dict[str, Any]],
     *,
     query_text: str,
+    language: str = "zh",
 ) -> list[dict[str, Any]]:
     """合路后去掉标题/标签与 query 无弱字面关系的噪声。"""
     q = normalize_get_audio_query(query_text)
     if not q:
         return list(docs)
-    return [doc for doc in docs if doc_matches_query_lexically(doc, q)]
+    return [
+        doc
+        for doc in docs
+        if doc_matches_query_lexically(doc, q, language=language)
+    ]
 
 
 def filter_docs_by_score_cliff(

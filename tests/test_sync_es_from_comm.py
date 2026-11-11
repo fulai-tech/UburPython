@@ -234,7 +234,7 @@ async def test_material_sync_job_writes_description_vector(tmp_path) -> None:
 
     assert stats["created"] == 1
     indexed = es_client.index.await_args.kwargs["document"]
-    assert indexed["description_text"] == "测试音频 描述 放松 unwind 中等证据 B"
+    assert indexed["description_text"] == "测试音频 描述 放松 中等证据"
     assert indexed["description_vector"] == [0.2] * 512
     encoder.encode_one.assert_awaited_once_with(indexed["description_text"])
 
