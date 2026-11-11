@@ -42,17 +42,17 @@ def _tag_labels(doc: dict[str, Any], *, keys: tuple[str, ...]) -> list[str]:
 
 
 def build_material_description_text(doc: dict[str, Any]) -> str:
-    """中文混合文本：audio_name + description + 标签 name/code/en_name。"""
+    """中文混合文本（语种纯净）：audio_name + description + 标签中文名。"""
     parts = [
         str(doc.get("audio_name", "")).strip(),
         str(doc.get("description", "")).strip(),
-        " ".join(_tag_labels(doc, keys=("name", "code", "en_name"))).strip(),
+        " ".join(_tag_labels(doc, keys=("name",))).strip(),
     ]
     return " ".join(part for part in parts if part)
 
 
 def build_material_description_text_en(doc: dict[str, Any]) -> str:
-    """英文混合文本：audio_name_en + description_en + 标签 en_name。"""
+    """英文混合文本（语种纯净）：audio_name_en + description_en + 标签英文名。"""
     parts = [
         str(doc.get("audio_name_en", "")).strip(),
         str(doc.get("description_en", "")).strip(),

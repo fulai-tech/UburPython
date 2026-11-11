@@ -815,8 +815,8 @@ async def test_get_audio_hybrid_filters_by_request_language() -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_audio_hybrid_routes_by_query_text_not_request_language() -> None:
-    """英文请求下输入中文，仍走中文模型与中文字段。"""
+async def test_get_audio_hybrid_routes_by_request_language_not_query_text() -> None:
+    """检索字段/模型只跟请求 language，不按输入文字识别语种。"""
     zh_hit = {**_RAIN, "_id": "zh1", "language": "zh", "_knn_score": 0.95}
     any_hit = {
         **_RAIN,
@@ -846,9 +846,9 @@ async def test_get_audio_hybrid_routes_by_query_text_not_request_language() -> N
 
     assert [item["id"] for item in payload["list"]] == ["any1"]
     encoder.encode_one.assert_awaited_once()
-    assert encoder.encode_one.await_args.kwargs["language"] == "zh"
-    assert es_search.search_get_audio_knn.await_args.kwargs["language"] == "zh"
-    assert es_search.search_get_audio_bm25.await_args.kwargs["language"] == "zh"
+    assert encoder.encode_one.await_args.kwargs["language"] == "en"
+    assert es_search.search_get_audio_knn.await_args.kwargs["language"] == "en"
+    assert es_search.search_get_audio_bm25.await_args.kwargs["language"] == "en"
 
 
 @pytest.mark.asyncio

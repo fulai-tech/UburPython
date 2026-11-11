@@ -31,7 +31,7 @@ from app.core.config import Settings
 from app.core.exceptions import AppError, EncoderNotReadyError
 from app.embedding.encoder import Encoder
 from app.es.search import EsSearch
-from app.es.somni_docs import resolve_query_language, resolve_search_language
+from app.es.somni_docs import resolve_search_language
 from app.schemas.audio import SearchAudioRequest
 from app.server.somni.audio.hot import HotTracker, normalize_tag_code
 from app.server.somni.audio.relevance_filter import (
@@ -230,15 +230,14 @@ class AudioCatalogService:
         page_size: int | None,
     ) -> dict[str, Any]:
         es_search = self._require_es_search()
-        # 检索字段/模型按输入文字语种；请求 language 只做可见性与展示
-        query_language = resolve_query_language(text, language)
-        query_vector, degraded = await self._prepare_search_inputs(text, language=query_language)
+        # 检索字段/模型只跟请求 language：en→英文名/描述/向量，zh→中文同理
+        query_vector, degraded = await self._prepare_search_inputs(text, language=language)
         bm25_docs, vector_docs, lane_degraded = await self._search_candidates(
             es_search=es_search,
             text=text,
             query_vector=query_vector,
             tag_code=tag_code,
-            language=query_language,
+            language=language,
             fetch_all=fetch_all,
         )
         for lane in lane_degraded:
@@ -250,10 +249,10 @@ class AudioCatalogService:
         color_intents = detect_color_noise_intents(text)
         multi_color = len(color_intents) >= 2
         bm25_cliff = self._settings.resolve_get_audio_bm25_score_cliff_ratio(
-            query_language
+            language
         )
         knn_cliff = self._settings.resolve_get_audio_knn_score_cliff_ratio(
-            query_language
+            language
         )
         # 多色：按色分别断崖，避免一色顶分把另一色整段砍掉
         lane_intents = color_intents if multi_color else None
@@ -293,6 +292,7 @@ class AudioCatalogService:
             merged_docs = filter_docs_by_query_lexical_match(
                 merged_docs,
                 query_text=text,
+                language=language,
             )
         if self._settings.get_audio_rerank_by_relevance:
             merged_docs = _rerank_hybrid_docs_by_relevance(merged_docs)
