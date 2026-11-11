@@ -17,12 +17,14 @@ from app.server.somni.report.calc import (
     floor_metric_stats,
     format_collected_at,
     format_hhmm,
+    format_local_ms_hhmm,
     idf_from_segments,
     local_day_utc_range,
     minutes_between,
     on_bed_bounds,
     on_bed_duration_ms,
     resolve_report_timezone_name,
+    session_timezone_name,
     sleep_quality_from_session,
     sleep_stage_parts,
     sleep_structure_from_segments,
@@ -179,6 +181,24 @@ def test_weekly_day_metric_tolerates_bad_time_string() -> None:
     assert metric["total_sleep_minutes"] == 0
 
 
+def test_format_local_ms_hhmm_converts_to_timezone() -> None:
+    ms = int(datetime(2026, 11, 10, 15, 59, tzinfo=UTC).timestamp() * 1000)
+    assert format_local_ms_hhmm(ms, "UTC") == "15:59"
+    assert format_local_ms_hhmm(ms, "Asia/Shanghai") == "23:59"
+    assert format_local_ms_hhmm(ms, "") == "23:59"
+    assert format_local_ms_hhmm(0, "Asia/Shanghai") == ""
+
+
+def test_session_timezone_name_prefers_payload() -> None:
+    assert session_timezone_name({"timezone": "UTC"}, {"timezone": "Asia/Shanghai"}) == (
+        "UTC"
+    )
+    assert session_timezone_name({}, {"timezone": "America/Los_Angeles"}) == (
+        "America/Los_Angeles"
+    )
+    assert session_timezone_name({}, {}) == "Asia/Shanghai"
+
+
 def test_idf_last_end_padded_to_on_bed_to() -> None:
     bed_from = int(datetime(2026, 11, 4, 22, 45, tzinfo=UTC).timestamp() * 1000)
     bed_to = int(datetime(2026, 11, 5, 7, 15, tzinfo=UTC).timestamp() * 1000)
@@ -197,12 +217,16 @@ def test_idf_last_end_padded_to_on_bed_to() -> None:
             "start_ts_ms": bed_from + 8 * 3600_000,
         },
     ]
-    idf = idf_from_segments(segments, on_bed)
+    idf = idf_from_segments(segments, on_bed, timezone_name="UTC")
     assert idf[-1]["start"] == "06:45"
     assert idf[-1]["end"] == "07:15"
     # 不传 on_bed 时仍按 duration
-    raw = idf_from_segments(segments)
+    raw = idf_from_segments(segments, timezone_name="UTC")
     assert raw[-1]["end"] == "06:59"
+    sh = idf_from_segments(segments, on_bed, timezone_name="Asia/Shanghai")
+    assert sh[0]["start"] == "06:45"
+    assert sh[-1]["start"] == "14:45"
+    assert sh[-1]["end"] == "15:15"
 
 
 def test_on_bed_bounds_uses_first_from_and_last_to() -> None:
@@ -296,7 +320,7 @@ def test_sleep_quality_wake_to_leave_bed_uses_last_on_bed_to_minus_last_awake_st
             "start_ts_ms": 2_620_000,
         },
     ]
-    quality = sleep_quality_from_session(on_bed, segments)
+    quality = sleep_quality_from_session(on_bed, segments, timezone_name="UTC")
     assert quality["time_in_bed_minutes"] == 30
     assert quality["sleep_onset_latency_minutes"] == 5  # 300000ms
     # 醒后到离床 = last on_bed.to(3200000) - last awake start(2500000) = 700000ms → 11
@@ -304,3 +328,6 @@ def test_sleep_quality_wake_to_leave_bed_uses_last_on_bed_to_minus_last_awake_st
     assert quality["bedtime"] == "00:16"
     assert quality["wake_up_time"] == "00:53"
     assert quality["sleep_efficiency"] == 76  # TST 23 / TIB 30
+    sh = sleep_quality_from_session(on_bed, segments, timezone_name="Asia/Shanghai")
+    assert sh["bedtime"] == "08:16"
+    assert sh["wake_up_time"] == "08:53"

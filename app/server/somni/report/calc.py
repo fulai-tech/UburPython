@@ -232,7 +232,7 @@ def align_weekly_days(
     return aligned
 
 
-# ---- session payload / final_stages（本地墙钟毫秒戳，不做 UTC 换算）----
+# ---- session payload / final_stages（epoch 毫秒按 payload 时区格式化为墙钟）----
 
 STAGE_AWAKE = 1
 STAGE_LIGHT = 2
@@ -260,11 +260,12 @@ def ms_to_minutes(ms: int) -> int:
     return math.floor(ms / 60_000)
 
 
-def format_local_ms_hhmm(ms: int) -> str:
-    """把本地墙钟毫秒戳直接格式化为 HH:mm（按 UTC 日历字段，不做时区换算）。"""
+def format_local_ms_hhmm(ms: int, timezone_name: str = "") -> str:
+    """UTC epoch 毫秒 → 指定时区墙钟 HH:mm；空/非法时区回退 Asia/Shanghai。"""
     if ms <= 0:
         return ""
-    return datetime.fromtimestamp(ms / 1000.0, tz=UTC).strftime("%H:%M")
+    tz = resolve_report_timezone(timezone_name)
+    return datetime.fromtimestamp(ms / 1000.0, tz=UTC).astimezone(tz).strftime("%H:%M")
 
 
 def _on_bed_segment_ms(item: Any) -> tuple[int, int, int]:
@@ -405,6 +406,7 @@ def sleep_structure_from_segments(
 def sleep_quality_from_session(
     on_bed: Any,
     segments: list[dict[str, Any]],
+    timezone_name: str = "",
 ) -> dict[str, Any]:
     bed_from, bed_to = on_bed_bounds(on_bed)
     structure = sleep_structure_from_segments(on_bed, segments)
@@ -431,8 +433,8 @@ def sleep_quality_from_session(
         "time_in_bed_minutes": tib,
         "sleep_onset_latency_minutes": max(0, sol),
         "sleep_efficiency": max(0, min(100, efficiency)),
-        "bedtime": format_local_ms_hhmm(bed_from),
-        "wake_up_time": format_local_ms_hhmm(bed_to),
+        "bedtime": format_local_ms_hhmm(bed_from, timezone_name),
+        "wake_up_time": format_local_ms_hhmm(bed_to, timezone_name),
         "wake_to_leave_bed_minutes": max(0, wake_to_leave_bed),
     }
 
@@ -440,6 +442,7 @@ def sleep_quality_from_session(
 def idf_from_segments(
     segments: list[dict[str, Any]],
     on_bed: Any = None,
+    timezone_name: str = "",
 ) -> list[dict[str, str]]:
     """把 segments 转成 idf 行；末段 end 若早于最后一条 on_bed.to 则补齐（仅展示）。"""
     _, bed_to = on_bed_bounds(on_bed)
@@ -454,11 +457,24 @@ def idf_from_segments(
         rows.append(
             {
                 "stage": stage.lower() if stage else "",
-                "start": format_local_ms_hhmm(start),
-                "end": format_local_ms_hhmm(end),
+                "start": format_local_ms_hhmm(start, timezone_name),
+                "end": format_local_ms_hhmm(end, timezone_name),
             }
         )
     return rows
+
+
+def session_timezone_name(
+    body: dict[str, Any] | None,
+    payload_doc: dict[str, Any] | None = None,
+) -> str:
+    """优先 payload.timezone，其次文档顶层 timezone；非法回退 Asia/Shanghai。"""
+    tz = ""
+    if isinstance(body, dict):
+        tz = str(body.get("timezone") or "")
+    if not tz.strip() and isinstance(payload_doc, dict):
+        tz = str(payload_doc.get("timezone") or "")
+    return resolve_report_timezone_name(tz)
 
 
 def session_body(payload_doc: dict[str, Any] | None) -> dict[str, Any]:
