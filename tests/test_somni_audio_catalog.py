@@ -1693,7 +1693,7 @@ async def test_get_audio_english_like_matches_en_name_and_dislike_matches_englis
     wave = {
         "_id": "wave",
         "audio_name": "海浪",
-        "language": "zh",
+        "language": "en",
         "created_at": "2026-08-01T00:00:00Z",
         "content_form_tags": [
             {
@@ -1707,7 +1707,7 @@ async def test_get_audio_english_like_matches_en_name_and_dislike_matches_englis
     fire = {
         "_id": "fire",
         "audio_name": "壁炉",
-        "language": "zh",
+        "language": "en",
         "created_at": "2026-07-01T00:00:00Z",
         "content_form_tags": [
             {"tag_id": "f", "code": "fireplace", "name": "篝火/壁炉", "en_name": "Fireplace"}
@@ -1716,7 +1716,7 @@ async def test_get_audio_english_like_matches_en_name_and_dislike_matches_englis
     thunder = {
         "_id": "thunder",
         "audio_name": "雷声",
-        "language": "zh",
+        "language": "en",
         "created_at": "2026-06-01T00:00:00Z",
         "content_form_tags": [
             {"tag_id": "t", "code": "thunder", "name": "雷声", "en_name": "Thunder"}
@@ -1725,7 +1725,7 @@ async def test_get_audio_english_like_matches_en_name_and_dislike_matches_englis
     insects = {
         "_id": "insects",
         "audio_name": "虫鸣",
-        "language": "zh",
+        "language": "en",
         "created_at": "2026-05-01T00:00:00Z",
         "content_form_tags": [
             {
@@ -1769,6 +1769,7 @@ async def test_get_audio_english_like_matches_en_name_and_dislike_matches_englis
         fetch_all=False,
         query_text="",
         tag_code="",
+        language="en",
         content_form_codes=["Natural Sound", "Gentle Ocean Wave"],
         dislike_text="Keep out thunder, barking, and sirens.",
     )
@@ -1781,7 +1782,7 @@ async def test_get_audio_free_text_drops_scores_below_threshold() -> None:
     fire = {
         "_id": "fire",
         "audio_name": "壁炉",
-        "language": "zh",
+        "language": "en",
         "created_at": "2026-07-01T00:00:00Z",
         "content_form_tags": [
             {"tag_id": "f", "code": "fireplace", "name": "篝火/壁炉", "en_name": "Fireplace"}
@@ -1790,7 +1791,7 @@ async def test_get_audio_free_text_drops_scores_below_threshold() -> None:
     thunder = {
         "_id": "thunder",
         "audio_name": "雷声",
-        "language": "zh",
+        "language": "en",
         "created_at": "2026-06-01T00:00:00Z",
         "content_form_tags": [
             {"tag_id": "t", "code": "thunder", "name": "雷声", "en_name": "Thunder"}
@@ -1844,10 +1845,68 @@ async def test_get_audio_free_text_drops_scores_below_threshold() -> None:
         fetch_all=False,
         query_text="",
         tag_code="",
+        language="en",
         dislike_text="campfire thunder",
     )
 
     assert [item["id"] for item in payload["list"]] == ["fire", "thunder"]
+
+
+@pytest.mark.asyncio
+async def test_get_audio_zh_ignores_english_dislike_words() -> None:
+    """zh 环境只走中文分词，英文 dislike 词不参与沉底。"""
+    fire = {
+        "_id": "fire",
+        "audio_name": "壁炉",
+        "language": "zh",
+        "created_at": "2026-07-01T00:00:00Z",
+        "content_form_tags": [
+            {"tag_id": "f", "code": "fireplace", "name": "篝火/壁炉", "en_name": "Fireplace"}
+        ],
+    }
+    thunder = {
+        "_id": "thunder",
+        "audio_name": "雷声",
+        "language": "zh",
+        "created_at": "2026-06-01T00:00:00Z",
+        "content_form_tags": [
+            {"tag_id": "t", "code": "thunder", "name": "雷声", "en_name": "Thunder"}
+        ],
+    }
+    encoder = MagicMock()
+    encoder.is_loaded = True
+    encoder.encode_one = AsyncMock(return_value=[1.0, 0.0])
+    es_search = MagicMock()
+    es_search.list_content_tag_vectors = AsyncMock(
+        return_value=[
+            {
+                "id": "t",
+                "label": "雷声",
+                "name_en": "Thunder",
+                "dimension": "content_form",
+                "vector": [0.0, 1.0],
+                "vector_en": [1.0, 0.0],
+            }
+        ]
+    )
+    svc = _service(
+        _mongo_collection([fire, thunder]),
+        es_search=es_search,
+        encoder=encoder,
+    )
+
+    payload = await svc.get_audio(
+        page=1,
+        page_size=10,
+        fetch_all=False,
+        query_text="",
+        tag_code="",
+        language="zh",
+        dislike_text="Keep out thunder, barking, and sirens.",
+    )
+
+    assert [item["id"] for item in payload["list"]] == ["fire", "thunder"]
+    encoder.encode_one.assert_not_awaited()
 
 
 @pytest.mark.asyncio

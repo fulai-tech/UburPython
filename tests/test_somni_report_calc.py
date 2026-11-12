@@ -10,6 +10,7 @@ from app.server.somni.report.calc import (
     STAGE_LIGHT,
     STAGE_REM,
     align_weekly_days,
+    allocate_percentages,
     baseline_start,
     coerce_datetime,
     default_week_bounds,
@@ -285,8 +286,94 @@ def test_multi_on_bed_structure_sums_raw_ms_then_floors() -> None:
     assert structure["deep_sleep"]["minutes"] == 10  # 610000ms
     assert structure["rem_sleep"]["minutes"] == 8  # 500000ms
     assert structure["total_minutes"] == 28  # 1700000ms，而非 9+10+8 的展示加总
-    assert structure["awake"]["percent"] == 10
-    assert structure["light_sleep"]["percent"] == 30
+    # 按原始 ms 分配：210/500/590/610 → 11/26/31/32
+    assert structure["awake"]["percent"] == 11
+    assert structure["rem_sleep"]["percent"] == 26
+    assert structure["light_sleep"]["percent"] == 31
+    assert structure["deep_sleep"]["percent"] == 32
+    assert (
+        structure["awake"]["percent"]
+        + structure["rem_sleep"]["percent"]
+        + structure["light_sleep"]["percent"]
+        + structure["deep_sleep"]["percent"]
+        == 100
+    )
+
+
+def test_allocate_percentages_sums_to_100() -> None:
+    assert allocate_percentages([64, 99, 266, 70]) == [13, 20, 53, 14]
+    assert sum(allocate_percentages([64, 99, 266, 70])) == 100
+    assert allocate_percentages([0, 0, 0, 0]) == [0, 0, 0, 0]
+
+
+def test_sleep_structure_percent_keeps_sub_minute_stages() -> None:
+    """不足 1 分钟的阶段 minutes=0，但 percent 仍按 ms 保留份额。"""
+    bed_from = 1_000_000
+    on_bed = [{"from": bed_from, "to": bed_from + 360_000, "duration_ms": 360_000}]
+    cursor = bed_from
+    segments = []
+    for stage, name, duration_ms in (
+        (STAGE_AWAKE, "AWAKE", 59_000),
+        (STAGE_REM, "REM", 59_000),
+        (STAGE_LIGHT, "LIGHT", 59_000),
+        (STAGE_DEEP, "DEEP", 183_000),
+    ):
+        segments.append(
+            {
+                "stage": stage,
+                "stage_name": name,
+                "duration_ms": duration_ms,
+                "start_ts_ms": cursor,
+            }
+        )
+        cursor += duration_ms
+    structure = sleep_structure_from_segments(on_bed, segments)
+    assert structure["awake"]["minutes"] == 0
+    assert structure["rem_sleep"]["minutes"] == 0
+    assert structure["light_sleep"]["minutes"] == 0
+    assert structure["deep_sleep"]["minutes"] == 3
+    assert structure["awake"]["percent"] == 17
+    assert structure["rem_sleep"]["percent"] == 16
+    assert structure["light_sleep"]["percent"] == 16
+    assert structure["deep_sleep"]["percent"] == 51
+    assert (
+        structure["awake"]["percent"]
+        + structure["rem_sleep"]["percent"]
+        + structure["light_sleep"]["percent"]
+        + structure["deep_sleep"]["percent"]
+        == 100
+    )
+
+
+def test_sleep_structure_percent_uses_stage_minutes_not_tib() -> None:
+    # TIB=454，四阶段分钟和=499；占比按阶段时长切到 100%，不能按 TIB floor
+    bed_from = 1_000_000
+    tib_ms = 454 * 60_000
+    on_bed = [{"from": bed_from, "to": bed_from + tib_ms, "duration_ms": tib_ms}]
+    cursor = bed_from
+    segments = []
+    for stage, name, minutes in (
+        (STAGE_AWAKE, "AWAKE", 64),
+        (STAGE_REM, "REM", 99),
+        (STAGE_LIGHT, "LIGHT", 266),
+        (STAGE_DEEP, "DEEP", 70),
+    ):
+        duration = minutes * 60_000
+        segments.append(
+            {
+                "stage": stage,
+                "stage_name": name,
+                "duration_ms": duration,
+                "start_ts_ms": cursor,
+            }
+        )
+        cursor += duration
+    structure = sleep_structure_from_segments(on_bed, segments)
+    assert structure["tib_minutes"] == 454
+    assert structure["awake"] == {"minutes": 64, "percent": 13}
+    assert structure["rem_sleep"] == {"minutes": 99, "percent": 20}
+    assert structure["light_sleep"] == {"minutes": 266, "percent": 53}
+    assert structure["deep_sleep"] == {"minutes": 70, "percent": 14}
 
 
 def test_sleep_quality_wake_to_leave_bed_uses_last_on_bed_to_minus_last_awake_start() -> None:
