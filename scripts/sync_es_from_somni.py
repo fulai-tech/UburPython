@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import inspect
 import json
 import re
 import sys
@@ -42,7 +43,11 @@ from app.core.somni_redis import create_somni_redis  # noqa: E402
 from app.embedding.encoder import Encoder, create_encoder  # noqa: E402
 from app.es.client import create_es_client  # noqa: E402
 from app.es.search import EsSearch  # noqa: E402
-from app.es.somni_docs import material_source_for_es  # noqa: E402
+from app.es.somni_docs import (  # noqa: E402
+    has_indexable_locale,
+    locale_source_for_es,
+    somni_material_source_for_es,
+)
 
 if TYPE_CHECKING:
     from elasticsearch import AsyncElasticsearch
@@ -67,10 +72,15 @@ class SyncJobResult:
     material_updated: int = 0
     material_unchanged: int = 0
     material_failed: int = 0
+    locale_fetched: int = 0
+    locale_skipped: int = 0
+    locale_deleted: int = 0
+    locale_created: int = 0
+    locale_failed: int = 0
 
     @property
     def failed(self) -> int:
-        return self.tag_failed + self.material_failed
+        return self.tag_failed + self.material_failed + self.locale_failed
 
 
 def mongo_doc_id(doc: dict[str, Any]) -> str:
@@ -78,33 +88,69 @@ def mongo_doc_id(doc: dict[str, Any]) -> str:
 
 
 def material_doc_to_es(doc: dict[str, Any]) -> dict[str, Any] | None:
-    """Mongo 原料文档 → ES _source（去掉 _id/id）；无 _id 或无 audio_url 则跳过。"""
+    """Mongo 原料文档 → ES _source（去掉 _id/id）；无 _id 则跳过。不含语言表字段。"""
     doc_id = mongo_doc_id(doc)
     if not doc_id:
         return None
-    payload = material_source_for_es(bson_to_jsonable(doc))
+    payload = somni_material_source_for_es(bson_to_jsonable(doc))
     if payload is None:
         return None
     payload.pop("_id", None)
     payload.pop("id", None)
-    # Mongo 可能带空 embedding；量产 ES 检索用 description_vector，不写 embedding
     payload.pop("embedding", None)
     return payload
 
 
 def tag_doc_to_es(doc: dict[str, Any]) -> dict[str, Any] | None:
-    """Mongo 标签文档 → ES _source（去掉 _id/id）；无 _id 则跳过。"""
+    """Mongo 标签文档 → ES _source。去掉 name_en，父级写入 parent_id。"""
     doc_id = mongo_doc_id(doc)
     if not doc_id:
         return None
     payload = bson_to_jsonable(doc)
     payload.pop("_id", None)
     payload.pop("id", None)
+    payload.pop("name_en", None)
+    payload.pop("name_en_vector", None)
+    payload.pop("name_vector", None)
+    parent = payload.pop("parent_id", None)
+    if parent in (None, ""):
+        parent = payload.get("parent_tag_id")
+    payload.pop("parent_tag_id", None)
+    payload["parent_id"] = None if parent in (None, "") else str(parent)
+    language = str(payload.get("language") or "").strip().lower()
+    payload["language"] = language or "zh"
+    return payload
+
+
+def locale_doc_to_es(doc: dict[str, Any]) -> dict[str, Any] | None:
+    """Mongo 语言文档 → ES _source；无 _id、material_id 或 language 则跳过。"""
+    doc_id = mongo_doc_id(doc)
+    if not doc_id:
+        return None
+    payload = locale_source_for_es(bson_to_jsonable(doc))
+    if payload is None:
+        return None
     return payload
 
 
 def zero_vector(dim: int) -> list[float]:
     return [0.0] * dim
+
+
+async def _fetch_locale_rows(mongo: Any) -> list[dict[str, Any]]:
+    """同步原料索引时读取语言表。测试替身没有这个方法时按空表处理。"""
+    fetch = getattr(mongo, "fetch_locales", None)
+    if not callable(fetch):
+        return []
+    try:
+        fetched = fetch()
+        if inspect.isawaitable(fetched):
+            fetched = await fetched
+    except TypeError:
+        return []
+    if not isinstance(fetched, list):
+        return []
+    return [row for row in fetched if isinstance(row, dict)]
 
 
 async def wipe_and_recreate_index(
@@ -190,6 +236,7 @@ class MongoSource:
         self._db = self._client[settings.somni_mongo_db]
         self._materials = settings.somni_mongo_materials_collection
         self._dictionary = settings.somni_mongo_tag_dictionary_collection
+        self._locales = settings.somni_mongo_material_locales_collection
         self._page_size = settings.sync_page_size
 
     async def close(self) -> None:
@@ -200,6 +247,10 @@ class MongoSource:
 
     async def fetch_materials(self) -> list[dict[str, Any]]:
         return await self._fetch_active_materials()
+
+    async def fetch_locales(self) -> list[dict[str, Any]]:
+        coll = self._db[self._locales]
+        return [doc async for doc in coll.find({})]
 
     async def _fetch_active(self, collection: str, status: str) -> list[dict[str, Any]]:
         coll = self._db[collection]
@@ -280,26 +331,24 @@ class TagDictionarySyncJob:
 
     async def _insert_one(self, doc_id: str, es_doc: dict[str, Any]) -> str:
         try:
-            es_doc["name_vector"] = await self._encoder.encode_one(
-                str(es_doc.get("name", "")), language="zh"
-            )
-            name_en = str(es_doc.get("name_en", "")).strip()
-            # cosine 字段不能写零向量；英文失败时仍保留中文标签
-            if name_en:
+            language = str(es_doc.get("language") or "zh").strip().lower()
+            name = str(es_doc.get("name") or "").strip()
+            es_doc.pop("name_vector", None)
+            es_doc.pop("name_en_vector", None)
+            if language == "en" and name:
                 try:
                     es_doc["name_en_vector"] = await self._encoder.encode_one(
-                        name_en, language="en"
+                        name, language="en"
                     )
                 except Exception as exc:
-                    es_doc.pop("name_en_vector", None)
                     logger.warning(
                         "量产同步标签跳过 name_en_vector，id={}，name={}，原因：{}",
                         doc_id,
-                        es_doc.get("name"),
+                        name,
                         exc,
                     )
-            else:
-                es_doc.pop("name_en_vector", None)
+            elif language == "zh" and name:
+                es_doc["name_vector"] = await self._encoder.encode_one(name, language="zh")
             await self._client.index(
                 index=self._es_search.tag_dictionary_index,
                 id=doc_id,
@@ -350,23 +399,31 @@ class MaterialsSyncJob:
                 bson_to_jsonable(docs),
             )
 
+        locale_rows = await _fetch_locale_rows(self._mongo)
+        locales_by_material: dict[str, list[dict[str, Any]]] = {}
+        for row in locale_rows:
+            material_id = str(row.get("material_id") or "")
+            locales_by_material.setdefault(material_id, []).append(row)
+
         payloads: dict[str, dict[str, Any]] = {}
         for doc in docs:
+            doc_id = mongo_doc_id(doc)
+            if not has_indexable_locale(locales_by_material.get(doc_id, [])):
+                stats["skipped"] += 1
+                logger.warning("跳过无效原料，id={}，缺少非空 language 的语言行", doc_id)
+                continue
             es_doc = material_doc_to_es(doc)
             if es_doc is None:
                 stats["skipped"] += 1
-                logger.warning("跳过无效原料，id={}，audio_url 缺失", mongo_doc_id(doc))
+                logger.warning("跳过无效原料，id={}", doc_id)
                 continue
-            payloads[mongo_doc_id(doc)] = es_doc
+            payloads[doc_id] = es_doc
 
         if dry_run:
             es_ids = await self._es_search.list_all_audio_doc_ids()
             stats["deleted"] = len(es_ids)
             stats["created"] = len(payloads)
             return stats
-
-        # 清库前先确认中文编码器可用；失败则保留原索引
-        await self._preflight_zh_encoder()
 
         stats["deleted"] = await wipe_and_recreate_index(
             self._client,
@@ -379,34 +436,8 @@ class MaterialsSyncJob:
 
         return stats
 
-    async def _preflight_zh_encoder(self) -> None:
-        """清库前探测 zh 编码；失败则抛错，避免空索引。"""
-        await self._encoder.encode_one("同步预检", language="zh")
-
     async def _insert_one(self, doc_id: str, es_doc: dict[str, Any]) -> str:
         try:
-            zh_text = str(es_doc.get("description_text", "")).strip()
-            en_text = str(es_doc.get("description_text_en", "")).strip()
-            # cosine 字段不能写零向量，缺文本/缺模型时省略字段
-            if zh_text:
-                es_doc["description_vector"] = await self._encoder.encode_one(
-                    zh_text, language="zh"
-                )
-            else:
-                es_doc.pop("description_vector", None)
-            try:
-                if en_text:
-                    es_doc["description_vector_en"] = await self._encoder.encode_one(
-                        en_text, language="en"
-                    )
-                else:
-                    es_doc.pop("description_vector_en", None)
-            except FileNotFoundError:
-                es_doc.pop("description_vector_en", None)
-                logger.warning(
-                    "英文 ONNX 不可用，跳过 description_vector_en，id={}",
-                    doc_id,
-                )
             await self._client.index(
                 index=self._es_search.audio_index,
                 id=doc_id,
@@ -415,9 +446,95 @@ class MaterialsSyncJob:
             return "created"
         except Exception as exc:
             logger.error(
-                "量产同步原料失败，id={}，name={}，原因：{}",
+                "量产同步原料失败，id={}，原因：{}",
                 doc_id,
-                es_doc.get("audio_name"),
+                exc,
+            )
+            return "failed"
+
+
+class LocalesSyncJob:
+    def __init__(
+        self,
+        mongo: MongoSource,
+        es_search: EsSearch,
+        es_client: AsyncElasticsearch,
+        encoder: Encoder,
+        settings: Settings,
+    ) -> None:
+        self._mongo = mongo
+        self._es_search = es_search
+        self._client = es_client
+        self._encoder = encoder
+        self._settings = settings
+
+    async def run(self, *, dry_run: bool) -> dict[str, int]:
+        stats = {
+            "fetched": 0,
+            "skipped": 0,
+            "deleted": 0,
+            "created": 0,
+            "failed": 0,
+        }
+        docs = await self._mongo.fetch_locales()
+        stats["fetched"] = len(docs)
+        if not dry_run:
+            write_backup(
+                self._settings.somni_sync_material_locales_backup_path,
+                bson_to_jsonable(docs),
+            )
+        payloads: dict[str, dict[str, Any]] = {}
+        for doc in docs:
+            es_doc = locale_doc_to_es(doc)
+            if es_doc is None:
+                stats["skipped"] += 1
+                continue
+            payloads[mongo_doc_id(doc)] = es_doc
+        if dry_run:
+            stats["created"] = len(payloads)
+            return stats
+        await self._encoder.encode_one("同步预检", language="zh")
+        stats["deleted"] = await wipe_and_recreate_index(
+            self._client,
+            self._es_search,
+            self._es_search.material_locales_index,
+        )
+        for doc_id, es_doc in payloads.items():
+            outcome = await self._insert_one(doc_id, es_doc)
+            stats[outcome] += 1
+        return stats
+
+    async def _insert_one(self, doc_id: str, es_doc: dict[str, Any]) -> str:
+        try:
+            language = str(es_doc.get("language") or "").strip().lower()
+            text = str(es_doc.get("description_text") or "").strip()
+            es_doc.pop("description_vector", None)
+            es_doc.pop("description_vector_en", None)
+            if text and language == "zh":
+                es_doc["description_vector"] = await self._encoder.encode_one(
+                    text, language="zh"
+                )
+            elif text and language == "en":
+                try:
+                    es_doc["description_vector_en"] = await self._encoder.encode_one(
+                        text, language="en"
+                    )
+                except FileNotFoundError:
+                    logger.warning(
+                        "英文 ONNX 不可用，语言行跳过 description_vector_en，id={}",
+                        doc_id,
+                    )
+            await self._client.index(
+                index=self._es_search.material_locales_index,
+                id=doc_id,
+                document=es_doc,
+            )
+            return "created"
+        except Exception as exc:
+            logger.error(
+                "量产同步语言行失败，id={}，material_id={}，原因：{}",
+                doc_id,
+                es_doc.get("material_id"),
                 exc,
             )
             return "failed"
@@ -461,6 +578,15 @@ class MongoEsSyncJob:
         )
         material_stats = await material_job.run(dry_run=dry_run)
 
+        locale_job = LocalesSyncJob(
+            self._mongo,
+            self._es_search,
+            self._client,
+            self._encoder,
+            self._settings,
+        )
+        locale_stats = await locale_job.run(dry_run=dry_run)
+
         result = SyncJobResult(
             tag_fetched=tag_stats["fetched"],
             tag_deleted=tag_stats["deleted"],
@@ -475,10 +601,16 @@ class MongoEsSyncJob:
             material_updated=material_stats["updated"],
             material_unchanged=material_stats["unchanged"],
             material_failed=material_stats["failed"],
+            locale_fetched=locale_stats["fetched"],
+            locale_skipped=locale_stats["skipped"],
+            locale_deleted=locale_stats["deleted"],
+            locale_created=locale_stats["created"],
+            locale_failed=locale_stats["failed"],
         )
         logger.info(
             "量产 Mongo → ES 全量同步结束：标签 拉取={} 清索引={} 增={} 失败={}；"
-            "原料 拉取={} 跳过={} 清索引={} 增={} 失败={} dry_run={}",
+            "原料 拉取={} 跳过={} 清索引={} 增={} 失败={}；"
+            "语言 拉取={} 跳过={} 清索引={} 增={} 失败={} dry_run={}",
             result.tag_fetched,
             result.tag_deleted,
             result.tag_created,
@@ -488,6 +620,11 @@ class MongoEsSyncJob:
             result.material_deleted,
             result.material_created,
             result.material_failed,
+            result.locale_fetched,
+            result.locale_skipped,
+            result.locale_deleted,
+            result.locale_created,
+            result.locale_failed,
             dry_run,
         )
         return result

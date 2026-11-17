@@ -5,7 +5,9 @@ from app.es.somni_docs import (
     build_material_description_text_en,
     description_text_field,
     description_vector_field,
+    locale_vector_field,
     material_source_for_es,
+    resolve_locale_language,
     resolve_query_language,
     resolve_search_language,
 )
@@ -18,6 +20,19 @@ def test_resolve_search_language() -> None:
     assert resolve_search_language("zh-CN") == "zh"
     assert resolve_search_language("en") == "en"
     assert resolve_search_language("fr") == "en"
+
+
+def test_resolve_locale_language() -> None:
+    assert resolve_locale_language("") == "zh"
+    assert resolve_locale_language(None) == "zh"
+    assert resolve_locale_language("zh-CN") == "zh"
+    assert resolve_locale_language("en-US") == "en"
+    assert resolve_locale_language("fr") == "fr"
+    assert resolve_locale_language("ja") == "ja"
+    assert locale_vector_field("zh") == "description_vector"
+    assert locale_vector_field("en") == "description_vector_en"
+    assert locale_vector_field("fr") is None
+    assert locale_vector_field("ja") is None
 
 
 def test_resolve_query_language() -> None:

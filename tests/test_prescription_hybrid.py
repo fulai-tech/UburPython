@@ -50,13 +50,14 @@ def service(bm25=None, vector=None):
 
 
 def request(text="relaxing instrumental music", **kwargs):
+    # 英文用例显式传 language=en；未传时保持请求默认 zh
     return SearchAudioRequest(query_text=text, sleep_stage_tags=["unwind"], top_k=10, **kwargs)
 
 
 @pytest.mark.asyncio
 async def test_keyword_only_and_vector_only_preserve_original_scores():
     svc, es, encoder = service([material("keyword")], [material("semantic", score=0.8)])
-    output = await svc.search_prescription(request())
+    output = await svc.search_prescription(request(language="en"))
     assert [row["_id"] for row in output] == ["semantic", "keyword"]
     assert output[0]["audio_name_en"] == "English semantic"
     assert output[0]["short_description_en"] == "English short description"
@@ -77,25 +78,27 @@ async def test_one_failed_lane_keeps_legal_material(failed):
     getattr(
         es, "search_get_audio_bm25" if failed == "bm25" else "search_by_description_vector"
     ).side_effect = RuntimeError("synthetic")
-    assert len(await svc.search_prescription(request())) == 1
+    assert len(await svc.search_prescription(request(language="en"))) == 1
 
 
 @pytest.mark.asyncio
 async def test_failed_english_encoder_does_not_block_bm25():
     svc, es, encoder = service([material("keyword")])
     encoder.encode_one.side_effect = FileNotFoundError("English model unavailable")
-    assert [m["_id"] for m in await svc.search_prescription(request())] == ["keyword"]
+    assert [
+        m["_id"] for m in await svc.search_prescription(request(language="en"))
+    ] == ["keyword"]
     es.search_by_description_vector.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_both_lanes_failed_is_distinct_from_empty_results():
     svc, es, _ = service()
-    assert await svc.search_prescription(request()) == []
+    assert await svc.search_prescription(request(language="en")) == []
     es.search_get_audio_bm25.side_effect = RuntimeError("bm25")
     es.search_by_description_vector.side_effect = RuntimeError("vector")
     with pytest.raises(AppError) as error:
-        await svc.search_prescription(request())
+        await svc.search_prescription(request(language="en"))
     assert error.value.status_code == 503
 
 
@@ -182,7 +185,9 @@ async def test_wrong_dimension_is_not_sent_to_es():
     svc, es, encoder = service([material("keyword")])
     encoder.encode_one.return_value = [0.1] * 3
     encoder.encode_one.side_effect = None
-    assert (await svc.search_prescription(request()))[0]["_id"] == "keyword"
+    assert (
+        await svc.search_prescription(request(language="en"))
+    )[0]["_id"] == "keyword"
     es.search_by_description_vector.assert_not_awaited()
 
 

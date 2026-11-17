@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     somni_es_node: str = ""
     somni_es_audio_index: str = "somni_audio_materials"
     somni_es_tag_vectors_index: str = "somni_audio_tag_dictionary"
+    somni_es_material_locales_index: str = "somni_audio_material_locales"
     somni_es_search_events_index: str = "somni_audio_search_events"
 
     mongo_uri: str = ""
@@ -54,6 +55,7 @@ class Settings(BaseSettings):
     somni_mongo_db: str = "Somni"
     somni_mongo_materials_collection: str = "somni_audio_materials"
     somni_mongo_tag_dictionary_collection: str = "somni_audio_tag_dictionary"
+    somni_mongo_material_locales_collection: str = "somni_audio_material_locales"
     somni_mongo_answers_collection: str = "somni_quiz_answers"
     somni_mongo_questions_collection: str = "somni_quiz_questions"
     somni_mongo_devices_collection: str = "somni_devices"
@@ -199,6 +201,9 @@ class Settings(BaseSettings):
     # 量产 CLI 同步备份（与手板文件名隔离，避免互相覆盖）
     somni_sync_backup_filename: str = "somni_prod_audio_materials_backup.json"
     somni_sync_tag_dictionary_backup_filename: str = "somni_prod_audio_tag_dictionary_backup.json"
+    somni_sync_material_locales_backup_filename: str = (
+        "somni_prod_audio_material_locales_backup.json"
+    )
 
     # 功能手板 Redis（空 URL 表示关闭）
     redis_url: str = ""
@@ -273,6 +278,10 @@ class Settings(BaseSettings):
     @property
     def somni_sync_tag_dictionary_backup_path(self) -> Path:
         return Path(self.sync_backup_dir) / self.somni_sync_tag_dictionary_backup_filename
+
+    @property
+    def somni_sync_material_locales_backup_path(self) -> Path:
+        return Path(self.sync_backup_dir) / self.somni_sync_material_locales_backup_filename
 
     @property
     def log_dir_path(self) -> Path:

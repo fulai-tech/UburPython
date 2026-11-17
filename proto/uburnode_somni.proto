@@ -391,6 +391,8 @@ message PrescriptionAudioSearchTask {
   repeated string disliked_tags = 7;
   int32 top_k = 8;
   repeated string content_tags = 9;
+  // 展示/召回语言：zh / en / fr / ja；空或缺省为 zh
+  string language = 10;
 }
 message SearchPrescriptionAudioReq { repeated PrescriptionAudioSearchTask tasks = 1; }
 message PrescriptionAudioSearchResult {
@@ -399,6 +401,117 @@ message PrescriptionAudioSearchResult {
 }
 message SearchPrescriptionAudioRes { repeated PrescriptionAudioSearchResult results = 1; }
 
+// 原料文档上的嵌套标签引用。原料写接口不改标签字典。
+message AudioTagRef {
+  optional string tag_id = 1;
+  optional string code = 2;
+  optional string name = 3;
+}
+
+message AudioContentTag {
+  optional string tag_id = 1;
+  optional string code = 2;
+  optional string name = 3;
+  optional string en_name = 4;
+  optional string parent_tag_id = 5;
+  optional string parent_tag_code = 6;
+}
+
+message AudioEngineeringValue {
+  optional string tag_id = 1;
+  optional string code = 2;
+  optional string name = 3;
+}
+
+message AudioEngineeringTag {
+  optional string tag_id = 1;
+  optional string code = 2;
+  optional string name = 3;
+  optional AudioEngineeringValue value = 4;
+  repeated double band_values = 5;
+  optional double relative_loudness = 6;
+}
+
+message AudioTagRefList { repeated AudioTagRef items = 1; }
+message AudioContentTagList { repeated AudioContentTag items = 1; }
+message AudioEngineeringTagList { repeated AudioEngineeringTag items = 1; }
+message AudioEmbedding { repeated double values = 1; }
+
+// 只序列化调用方显式传入的字段。列表字段用包装消息，空列表也能表示“清空”。
+message AudioMaterialInput {
+  optional string audio_name = 1;
+  optional string audio_url = 2;
+  optional string cover_url = 3;
+  optional string description = 4;
+  optional string summary = 5;
+  optional bool status = 6;
+  optional int32 operation_type = 7;
+  optional string source = 8;
+  optional int32 vip = 9;
+  optional string created_by = 10;
+  optional string updated_by = 11;
+  optional AudioTagRefList sleep_stage_tags = 12;
+  optional AudioContentTagList content_form_tags = 13;
+  reserved 14;
+  reserved "mechanism_tags";
+  optional AudioEngineeringTagList audio_engineering_tags = 15;
+  reserved 16;
+  reserved "medical_risk_tags";
+  optional AudioTagRefList evidence_level_tags = 17;
+  optional AudioEmbedding embedding = 18;
+  // 语言表行。新增必填；更新标题、描述、短描述或地址时也必填。
+  optional string language = 19;
+}
+
+message UpdateAudioItem {
+  string id = 1;
+  AudioMaterialInput fields = 2;
+}
+
+message DeleteAudioItem {
+  string id = 1;
+}
+
+message CreateAudioReq { repeated AudioMaterialInput items = 1; }  // 单次最多 200 条
+message UpdateAudioReq { repeated UpdateAudioItem items = 1; }
+message DeleteAudioReq { repeated DeleteAudioItem items = 1; }
+
+message AudioWriteItemRes {
+  int32 index = 1;    // 请求 items 下标
+  bool ok = 2;
+  string id = 3;      // 成功时为原料 _id；失败时可能仍带回已落库的 id
+  string message = 4; // 失败原因；成功为空
+}
+
+message AudioWriteBatchRes {
+  repeated AudioWriteItemRes items = 1;
+}
+
+// 标签字典。一行一种语言。中文名向量是 name_vector，英文名向量是 name_en_vector。
+message AudioTagInput {
+  optional string type = 1;
+  optional string code = 2;
+  optional string language = 3;
+  optional string name = 4;
+  optional string status = 5;
+  optional string parent_id = 6;
+  optional string created_by = 7;
+  optional string updated_by = 8;
+}
+
+message UpdateAudioTagItem {
+  string id = 1;
+  AudioTagInput fields = 2;
+}
+
+message DeleteAudioTagItem {
+  string id = 1;
+}
+
+message CreateAudioTagReq { repeated AudioTagInput items = 1; }  // 单次最多 200 条
+message UpdateAudioTagReq { repeated UpdateAudioTagItem items = 1; }
+message DeleteAudioTagReq { repeated DeleteAudioTagItem items = 1; }
+
 service AudioService {
   rpc GetAudio (GetAudioReq) returns (GetAudioRes);
   rpc GetAudioByIds (GetAudioByIdsReq) returns (GetAudioByIdsRes);
@@ -406,6 +519,12 @@ service AudioService {
   rpc GetHot (GetHotReq) returns (GetHotRes);
   rpc SearchAudio (SearchAudioReq) returns (SearchAudioRes);
   rpc SearchPrescriptionAudio (SearchPrescriptionAudioReq) returns (SearchPrescriptionAudioRes);
+  rpc CreateAudio (CreateAudioReq) returns (AudioWriteBatchRes);
+  rpc UpdateAudio (UpdateAudioReq) returns (AudioWriteBatchRes);
+  rpc DeleteAudio (DeleteAudioReq) returns (AudioWriteBatchRes);
+  rpc CreateAudioTag (CreateAudioTagReq) returns (AudioWriteBatchRes);
+  rpc UpdateAudioTag (UpdateAudioTagReq) returns (AudioWriteBatchRes);
+  rpc DeleteAudioTag (DeleteAudioTagReq) returns (AudioWriteBatchRes);
 }
 
 message GetUserProfileReq {

@@ -64,13 +64,27 @@ class SomniAudioService:
         if enabled_only:
             query["status"] = "启用"
         if level == 1:
-            query["$or"] = [
-                {"parent_tag_id": {"$exists": False}},
-                {"parent_tag_id": None},
-                {"parent_tag_id": ""},
+            query["$and"] = [
+                {
+                    "$or": [
+                        {"parent_id": {"$exists": False}},
+                        {"parent_id": None},
+                        {"parent_id": ""},
+                    ]
+                },
+                {
+                    "$or": [
+                        {"parent_tag_id": {"$exists": False}},
+                        {"parent_tag_id": None},
+                        {"parent_tag_id": ""},
+                    ]
+                },
             ]
         elif level == 2:
-            query["parent_tag_id"] = {"$nin": [None, ""]}
+            query["$or"] = [
+                {"parent_id": {"$exists": True, "$nin": [None, ""]}},
+                {"parent_tag_id": {"$exists": True, "$nin": [None, ""]}},
+            ]
         return await self._paginate(
             self._tags(),
             query,
@@ -167,15 +181,20 @@ class SomniAudioService:
         }
 
     def _map_tag(self, doc: dict[str, Any]) -> dict[str, Any]:
+        language = str(doc.get("language") or "").strip().lower()
         name = str(doc.get("name") or "")
         name_en = str(doc.get("name_en") or "")
+        if language == "en":
+            name_en = name
+            name = ""
         display = name or name_en
-        parent_id = str(doc.get("parent_tag_id") or "")
+        parent_id = str(doc.get("parent_id") or doc.get("parent_tag_id") or "")
         return {
             "id": str(doc.get("id") or doc.get("_id") or ""),
             "display_name": display,
             "name": name,
             "name_en": name_en,
+            "language": language,
             "type": str(doc.get("type") or ""),
             "code": str(doc.get("code") or ""),
             "status": str(doc.get("status") or ""),

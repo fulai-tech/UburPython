@@ -12,11 +12,13 @@ from app.es.search import (
 )
 
 
-def test_get_audio_source_includes_short_description() -> None:
-    assert "short_description" in GET_AUDIO_SOURCE_INCLUDES
-    assert "short_description_en" in GET_AUDIO_SOURCE_INCLUDES
-    assert "description" not in GET_AUDIO_SOURCE_INCLUDES
-    assert "audio_name_en" in GET_AUDIO_SOURCE_INCLUDES
+def test_get_audio_source_includes_material_fields() -> None:
+    """原料索引回查只取状态/标签等；展示字段来自语言表 overlay。"""
+    assert "status" in GET_AUDIO_SOURCE_INCLUDES
+    assert "content_form_tags" in GET_AUDIO_SOURCE_INCLUDES
+    assert "short_description" not in GET_AUDIO_SOURCE_INCLUDES
+    assert "audio_name" not in GET_AUDIO_SOURCE_INCLUDES
+    assert "audio_name_en" not in GET_AUDIO_SOURCE_INCLUDES
 
 
 def test_build_get_audio_filters_with_tag() -> None:
@@ -223,8 +225,13 @@ async def test_ensure_indices_somni_profile_uses_bilingual_mapping() -> None:
     await es.ensure_indices()
 
     bodies = [c.kwargs["body"] for c in client.indices.create.await_args_list]
-    assert bodies[0]["mappings"]["properties"]["description_vector_en"]["dims"] == 384
+    assert "description_vector" not in bodies[0]["mappings"]["properties"]
+    assert "summary" not in bodies[0]["mappings"]["properties"]
+    assert bodies[0]["mappings"]["properties"]["status"]["type"] == "boolean"
     assert bodies[1]["mappings"]["properties"]["name_en_vector"]["dims"] == 384
+    assert bodies[1]["mappings"]["properties"]["language"]["type"] == "keyword"
+    assert bodies[2]["mappings"]["properties"]["description_vector_en"]["dims"] == 384
+    assert bodies[2]["mappings"]["properties"]["summary"]["type"] == "text"
 
 
 @pytest.mark.asyncio
