@@ -193,11 +193,13 @@ class AudioCatalogService:
                 docs,
                 codes=codes,
                 preference_text=pref,
+                language=language,
             )
         disliked_ids = await self._disliked_audio_ids(
             docs,
             dislike,
             catalog_size=catalog_size,
+            language=language,
         )
         # 喜欢 → 中性 → 讨厌；各段内按创建时间从新到旧，段间不混排。
         # 同时命中喜欢与讨厌时归讨厌段。
@@ -460,6 +462,7 @@ class AudioCatalogService:
         *,
         codes: set[str],
         preference_text: str,
+        language: str,
     ) -> set[str]:
         """勾选按英文标签 code 精确命中；自由输入保留自然语言向量召回。"""
         preferred = {
@@ -470,7 +473,7 @@ class AudioCatalogService:
         preferred.discard("")
         if not preference_text:
             return preferred
-        tag_ids = await self._free_text_tag_ids(preference_text)
+        tag_ids = await self._free_text_tag_ids(preference_text, language=language)
         preferred.update(_audio_ids_for_tag_ids(docs, tag_ids))
         return preferred
 
@@ -480,31 +483,27 @@ class AudioCatalogService:
         dislike_text: str,
         *,
         catalog_size: int,
+        language: str,
     ) -> set[str]:
-        """讨厌的自由输入按短语切词，命中的音频排到最后。
+        """讨厌的自由输入按请求 language 单路分词，命中的音频排到最后。
 
-        中文词各自并发：标签名向量（只取与最高分接近的标签）、音频描述向量，
-        以及描述命中音频身上、名字也和这个词相近的二级标签。
-        另有音频名和标签名的字面匹配；英文词只对标签英文名向量。
+        zh：中文分词 + 字面匹配 + 标签/描述向量 + 二级标签扩散。
+        en：英文分词 + 仅标签英文名向量。
         """
         if not dislike_text.strip() or not docs:
             return set()
+        language = resolve_search_language(language)
         try:
             tags = await self._content_form_tag_bank()
         except Exception as exc:  # noqa: BLE001 — 厌恶排序失败不阻断目录
             logger.warning("厌恶输入读取标签向量失败：{}", exc)
             tags = []
-        vocabulary = [
-            part
-            for tag in tags
-            for part in re.split(r"[/／、()（）\s-]+", str(tag.get("display_name") or ""))
-        ]
-        han_words = _han_words(segment_dislike_phrases(dislike_text, vocabulary))
-        en_words = segment_dislike_text_en(dislike_text)
         threshold = self._settings.get_audio_root_tag_sim_threshold
         margin = self._settings.get_audio_dislike_tag_sim_margin
-        found = _audio_ids_by_literal(docs, han_words)
-        if en_words and tags:
+        if language == "en":
+            en_words = segment_dislike_text_en(dislike_text)
+            if not en_words or not tags:
+                return set()
             en_tag_ids = await self._tag_ids_for_words(
                 tags,
                 en_words,
@@ -514,7 +513,15 @@ class AudioCatalogService:
                 margin=margin,
                 language="en",
             )
-            found |= _audio_ids_for_tag_ids(docs, en_tag_ids)
+            return _audio_ids_for_tag_ids(docs, en_tag_ids)
+
+        vocabulary = [
+            part
+            for tag in tags
+            for part in re.split(r"[/／、()（）\s-]+", str(tag.get("display_name") or ""))
+        ]
+        han_words = _han_words(segment_dislike_phrases(dislike_text, vocabulary))
+        found = _audio_ids_by_literal(docs, han_words)
         if not han_words:
             return found
         if self._encoder is None or not self._encoder.is_loaded:
@@ -537,7 +544,7 @@ class AudioCatalogService:
         *,
         size: int,
     ) -> set[str]:
-        # 中文 dislike 词固定走中文模型/字段，与请求 language 无关
+        # zh 路径：中文模型/字段
         try:
             query = await self._encoder.encode_one(word, language="zh")
         except Exception as exc:  # noqa: BLE001
@@ -599,11 +606,18 @@ class AudioCatalogService:
         doc_ids = {str(doc.get("id") or "") for doc in docs}
         return {audio_id for score, audio_id in scored if score >= cutoff and audio_id in doc_ids}
 
-    async def _free_text_tag_ids(self, text: str) -> set[str]:
-        """每个词单独编码。中文对标签中文名向量，英文对标签英文名向量。"""
-        han_words = _han_words(segment_dislike_text(text))
-        en_words = segment_dislike_text_en(text)
-        if not han_words and not en_words:
+    async def _free_text_tag_ids(self, text: str, *, language: str) -> set[str]:
+        """按请求 language 单路分词；zh 对标签中文名向量，en 对标签英文名向量。"""
+        language = resolve_search_language(language)
+        if language == "en":
+            words = segment_dislike_text_en(text)
+            vector_field = "vector_en"
+            encode_language = "en"
+        else:
+            words = _han_words(segment_dislike_text(text))
+            vector_field = "vector"
+            encode_language = "zh"
+        if not words:
             return set()
         try:
             tags = await self._content_form_tag_bank()
@@ -612,31 +626,14 @@ class AudioCatalogService:
             return set()
         if not tags:
             return set()
-        threshold = self._settings.get_audio_root_tag_sim_threshold
-        matched: set[str] = set()
-        if han_words:
-            matched.update(
-                await self._tag_ids_for_words(
-                    tags,
-                    han_words,
-                    self._encoder,
-                    "vector",
-                    threshold,
-                    language="zh",
-                )
-            )
-        if en_words:
-            matched.update(
-                await self._tag_ids_for_words(
-                    tags,
-                    en_words,
-                    self._encoder,
-                    "vector_en",
-                    threshold,
-                    language="en",
-                )
-            )
-        return matched
+        return await self._tag_ids_for_words(
+            tags,
+            words,
+            self._encoder,
+            vector_field,
+            self._settings.get_audio_root_tag_sim_threshold,
+            language=encode_language,
+        )
 
     async def _tag_ids_for_words(
         self,

@@ -359,6 +359,29 @@ def normalize_segments(
     return normalized
 
 
+def allocate_percentages(weights: list[int | float], target: int = 100) -> list[int]:
+    """按权重切整数百分比，合计为 target（最大余数法）。"""
+    total = sum(float(weight) for weight in weights)
+    if total <= 0:
+        return [0 for _ in weights]
+    exact = [(float(weight) * target) / total for weight in weights]
+    floors = [math.floor(value + 1e-9) for value in exact]
+    left = target - sum(floors)
+    order = sorted(
+        (
+            (value - math.floor(value + 1e-9), index)
+            for index, value in enumerate(exact)
+        ),
+        key=lambda item: (-item[0], item[1]),
+    )
+    for _fraction, index in order:
+        if left <= 0:
+            break
+        floors[index] += 1
+        left -= 1
+    return floors
+
+
 def sleep_structure_from_segments(
     on_bed: Any,
     segments: list[dict[str, Any]],
@@ -386,18 +409,15 @@ def sleep_structure_from_segments(
     sleep_ms = (
         stage_ms["rem_sleep"] + stage_ms["light_sleep"] + stage_ms["deep_sleep"]
     )
-    mins = {key: ms_to_minutes(value) for key, value in stage_ms.items()}
-
-    def part(key: str) -> dict[str, int]:
-        m = mins[key]
-        pct = math.floor(m / tib_min * 100) if tib_min > 0 else 0
-        return {"minutes": m, "percent": pct}
+    keys = ("awake", "rem_sleep", "light_sleep", "deep_sleep")
+    # 占比按原始毫秒切到 100%，避免不足 1 分钟的阶段被 floor 成 0 后挤占份额
+    percents = allocate_percentages([stage_ms[key] for key in keys])
+    mins = {key: ms_to_minutes(stage_ms[key]) for key in keys}
 
     return {
-        "awake": part("awake"),
-        "rem_sleep": part("rem_sleep"),
-        "light_sleep": part("light_sleep"),
-        "deep_sleep": part("deep_sleep"),
+        key: {"minutes": mins[key], "percent": percents[index]}
+        for index, key in enumerate(keys)
+    } | {
         "total_minutes": ms_to_minutes(sleep_ms),
         "tib_minutes": tib_min,
     }
