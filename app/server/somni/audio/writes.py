@@ -764,6 +764,14 @@ async def _finish(service: Any, results: list[dict[str, Any]], *, action: str) -
 
 
 async def _invalidate(service: Any) -> None:
+    es_search = getattr(service, "_es_search", None)
+    if es_search is not None and hasattr(es_search, "refresh_audio_index"):
+        try:
+            await es_search.refresh_audio_index()
+        except Exception as exc:
+            # refresh 失败时保留旧缓存，避免立刻把未可见的旧 ES 结果写回无 TTL 缓存。
+            logger.warning("写入后刷新 ES 索引失败，跳过清缓存：{}", exc)
+            return
     cache = getattr(service, "_catalog_cache", None)
     if cache is not None:
         try:

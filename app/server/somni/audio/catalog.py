@@ -143,7 +143,8 @@ class AudioCatalogService:
                 status_code=HttpStatus.SERVICE_UNAVAILABLE,
             )
         docs = await self._es_search.get_audio_docs_by_ids(ordered_ids)
-        await self._overlay_english_locales(docs)
+        # 只按请求 language 贴语言表，缺行则主字段为空，不回退其它语言。
+        await self._overlay_english_locales(docs, languages=(language,))
         by_id = {
             str(doc.get("id") or doc.get("_id") or ""): _map_material(doc) for doc in docs
         }
@@ -781,9 +782,11 @@ class AudioCatalogService:
         requested_top_k = request.top_k
         request.top_k = min(60, requested_top_k * 3)
         materials = await self._retrieval.search_prescription(request)
-        playable_urls = await self._prescription_locale_audio_urls(materials, language=language)
+        locale_displays = await self._prescription_locale_displays(
+            materials, language=language
+        )
         materials = self._filter_prescription_materials(
-            materials, playable_urls=playable_urls
+            materials, locale_displays=locale_displays
         )
         materials = [
             material
@@ -799,13 +802,13 @@ class AudioCatalogService:
             if stages & material_tag_codes({"sleep_stage_tags": item.get("sleep_stage_tags", [])})
         ][:requested_top_k]
 
-    async def _prescription_locale_audio_urls(
+    async def _prescription_locale_displays(
         self,
         candidates: list[dict[str, Any]],
         *,
         language: str,
-    ) -> dict[str, str]:
-        """从语言索引取可播地址；无 ES 时回退候选上已有的 audio_url（单测）。"""
+    ) -> dict[str, dict[str, Any]]:
+        """从语言索引取展示字段与可播地址；无 ES 时回退候选上已有字段（单测）。"""
         ids = [
             str(item.get("_id") or item.get("id") or "").strip()
             for item in candidates
@@ -813,33 +816,50 @@ class AudioCatalogService:
         ids = [doc_id for doc_id in ids if doc_id]
         if self._es_search is not None and ids:
             try:
-                return await self._es_search.locale_audio_urls_by_material_ids(
+                return await self._es_search.locale_displays_by_material_ids(
                     ids, language=language
                 )
             except Exception as exc:  # noqa: BLE001 — 语言表失败时不误放行无地址候选
-                logger.warning("处方语言表地址查询失败 language={}：{}", language, exc)
+                logger.warning("处方语言表查询失败 language={}：{}", language, exc)
                 return {}
-        return {
-            str(item.get("_id") or item.get("id") or "").strip(): str(
-                item.get("audio_url") or ""
-            ).strip()
-            for item in candidates
-            if str(item.get("_id") or item.get("id") or "").strip()
-            and str(item.get("audio_url") or "").strip()
-        }
+        displays: dict[str, dict[str, Any]] = {}
+        for item in candidates:
+            material_id = str(item.get("_id") or item.get("id") or "").strip()
+            audio_url = str(item.get("audio_url") or "").strip()
+            if not material_id or not audio_url:
+                continue
+            displays[material_id] = {
+                "material_id": material_id,
+                "language": language,
+                "audio_name": str(item.get("audio_name") or ""),
+                "description": str(item.get("description") or ""),
+                "summary": str(item.get("summary") or item.get("short_description") or ""),
+                "audio_url": audio_url,
+                "cover_url": str(item.get("cover_url") or ""),
+            }
+        return displays
 
     @staticmethod
     def _filter_prescription_materials(
         candidates: list[dict[str, Any]],
         *,
+        locale_displays: dict[str, dict[str, Any]] | None = None,
         playable_urls: dict[str, str] | None = None,
     ) -> list[dict[str, Any]]:
         """Validate ES metadata locally; do not re-read material identities from Mongo."""
-        urls = playable_urls or {}
+        displays = dict(locale_displays or {})
+        # 兼容旧调用方只传 URL map
+        for material_id, url in (playable_urls or {}).items():
+            if material_id and url and material_id not in displays:
+                displays[material_id] = {
+                    "material_id": material_id,
+                    "audio_url": url,
+                }
         verified = []
         for candidate in candidates:
             identifier = str(candidate.get("_id") or candidate.get("id") or "")
-            playable_url = str(urls.get(identifier) or "").strip()
+            locale = displays.get(identifier) or {}
+            playable_url = str(locale.get("audio_url") or "").strip()
             if (
                 not identifier
                 or candidate.get("status") is not True
@@ -858,6 +878,19 @@ class AudioCatalogService:
                     codes,
                 )
                 continue
+            # 处方响应主字段写入请求语言文案；英文也落到主字段供下游读取。
+            if "audio_name" in locale:
+                candidate["audio_name"] = str(locale.get("audio_name") or "")
+            if "description" in locale:
+                candidate["description"] = str(locale.get("description") or "")
+            if "summary" in locale or "short_description" in locale:
+                summary = str(
+                    locale.get("summary") or locale.get("short_description") or ""
+                )
+                candidate["summary"] = summary
+                candidate["short_description"] = summary
+            if "cover_url" in locale:
+                candidate["cover_url"] = str(locale.get("cover_url") or "").strip()
             candidate["audio_url"] = playable_url
             verified.append(candidate)
         return verified
@@ -998,11 +1031,28 @@ class AudioCatalogService:
         self._reject_over_limit(len(docs))
         return docs
 
-    async def _overlay_english_locales(self, docs: list[dict[str, Any]]) -> None:
-        """把语言表中英标题、短描述和地址贴到原料文档上。"""
+    async def _overlay_english_locales(
+        self,
+        docs: list[dict[str, Any]],
+        *,
+        languages: tuple[str, ...] | list[str] = ("zh", "en"),
+    ) -> None:
+        """把语言表标题、短描述和地址贴到原料文档上。
+
+        en 写入 *_en；其它语言写入主字段。后写的非英语言会覆盖主字段，
+        因此 fr/ja 请求应把对应语言放在序列末尾。
+        """
         if self._es_search is None or not docs:
             return
-        for language in ("zh", "en"):
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for raw in languages:
+            language = resolve_locale_language(raw)
+            if language in seen:
+                continue
+            seen.add(language)
+            ordered.append(language)
+        for language in ordered:
             try:
                 locales = await self._es_search.list_locale_displays(
                     language=language,

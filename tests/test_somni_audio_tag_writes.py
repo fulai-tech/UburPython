@@ -22,6 +22,7 @@ from app.uburnode_grpc.grpc_gen import uburnode_somni_pb2
 def _writer() -> SimpleNamespace:
     es = SimpleNamespace(
         tag_dictionary_index="somni_audio_tag_dictionary",
+        refresh_audio_index=AsyncMock(),
         _client=SimpleNamespace(
             index=AsyncMock(),
             update=AsyncMock(),
@@ -60,6 +61,68 @@ def _writer() -> SimpleNamespace:
     )
     service._tags = lambda: service.collection
     return service
+
+
+@pytest.mark.asyncio
+async def test_successful_tag_write_refreshes_es_before_clearing_cache(monkeypatch) -> None:
+    service = _writer()
+    service.collection.insert_one = AsyncMock(return_value=SimpleNamespace(inserted_id=ObjectId()))
+    order: list[str] = []
+
+    async def _refresh() -> None:
+        order.append("refresh")
+
+    async def _clear(_redis: object) -> int:
+        order.append("clear")
+        return 1
+
+    service._es_search.refresh_audio_index = AsyncMock(side_effect=_refresh)
+    monkeypatch.setattr(
+        "app.server.somni.audio.tag_writes.clear_somni_audio_catalog_cache",
+        _clear,
+    )
+
+    results = await create_audio_tags(
+        service,
+        [
+            {
+                "type": "content_form",
+                "code": "steady_rain",
+                "language": "zh",
+                "name": "中雨",
+            }
+        ],
+    )
+    assert results[0]["ok"] is True
+    assert order == ["refresh", "clear"]
+
+
+@pytest.mark.asyncio
+async def test_tag_write_skips_cache_clear_when_es_refresh_fails(monkeypatch) -> None:
+    service = _writer()
+    service.collection.insert_one = AsyncMock(return_value=SimpleNamespace(inserted_id=ObjectId()))
+    clear_cache = AsyncMock()
+    service._es_search.refresh_audio_index = AsyncMock(side_effect=RuntimeError("es down"))
+    monkeypatch.setattr(
+        "app.server.somni.audio.tag_writes.clear_somni_audio_catalog_cache",
+        clear_cache,
+    )
+
+    results = await create_audio_tags(
+        service,
+        [
+            {
+                "type": "content_form",
+                "code": "steady_rain",
+                "language": "zh",
+                "name": "中雨",
+            }
+        ],
+    )
+    assert results[0]["ok"] is True
+    clear_cache.assert_not_awaited()
+    service._es_search.clear_content_tag_vectors_cache.assert_not_called()
+    assert service._content_form_tag_bank_cache == ["stale"]
 
 
 @pytest.mark.asyncio

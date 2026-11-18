@@ -32,6 +32,7 @@ def _svc(
         return out
 
     es_search.get_audio_docs_by_ids = AsyncMock(side_effect=_by_ids)
+    es_search.list_locale_displays = AsyncMock(return_value=[])
 
     materials = MagicMock()
     tags = tags_collection if tags_collection is not None else _tag_dictionary_collection()
@@ -55,6 +56,98 @@ def _svc(
         redis=_CatalogRedis(),
     )
     return svc, es_search
+
+
+@pytest.mark.asyncio
+async def test_get_audio_by_ids_fr_uses_french_locale_not_chinese() -> None:
+    """language=fr 只查法语语言表，不回退中文。"""
+    svc, es = _svc(
+        es_docs_by_id={
+            "a1": {
+                "status": True,
+                "vip": 0,
+                "content_form_tags": [],
+                "acoustic_metrics": {"voice_presence_ratio": 0},
+            }
+        }
+    )
+
+    async def _locales(*, language: str, size: int) -> list[dict]:
+        del size
+        if language == "zh":
+            return [
+                {
+                    "material_id": "a1",
+                    "language": "zh",
+                    "audio_name": "雨夜",
+                    "summary": "轻柔雨声",
+                    "audio_url": "https://cdn/zh.mp3",
+                    "cover_url": "https://cdn/zh.png",
+                }
+            ]
+        if language == "fr":
+            return [
+                {
+                    "material_id": "a1",
+                    "language": "fr",
+                    "audio_name": "Pluie de nuit",
+                    "summary": "Pluie douce",
+                    "audio_url": "https://cdn/fr.mp3",
+                    "cover_url": "https://cdn/fr.png",
+                }
+            ]
+        return []
+
+    es.list_locale_displays = AsyncMock(side_effect=_locales)
+    payload = await svc.get_audio_by_ids(ids=["a1"], language="fr")
+    item = payload["list"][0]
+    assert item["audio_name"] == "Pluie de nuit"
+    assert item["description"] == "Pluie douce"
+    assert item["audio_url"] == "https://cdn/fr.mp3"
+    assert item["cover_url"] == "https://cdn/fr.png"
+    called_langs = [call.kwargs["language"] for call in es.list_locale_displays.await_args_list]
+    assert called_langs == ["fr"]
+
+
+@pytest.mark.asyncio
+async def test_get_audio_by_ids_missing_fr_locale_does_not_fallback_to_zh() -> None:
+    """请求 fr 但语言表无 fr 行时，不得回退显示中文。"""
+    svc, es = _svc(
+        es_docs_by_id={
+            "a1": {
+                "status": True,
+                "vip": 0,
+                "content_form_tags": [],
+                "acoustic_metrics": {"voice_presence_ratio": 0},
+            }
+        }
+    )
+
+    async def _locales(*, language: str, size: int) -> list[dict]:
+        del size
+        if language == "zh":
+            return [
+                {
+                    "material_id": "a1",
+                    "language": "zh",
+                    "audio_name": "雨夜",
+                    "summary": "轻柔雨声",
+                    "audio_url": "https://cdn/zh.mp3",
+                    "cover_url": "https://cdn/zh.png",
+                }
+            ]
+        return []
+
+    es.list_locale_displays = AsyncMock(side_effect=_locales)
+    payload = await svc.get_audio_by_ids(ids=["a1"], language="fr")
+    item = payload["list"][0]
+    assert item["audio_name"] == ""
+    assert item["description"] == ""
+    assert item["audio_url"] == ""
+    assert item["cover_url"] == ""
+    assert [call.kwargs["language"] for call in es.list_locale_displays.await_args_list] == [
+        "fr"
+    ]
 
 
 @pytest.mark.asyncio

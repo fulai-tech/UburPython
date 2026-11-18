@@ -369,9 +369,16 @@ async def _finish(service: Any, results: list[dict[str, Any]], *, action: str) -
 
 
 async def _invalidate(service: Any) -> None:
+    es_search = getattr(service, "_es_search", None)
+    if es_search is not None and hasattr(es_search, "refresh_audio_index"):
+        try:
+            await es_search.refresh_audio_index()
+        except Exception as exc:
+            # refresh 失败时保留进程内标签缓存与目录缓存，避免读到未可见的旧索引。
+            logger.warning("标签写入后刷新 ES 索引失败，跳过清缓存：{}", exc)
+            return
     service._content_form_tag_bank_cache = None
     service._content_form_tag_labels_cache = None
-    es_search = getattr(service, "_es_search", None)
     if es_search is not None and hasattr(es_search, "clear_content_tag_vectors_cache"):
         es_search.clear_content_tag_vectors_cache()
     cache = getattr(service, "_catalog_cache", None)

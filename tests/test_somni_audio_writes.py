@@ -43,6 +43,7 @@ def _writer() -> SimpleNamespace:
     es = SimpleNamespace(
         audio_index="somni_audio_materials",
         material_locales_index="somni_audio_material_locales",
+        refresh_audio_index=AsyncMock(),
         _client=SimpleNamespace(
             index=AsyncMock(),
             update=AsyncMock(),
@@ -86,6 +87,71 @@ def _bind(service: SimpleNamespace) -> SimpleNamespace:
     service._materials = lambda: service.collection
     service._locales = lambda: service.locales
     return service
+
+
+@pytest.mark.asyncio
+async def test_successful_write_refreshes_es_before_clearing_cache(monkeypatch) -> None:
+    """写成功后先 refresh，再清目录缓存，避免立刻读回旧结果并长期缓存。"""
+    service = _bind(_writer())
+    inserted = ObjectId()
+    service.collection.insert_one = AsyncMock(return_value=SimpleNamespace(inserted_id=inserted))
+    order: list[str] = []
+
+    async def _refresh() -> None:
+        order.append("refresh")
+
+    async def _clear(_redis: object) -> int:
+        order.append("clear")
+        return 1
+
+    service._es_search.refresh_audio_index = AsyncMock(side_effect=_refresh)
+    monkeypatch.setattr(
+        "app.server.somni.audio.writes.clear_somni_audio_catalog_cache",
+        _clear,
+    )
+
+    results = await create_audios(
+        service,
+        [
+            {
+                "audio_name": "雨声",
+                "language": "zh",
+                "audio_url": "https://cdn.example/a.mp3",
+            }
+        ],
+    )
+
+    assert results[0]["ok"] is True
+    assert order == ["refresh", "clear"]
+
+
+@pytest.mark.asyncio
+async def test_write_skips_cache_clear_when_es_refresh_fails(monkeypatch) -> None:
+    """refresh 失败时保留旧缓存，避免把未可见的旧 ES 结果重新写入无 TTL 缓存。"""
+    service = _bind(_writer())
+    inserted = ObjectId()
+    service.collection.insert_one = AsyncMock(return_value=SimpleNamespace(inserted_id=inserted))
+    clear_cache = AsyncMock()
+    service._es_search.refresh_audio_index = AsyncMock(side_effect=RuntimeError("es down"))
+    monkeypatch.setattr(
+        "app.server.somni.audio.writes.clear_somni_audio_catalog_cache",
+        clear_cache,
+    )
+
+    results = await create_audios(
+        service,
+        [
+            {
+                "audio_name": "雨声",
+                "language": "zh",
+                "audio_url": "https://cdn.example/a.mp3",
+            }
+        ],
+    )
+
+    assert results[0]["ok"] is True
+    clear_cache.assert_not_awaited()
+    service._retrieval.clear_sleep_stage_cache.assert_not_awaited()
 
 
 @pytest.mark.asyncio

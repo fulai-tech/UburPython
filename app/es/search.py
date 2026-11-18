@@ -39,6 +39,12 @@ GET_AUDIO_SOURCE_INCLUDES = (
     "acoustic_metrics",
     "sleep_stage_tags",
 )
+# 语言表命中回查原料时额外带上处方/播放依赖字段（GET_AUDIO 列表本身不需要）。
+LOCALE_HYDRATE_MATERIAL_SOURCE_INCLUDES = (
+    *GET_AUDIO_SOURCE_INCLUDES,
+    "audio_engineering_tags",
+    "evidence_level_tags",
+)
 _GET_AUDIO_BM25_SOURCE = GET_AUDIO_SOURCE_INCLUDES
 CONTENT_TAG_TYPES = ("content_form", "mechanism", "audio_engineering")
 # 检索候选只取流水线与响应组装需要的字段，避免新增索引字段被默认带回。
@@ -575,8 +581,8 @@ class EsSearch:
         return bool(await self._client.indices.exists(index=self.audio_index))
 
     async def refresh_audio_index(self) -> None:
-        """让刚写入的原料（及语言表）立即可搜，避免紧接着的全量查询漏掉末尾几条。"""
-        indexes = [self.audio_index]
+        """让刚写入的原料/语言表/标签立即可搜，再清缓存才不会读到旧结果。"""
+        indexes = [self.audio_index, self.tag_dictionary_index]
         if self._material_locales_index:
             indexes.append(self._material_locales_index)
         await self._client.indices.refresh(index=",".join(indexes))
@@ -940,7 +946,6 @@ class EsSearch:
         unique_ids = [doc_id for doc_id in ids if doc_id]
         if not unique_ids:
             return []
-        includes = [*GET_AUDIO_SOURCE_INCLUDES, "sleep_stage_tags"]
         response = await self._client.search(
             index=self.audio_index,
             body={
@@ -953,7 +958,7 @@ class EsSearch:
                     }
                 },
                 "size": len(unique_ids),
-                "_source": {"includes": includes},
+                "_source": {"includes": list(LOCALE_HYDRATE_MATERIAL_SOURCE_INCLUDES)},
             },
         )
         return [_document_from_hit(hit) for hit in response["hits"]["hits"]]
@@ -972,13 +977,13 @@ class EsSearch:
         )
         return [_document_from_hit(hit) for hit in response["hits"]["hits"]]
 
-    async def locale_audio_urls_by_material_ids(
+    async def locale_displays_by_material_ids(
         self,
         material_ids: list[str],
         *,
         language: str,
-    ) -> dict[str, str]:
-        """按 material_id + language 从语言索引取非空 audio_url。"""
+    ) -> dict[str, dict[str, Any]]:
+        """按 material_id + language 取语言表展示字段（含可播 audio_url）。"""
         if not self._material_locales_index:
             return {}
         unique_ids = [doc_id for doc_id in dict.fromkeys(material_ids) if doc_id]
@@ -999,10 +1004,10 @@ class EsSearch:
                         "must_not": [{"term": {"audio_url": ""}}],
                     }
                 },
-                "_source": {"includes": ["material_id", "audio_url"]},
+                "_source": {"includes": list(_LOCALE_SOURCE_INCLUDES)},
             },
         )
-        urls: dict[str, str] = {}
+        displays: dict[str, dict[str, Any]] = {}
         for hit in response.get("hits", {}).get("hits", []):
             source = hit.get("_source") or {}
             if not isinstance(source, dict):
@@ -1010,8 +1015,25 @@ class EsSearch:
             material_id = str(source.get("material_id") or "").strip()
             audio_url = str(source.get("audio_url") or "").strip()
             if material_id and audio_url:
-                urls[material_id] = audio_url
-        return urls
+                displays[material_id] = dict(source)
+                displays[material_id]["audio_url"] = audio_url
+        return displays
+
+    async def locale_audio_urls_by_material_ids(
+        self,
+        material_ids: list[str],
+        *,
+        language: str,
+    ) -> dict[str, str]:
+        """按 material_id + language 从语言索引取非空 audio_url。"""
+        displays = await self.locale_displays_by_material_ids(
+            material_ids, language=language
+        )
+        return {
+            material_id: str(row.get("audio_url") or "").strip()
+            for material_id, row in displays.items()
+            if str(row.get("audio_url") or "").strip()
+        }
 
     async def ensure_indices(self) -> None:
         """幂等建索引：handboard / somni 两套 mapping 完全分开。

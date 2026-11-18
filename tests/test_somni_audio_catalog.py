@@ -228,6 +228,24 @@ def _service(
                     if doc_id
                 }
             )
+        if not isinstance(
+            getattr(es_search, "locale_displays_by_material_ids", None), AsyncMock
+        ):
+            es_search.locale_displays_by_material_ids = AsyncMock(
+                side_effect=lambda material_ids, *, language="zh": {
+                    str(doc_id): {
+                        "material_id": str(doc_id),
+                        "language": language,
+                        "audio_name": "",
+                        "description": "",
+                        "summary": "",
+                        "audio_url": f"https://cdn.example/{doc_id}.mp3",
+                        "cover_url": "",
+                    }
+                    for doc_id in material_ids
+                    if doc_id
+                }
+            )
     return AudioCatalogService(
         client,
         settings,
@@ -263,7 +281,23 @@ def _es_catalog_from_collection(collection: MagicMock) -> MagicMock:
             if doc_id
         }
 
+    async def _locale_displays(material_ids: list, *, language: str = "zh") -> dict:
+        return {
+            str(doc_id): {
+                "material_id": str(doc_id),
+                "language": language,
+                "audio_name": "",
+                "description": "",
+                "summary": "",
+                "audio_url": f"https://cdn.example/{doc_id}.mp3",
+                "cover_url": "",
+            }
+            for doc_id in material_ids
+            if doc_id
+        }
+
     es_search.locale_audio_urls_by_material_ids = AsyncMock(side_effect=_locale_urls)
+    es_search.locale_displays_by_material_ids = AsyncMock(side_effect=_locale_displays)
     return es_search
 
 
@@ -1432,6 +1466,77 @@ async def test_prescription_search_resolves_codes_and_uses_ranked_search_without
     assert request.disliked_tags == ["heavy_rain"]
     assert request.language == "zh"
     service._hot.record_search.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_prescription_fills_locale_text_not_only_url(monkeypatch) -> None:
+    """原料表去掉文案后，处方候选须按请求语言补齐标题/描述/封面，不能只改 audio_url。"""
+    retrieval = MagicMock()
+    retrieval.search = AsyncMock(
+        return_value=[
+            {
+                "_id": "a1",
+                "status": True,
+                "audio_name": "",
+                "description": "",
+                "cover_url": "",
+                "audio_url": "",
+                "sleep_stage_tags": [{"code": "unwind"}],
+                "content_form_tags": [{"code": "natural_sound"}],
+            }
+        ]
+    )
+    retrieval.search_prescription = retrieval.search
+    service = _service(MagicMock())
+    service._retrieval = retrieval
+    service._es_search.locale_displays_by_material_ids = AsyncMock(
+        return_value={
+            "a1": {
+                "material_id": "a1",
+                "language": "en",
+                "audio_name": "Night Rain",
+                "description": "Soft rain",
+                "summary": "Soft",
+                "audio_url": "https://cdn/en.mp3",
+                "cover_url": "https://cdn/en.png",
+            }
+        }
+    )
+
+    class Cursor:
+        def __init__(self, query, projection):
+            self.document = {
+                "code": "natural_sound",
+                "type": "content_form",
+                "language": "en",
+                "name": "Natural",
+            }
+
+        def __aiter__(self):
+            self.items = iter([self.document])
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self.items)
+            except StopIteration:
+                raise StopAsyncIteration
+
+    monkeypatch.setattr(service, "_tags", lambda: MagicMock(find=MagicMock(side_effect=Cursor)))
+    result = await service.search_prescription_audio(
+        {
+            "query_text": "rain",
+            "sleep_stage_tags": ["unwind"],
+            "content_tag_codes": ["natural_sound"],
+            "top_k": 3,
+            "language": "en",
+        }
+    )
+    assert result[0]["audio_url"] == "https://cdn/en.mp3"
+    assert result[0]["audio_name"] == "Night Rain"
+    assert result[0]["description"] == "Soft rain"
+    assert result[0]["cover_url"] == "https://cdn/en.png"
+    service._es_search.locale_displays_by_material_ids.assert_awaited()
 
 
 @pytest.mark.asyncio
