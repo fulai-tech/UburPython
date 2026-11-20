@@ -311,6 +311,77 @@ def on_bed_duration_ms(on_bed: Any) -> int:
     return total
 
 
+def _stage_timeline_ms(segments: list[dict[str, Any]]) -> tuple[int, int]:
+    """阶段 duration 合计，以及最后一段结束时间（start_ts_ms + duration_ms）。"""
+    total = 0
+    for seg in segments:
+        if not isinstance(seg, dict):
+            continue
+        duration = as_ms(seg.get("duration_ms"))
+        if duration > 0:
+            total += duration
+    if not segments or not isinstance(segments[-1], dict):
+        return total, 0
+    last = segments[-1]
+    start = as_ms(last.get("start_ts_ms"))
+    duration = as_ms(last.get("duration_ms"))
+    if start <= 0 or duration < 0:
+        return total, 0
+    return total, start + duration
+
+
+def _on_bed_intervals(on_bed: Any) -> list[tuple[int, int]]:
+    if not isinstance(on_bed, list):
+        return []
+    intervals: list[tuple[int, int]] = []
+    for item in on_bed:
+        start, end, _duration = _on_bed_segment_ms(item)
+        if start > 0 and end > start:
+            intervals.append((start, end))
+    return intervals
+
+
+def _merge_intervals(intervals: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(intervals):
+        if end <= start:
+            continue
+        if not merged or start > merged[-1][1]:
+            merged.append((start, end))
+        else:
+            prev_start, prev_end = merged[-1]
+            merged[-1] = (prev_start, max(prev_end, end))
+    return merged
+
+
+def on_bed_duration_ms_for_efficiency(
+    on_bed: Any,
+    segments: list[dict[str, Any]],
+) -> int:
+    """在床时长短于阶段时间轴时，从第一处离床空档补到最后一段结束。
+
+    补上的区间和已有 on_bed 重叠的部分只算一次。例如在床 23:00-23:10、23:30-23:50，
+    最后阶段到 00:50，则补 23:10-00:50，在床合计为 23:00-00:50。
+    """
+    tib = on_bed_duration_ms(on_bed)
+    stage_ms, stage_end = _stage_timeline_ms(segments)
+    if tib <= 0 or stage_ms <= tib or stage_end <= 0:
+        return tib
+    merged = _merge_intervals(_on_bed_intervals(on_bed))
+    if not merged or stage_end <= merged[-1][1]:
+        return tib
+    pad_start = merged[-1][1]
+    for index, (_start, end) in enumerate(merged):
+        next_start = merged[index + 1][0] if index + 1 < len(merged) else stage_end
+        if end < next_start and end < stage_end:
+            pad_start = end
+            break
+    if pad_start >= stage_end:
+        return tib
+    covered = _merge_intervals([*merged, (pad_start, stage_end)])
+    return sum(end - start for start, end in covered)
+
+
 def normalize_segments(
     on_bed: Any,
     segments: Any,
@@ -430,7 +501,7 @@ def sleep_quality_from_session(
 ) -> dict[str, Any]:
     bed_from, bed_to = on_bed_bounds(on_bed)
     structure = sleep_structure_from_segments(on_bed, segments)
-    tib = int(structure["tib_minutes"])
+    tib = ms_to_minutes(on_bed_duration_ms_for_efficiency(on_bed, segments))
     sleep_min = int(structure["total_minutes"])
     efficiency = math.floor(sleep_min / tib * 100) if tib > 0 else 0
 

@@ -418,3 +418,123 @@ def test_sleep_quality_wake_to_leave_bed_uses_last_on_bed_to_minus_last_awake_st
     sh = sleep_quality_from_session(on_bed, segments, timezone_name="Asia/Shanghai")
     assert sh["bedtime"] == "08:16"
     assert sh["wake_up_time"] == "08:53"
+
+
+def test_sleep_efficiency_pads_on_bed_when_shorter_than_stage_timeline() -> None:
+    """on_bed 时长短于阶段合计，且末段结束晚于最后一条 on_bed.to 时，把差额补进在床时长。"""
+    bed_from = 1_000_000
+    on_bed_ms = 10 * 60_000
+    on_bed = [
+        {"from": bed_from, "to": bed_from + on_bed_ms, "duration_ms": on_bed_ms}
+    ]
+    # 清醒 2min + 浅睡 6min + 深睡 6min = 14min，末段结束比 on_bed.to 晚 4min
+    segments = [
+        {
+            "stage": STAGE_AWAKE,
+            "stage_name": "AWAKE",
+            "duration_ms": 2 * 60_000,
+            "start_ts_ms": bed_from,
+        },
+        {
+            "stage": STAGE_LIGHT,
+            "stage_name": "LIGHT",
+            "duration_ms": 6 * 60_000,
+            "start_ts_ms": bed_from + 2 * 60_000,
+        },
+        {
+            "stage": STAGE_DEEP,
+            "stage_name": "DEEP",
+            "duration_ms": 6 * 60_000,
+            "start_ts_ms": bed_from + 8 * 60_000,
+        },
+    ]
+    quality = sleep_quality_from_session(on_bed, segments, timezone_name="UTC")
+    assert quality["time_in_bed_minutes"] == 14
+    assert quality["sleep_efficiency"] == 85  # TST 12 / TIB 14
+    assert quality["wake_up_time"] == "00:26"
+
+
+def test_sleep_efficiency_does_not_pad_when_stage_ends_before_on_bed() -> None:
+    """阶段合计更长，但末段结束不晚于最后一条 on_bed.to 时不补。"""
+    bed_from = 1_000_000
+    on_bed = [
+        {
+            "from": bed_from,
+            "to": bed_from + 30 * 60_000,
+            "duration_ms": 10 * 60_000,
+        }
+    ]
+    segments = [
+        {
+            "stage": STAGE_LIGHT,
+            "stage_name": "LIGHT",
+            "duration_ms": 8 * 60_000,
+            "start_ts_ms": bed_from,
+        },
+        {
+            "stage": STAGE_AWAKE,
+            "stage_name": "AWAKE",
+            "duration_ms": 4 * 60_000,
+            "start_ts_ms": bed_from + 8 * 60_000,
+        },
+    ]
+    quality = sleep_quality_from_session(on_bed, segments, timezone_name="UTC")
+    assert quality["time_in_bed_minutes"] == 10
+    assert quality["sleep_efficiency"] == 80  # TST 8 / TIB 10
+
+
+def test_sleep_efficiency_does_not_pad_when_on_bed_not_shorter() -> None:
+    """末段结束更晚，但 on_bed 时长并不小于阶段合计时不补。"""
+    bed_from = 1_000_000
+    on_bed = [
+        {
+            "from": bed_from,
+            "to": bed_from + 20 * 60_000,
+            "duration_ms": 20 * 60_000,
+        }
+    ]
+    segments = [
+        {
+            "stage": STAGE_LIGHT,
+            "stage_name": "LIGHT",
+            "duration_ms": 10 * 60_000,
+            "start_ts_ms": bed_from + 15 * 60_000,
+        }
+    ]
+    quality = sleep_quality_from_session(on_bed, segments, timezone_name="UTC")
+    assert quality["time_in_bed_minutes"] == 20
+    assert quality["sleep_efficiency"] == 50  # TST 10 / TIB 20
+
+
+def test_sleep_efficiency_fills_from_first_gap_through_last_stage_end() -> None:
+    """在床 23:00-23:10、23:30-23:50，浅睡 23:30-23:50，深睡 23:50-00:50。
+
+    从第一段离床 23:10 补到最后阶段结束 00:50。23:30-23:50 已在这段里，不重复加。
+    """
+    bed_from = 1_000_000
+    minute = 60_000
+    on_bed = [
+        {"from": bed_from, "to": bed_from + 10 * minute, "duration_ms": 10 * minute},
+        {
+            "from": bed_from + 30 * minute,
+            "to": bed_from + 50 * minute,
+            "duration_ms": 20 * minute,
+        },
+    ]
+    segments = [
+        {
+            "stage": STAGE_LIGHT,
+            "stage_name": "LIGHT",
+            "duration_ms": 20 * minute,
+            "start_ts_ms": bed_from + 30 * minute,
+        },
+        {
+            "stage": STAGE_DEEP,
+            "stage_name": "DEEP",
+            "duration_ms": 60 * minute,
+            "start_ts_ms": bed_from + 50 * minute,
+        },
+    ]
+    quality = sleep_quality_from_session(on_bed, segments, timezone_name="UTC")
+    assert quality["time_in_bed_minutes"] == 110  # 23:00-00:50
+    assert quality["sleep_efficiency"] == 72  # TST 80 / TIB 110
