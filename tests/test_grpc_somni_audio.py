@@ -109,6 +109,9 @@ async def test_get_audio_passes_page_and_query() -> None:
     assert list(res.list[0].tag) == ["自然声", "中雨/稳定雨声"]
     assert res.list[0].HasField("is_voice")
     assert res.list[0].is_voice is True
+    field_names = {field.name for field in res.list[0].DESCRIPTOR.fields}
+    assert "audio_name_en" not in field_names
+    assert "description_en" not in field_names
 
 
 @pytest.mark.asyncio

@@ -150,7 +150,7 @@ class AudioCatalogService:
         }
         tag_labels = await self._content_form_tag_labels_by_code()
         items = [
-            _to_audio_detail_item(
+            _to_audio_item(
                 by_id[audio_id],
                 language=language,
                 tag_labels_by_code=tag_labels,
@@ -219,10 +219,11 @@ class AudioCatalogService:
         # 喜欢 → 中性 → 讨厌；各段内按创建时间从新到旧，段间不混排。
         # 同时命中喜欢与讨厌时归讨厌段。
         docs = _order_like_neutral_dislike(docs, preferred_ids, disliked_ids)
+        docs = _with_playable_audio_url(docs, language)
         payload = _paginate_docs(docs, page, page_size, fetch_all, self._settings)
         tag_labels = await self._content_form_tag_labels_by_code()
         payload["list"] = [
-            _to_audio_list_item(item, language=language, tag_labels_by_code=tag_labels)
+            _to_audio_item(item, language=language, tag_labels_by_code=tag_labels)
             for item in payload["list"]
         ]
         self._schedule_hot(
@@ -314,12 +315,13 @@ class AudioCatalogService:
         if self._settings.get_audio_rerank_by_relevance:
             merged_docs = _rerank_hybrid_docs_by_relevance(merged_docs)
         mapped = [_map_material(doc) for doc in merged_docs]
+        mapped = _with_playable_audio_url(mapped, language)
         if not fetch_all:
             mapped = mapped[: self._settings.get_audio_search_top_k]
         payload = _paginate_docs(mapped, page, page_size, fetch_all, self._settings)
         tag_labels = await self._content_form_tag_labels_by_code()
         payload["list"] = [
-            _to_audio_list_item(item, language=language, tag_labels_by_code=tag_labels)
+            _to_audio_item(item, language=language, tag_labels_by_code=tag_labels)
             for item in payload["list"]
         ]
         self._schedule_hot(
@@ -1351,44 +1353,25 @@ def _normalize_audio_ids(ids: list[str]) -> list[str]:
     return ordered
 
 
-def _to_audio_list_item(
-    doc: dict[str, Any],
-    *,
-    language: str,
-    tag_labels_by_code: dict[str, dict[str, str]],
-) -> dict[str, Any]:
-    return {
-        "id": str(doc.get("id") or ""),
-        "audio_name": str(doc.get("audio_name") or ""),
-        "audio_name_en": str(doc.get("audio_name_en") or ""),
-        "audio_url": _display_url(doc, language=language, field="audio_url"),
-        "cover_url": _display_url(doc, language=language, field="cover_url"),
-        # 量产列表展示用短描述 summary，写入 description 出参
-        "description": str(doc.get("summary") or doc.get("short_description") or ""),
-        "description_en": str(doc.get("summary_en") or doc.get("short_description_en") or ""),
-        "vip": _to_vip(doc.get("vip")),
-        "tag": _map_audio_tags(
-            doc.get("content_form_tags"),
-            language=language,
-            tag_labels_by_code=tag_labels_by_code,
-        ),
-        "is_voice": _is_voice(doc.get("acoustic_metrics")),
-    }
-
-
-def _to_audio_detail_item(
-    doc: dict[str, Any],
-    *,
-    language: str,
-    tag_labels_by_code: dict[str, dict[str, str]],
-) -> dict[str, Any]:
-    """详情就地切语言：无平行 *_en 出参。"""
+def _localized_copy(doc: dict[str, Any], language: str) -> tuple[str, str]:
+    """按请求语言取标题和短描述。en 读 *_en；其它语言读主字段。缺失为空，不跨语言回退。"""
     if language == "en":
         audio_name = str(doc.get("audio_name_en") or "")
         description = str(doc.get("summary_en") or doc.get("short_description_en") or "")
     else:
         audio_name = str(doc.get("audio_name") or "")
         description = str(doc.get("summary") or doc.get("short_description") or "")
+    return audio_name, description
+
+
+def _to_audio_item(
+    doc: dict[str, Any],
+    *,
+    language: str,
+    tag_labels_by_code: dict[str, dict[str, str]],
+) -> dict[str, Any]:
+    """列表和按 id 查询共用。按 language 就地填充，无平行 *_en 出参。"""
+    audio_name, description = _localized_copy(doc, language)
     return {
         "id": str(doc.get("id") or ""),
         "audio_name": audio_name,
@@ -1469,6 +1452,11 @@ def _display_url(doc: dict[str, Any], *, language: str, field: str) -> str:
     if language == "en":
         return str(doc.get(f"{field}_en") or "").strip()
     return str(doc.get(field) or "").strip()
+
+
+def _with_playable_audio_url(docs: list[dict[str, Any]], language: str) -> list[dict[str, Any]]:
+    """当前语言的 audio_url 为空时不返回。分页和 total 都按过滤后的列表计算。"""
+    return [doc for doc in docs if _display_url(doc, language=language, field="audio_url")]
 
 
 

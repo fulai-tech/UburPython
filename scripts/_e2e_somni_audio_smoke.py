@@ -215,7 +215,7 @@ async def run() -> None:
                     return (
                         "hit "
                         f"audio_name={data.get('audio_name')!r} "
-                        f"audio_name_en={data.get('audio_name_en')!r} "
+                        f"description={data.get('description')!r} "
                         f"audio_url={data.get('audio_url')!r}"
                     )
 

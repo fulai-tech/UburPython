@@ -307,8 +307,6 @@ def _to_audio_res(payload: dict[str, Any]) -> uburnode_somni_pb2.GetAudioRes:
             description=str(item.get("description") or ""),
             vip=int(item.get("vip") or 0),
             is_voice=bool(item.get("is_voice")),
-            audio_name_en=str(item.get("audio_name_en") or ""),
-            description_en=str(item.get("description_en") or ""),
         )
         for tag in item.get("tag") or []:
             entry.tag.append(str(tag))

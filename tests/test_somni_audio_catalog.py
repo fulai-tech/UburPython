@@ -40,6 +40,8 @@ class _Cursor:
 _RAIN = {
     "_id": "a1",
     "audio_name": "雨夜",
+    "audio_url": "https://cdn.example/a1.mp3",
+    "audio_url_en": "https://cdn.example/a1-en.mp3",
     "language": "zh",
     "embedding": [0.1],
     "content_form_tags": [
@@ -60,6 +62,8 @@ _RAIN = {
 _MUSIC = {
     "_id": "a2",
     "audio_name": "钢琴",
+    "audio_url": "https://cdn.example/a2.mp3",
+    "audio_url_en": "https://cdn.example/a2-en.mp3",
     "language": "zh",
     "content_form_tags": [
         {
@@ -246,6 +250,15 @@ def _service(
                     if doc_id
                 }
             )
+    for method_name in (
+        "search_get_audio_bm25",
+        "search_get_audio_knn",
+        "search_get_audio_vector_all",
+        "list_audio_catalog_docs",
+    ):
+        method = getattr(es_search, method_name, None)
+        if isinstance(method, AsyncMock):
+            _returning_playable(method)
     return AudioCatalogService(
         client,
         settings,
@@ -301,11 +314,41 @@ def _es_catalog_from_collection(collection: MagicMock) -> MagicMock:
     return es_search
 
 
+def _fill_missing_audio_urls(docs: list) -> list:
+    """夹具没写地址时补一条可播放 URL。显式空串仍留空，用来覆盖「无地址不返回」。"""
+    for doc in docs:
+        if not isinstance(doc, dict):
+            continue
+        doc_id = str(doc.get("_id") or doc.get("id") or "audio")
+        doc.setdefault("audio_url", f"https://cdn.example/{doc_id}.mp3")
+        doc.setdefault("audio_url_en", f"https://cdn.example/{doc_id}-en.mp3")
+    return docs
+
+
+def _returning_playable(mock: AsyncMock) -> AsyncMock:
+    previous_side_effect = mock.side_effect
+    previous_return = mock.return_value
+
+    async def _call(*args, **kwargs):
+        if previous_side_effect is not None:
+            result = previous_side_effect(*args, **kwargs)
+            if hasattr(result, "__await__"):
+                result = await result
+        else:
+            result = previous_return
+        if isinstance(result, list):
+            return _fill_missing_audio_urls(result)
+        return result
+
+    mock.side_effect = _call
+    return mock
+
+
 def _mongo_collection(docs: list) -> MagicMock:
     collection = MagicMock()
 
     def _match(query: dict) -> list:
-        matched = list(docs)
+        matched = _fill_missing_audio_urls(list(docs))
         if query.get("status") is True:
             matched = [doc for doc in matched if doc.get("status", True) is True]
         language = query.get("language")
@@ -398,11 +441,9 @@ async def test_get_audio_filters_content_form_code_then_pages() -> None:
     assert set(payload["list"][0]) == {
         "id",
         "audio_name",
-        "audio_name_en",
         "audio_url",
         "cover_url",
         "description",
-        "description_en",
         "vip",
         "tag",
         "is_voice",
@@ -422,14 +463,45 @@ async def test_get_audio_returns_english_display_fields() -> None:
         "short_description_en": "Gentle rain for sleep",
     }
     svc = _service(_mongo_collection([rain]))
-    payload = await svc.get_audio(
+    zh = await svc.get_audio(
+        page=1, page_size=10, fetch_all=False, query_text="", tag_code="", language="zh"
+    )
+    en = await svc.get_audio(
         page=1, page_size=10, fetch_all=False, query_text="", tag_code="", language="en"
     )
-    item = payload["list"][0]
-    assert item["audio_name"] == "雨夜"
-    assert item["audio_name_en"] == "Night Rain"
-    assert item["description"] == "轻柔雨声助眠"
-    assert item["description_en"] == "Gentle rain for sleep"
+    assert zh["list"][0]["audio_name"] == "雨夜"
+    assert zh["list"][0]["description"] == "轻柔雨声助眠"
+    assert "audio_name_en" not in zh["list"][0]
+    item = en["list"][0]
+    assert item["audio_name"] == "Night Rain"
+    assert item["description"] == "Gentle rain for sleep"
+    assert "audio_name_en" not in item
+    assert "description_en" not in item
+
+
+@pytest.mark.asyncio
+async def test_get_audio_omits_items_whose_language_url_is_blank() -> None:
+    playable = {**_RAIN, "_id": "playable", "audio_name": "有地址"}
+    blank_zh = {**_RAIN, "_id": "blank-zh", "audio_name": "中文无地址", "audio_url": "  "}
+    blank_en = {
+        **_RAIN,
+        "_id": "blank-en",
+        "audio_name_en": "No English URL",
+        "audio_url_en": "",
+    }
+    svc = _service(_mongo_collection([blank_zh, playable, blank_en]))
+
+    zh = await svc.get_audio(
+        page=1, page_size=10, fetch_all=False, query_text="", tag_code="", language="zh"
+    )
+    en = await svc.get_audio(
+        page=1, page_size=10, fetch_all=False, query_text="", tag_code="", language="en"
+    )
+
+    assert {item["id"] for item in zh["list"]} == {"playable", "blank-en"}
+    assert zh["total"] == 2
+    assert {item["id"] for item in en["list"]} == {"playable", "blank-zh"}
+    assert en["total"] == 2
 
 
 @pytest.mark.asyncio
