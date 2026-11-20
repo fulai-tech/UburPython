@@ -12,11 +12,76 @@ from app.es.search import (
 )
 
 
-def test_get_audio_source_includes_short_description() -> None:
-    assert "short_description" in GET_AUDIO_SOURCE_INCLUDES
-    assert "short_description_en" in GET_AUDIO_SOURCE_INCLUDES
-    assert "description" not in GET_AUDIO_SOURCE_INCLUDES
-    assert "audio_name_en" in GET_AUDIO_SOURCE_INCLUDES
+def test_get_audio_source_includes_material_fields() -> None:
+    """原料索引回查只取状态/标签等；展示字段来自语言表 overlay。"""
+    assert "status" in GET_AUDIO_SOURCE_INCLUDES
+    assert "content_form_tags" in GET_AUDIO_SOURCE_INCLUDES
+    assert "short_description" not in GET_AUDIO_SOURCE_INCLUDES
+    assert "audio_name" not in GET_AUDIO_SOURCE_INCLUDES
+    assert "audio_name_en" not in GET_AUDIO_SOURCE_INCLUDES
+
+
+@pytest.mark.asyncio
+async def test_locale_hydrate_keeps_engineering_and_evidence_tags() -> None:
+    """语言表拼回原料时必须带上处方/播放依赖的工程与证据标签。"""
+    client = MagicMock()
+    client.search = AsyncMock(
+        side_effect=[
+            {
+                "hits": {
+                    "hits": [
+                        {
+                            "_id": "loc1",
+                            "_score": 1.2,
+                            "_source": {
+                                "material_id": "m1",
+                                "language": "zh",
+                                "audio_name": "雨",
+                                "audio_url": "https://cdn/m1-zh.mp3",
+                            },
+                        }
+                    ]
+                }
+            },
+            {
+                "hits": {
+                    "hits": [
+                        {
+                            "_id": "m1",
+                            "_source": {
+                                "status": True,
+                                "content_form_tags": [{"code": "natural_sound"}],
+                                "sleep_stage_tags": [{"code": "unwind"}],
+                                "audio_engineering_tags": [
+                                    {
+                                        "code": "loopable",
+                                        "value": {"code": "false"},
+                                    }
+                                ],
+                                "evidence_level_tags": [{"code": "B"}],
+                            },
+                        }
+                    ]
+                }
+            },
+        ]
+    )
+    es = EsSearch(
+        client,
+        Settings(),
+        index_profile="somni",
+        material_locales_index="somni_audio_material_locales",
+    )
+
+    docs = await es.search_get_audio_bm25("雨", language="zh", size=5)
+
+    assert docs[0]["_id"] == "m1"
+    assert docs[0]["audio_engineering_tags"][0]["value"]["code"] == "false"
+    assert docs[0]["evidence_level_tags"][0]["code"] == "B"
+    material_body = client.search.await_args_list[1].kwargs["body"]
+    includes = material_body["_source"]["includes"]
+    assert "audio_engineering_tags" in includes
+    assert "evidence_level_tags" in includes
 
 
 def test_build_get_audio_filters_with_tag() -> None:
@@ -223,8 +288,13 @@ async def test_ensure_indices_somni_profile_uses_bilingual_mapping() -> None:
     await es.ensure_indices()
 
     bodies = [c.kwargs["body"] for c in client.indices.create.await_args_list]
-    assert bodies[0]["mappings"]["properties"]["description_vector_en"]["dims"] == 384
+    assert "description_vector" not in bodies[0]["mappings"]["properties"]
+    assert "summary" not in bodies[0]["mappings"]["properties"]
+    assert bodies[0]["mappings"]["properties"]["status"]["type"] == "boolean"
     assert bodies[1]["mappings"]["properties"]["name_en_vector"]["dims"] == 384
+    assert bodies[1]["mappings"]["properties"]["language"]["type"] == "keyword"
+    assert bodies[2]["mappings"]["properties"]["description_vector_en"]["dims"] == 384
+    assert bodies[2]["mappings"]["properties"]["summary"]["type"] == "text"
 
 
 @pytest.mark.asyncio

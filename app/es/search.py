@@ -17,27 +17,33 @@ from app.core.config import Settings
 from app.es.index_mappings import (
     build_handboard_audio_materials_mapping,
     build_handboard_audio_tag_dictionary_mapping,
+    build_somni_audio_material_locales_mapping,
     build_somni_audio_materials_mapping,
     build_somni_audio_tag_dictionary_mapping,
 )
-from app.es.somni_docs import description_text_field, description_vector_field
+from app.es.somni_docs import (
+    description_text_field,
+    description_vector_field,
+    locale_vector_field,
+    resolve_locale_language,
+)
 from app.schemas.audio import AudioTags, TagItem
 from app.server.somni.audio.bm25_query import build_bm25_must_clause
 
 LEGACY_INDICES = ("audio_materials", "tag_vectors")
 GET_AUDIO_SOURCE_INCLUDES = (
-    "audio_name",
-    "audio_name_en",
-    "short_description",
-    "short_description_en",
-    "audio_url",
-    "cover_url",
     "content_form_tags",
     "vip",
-    "language",
     "status",
     "created_at",
     "acoustic_metrics",
+    "sleep_stage_tags",
+)
+# 语言表命中回查原料时额外带上处方/播放依赖字段（GET_AUDIO 列表本身不需要）。
+LOCALE_HYDRATE_MATERIAL_SOURCE_INCLUDES = (
+    *GET_AUDIO_SOURCE_INCLUDES,
+    "audio_engineering_tags",
+    "evidence_level_tags",
 )
 _GET_AUDIO_BM25_SOURCE = GET_AUDIO_SOURCE_INCLUDES
 CONTENT_TAG_TYPES = ("content_form", "mechanism", "audio_engineering")
@@ -57,6 +63,7 @@ SEARCH_CANDIDATE_SOURCE_INCLUDES = (
     "language",
     "languages",
     "source",
+    "summary",
     "short_description",
     "recommend_weight",
     "status",
@@ -195,6 +202,7 @@ class EsSearch:
         *,
         audio_index: str | None = None,
         tag_dictionary_index: str | None = None,
+        material_locales_index: str | None = None,
         index_profile: Literal["handboard", "somni"] = "handboard",
     ) -> None:
         self._client = client
@@ -202,6 +210,9 @@ class EsSearch:
         self._audio_index = audio_index or settings.es_audio_index
         self._tag_dictionary_index = tag_dictionary_index or settings.es_tag_vectors_index
         self._index_profile = index_profile
+        self._material_locales_index = material_locales_index or (
+            settings.somni_es_material_locales_index if index_profile == "somni" else ""
+        )
         self._content_tag_vectors_cache: list[dict[str, Any]] | None = None
         self._content_tag_vectors_lock = asyncio.Lock()
         # 按 tag_id 缓存 name_vector，避免每请求 mget（内容准入模糊路径）
@@ -219,6 +230,10 @@ class EsSearch:
     @property
     def tag_vectors_index(self) -> str:
         return self.tag_dictionary_index
+
+    @property
+    def material_locales_index(self) -> str:
+        return self._material_locales_index
 
     async def filter_by_sleep_stage(self, sleep_stage_tags: list[str]) -> list[dict[str, Any]]:
         """检索步骤 1：sleep_stage_names term 精确匹配。"""
@@ -419,26 +434,42 @@ class EsSearch:
         for hit in response["hits"]["hits"]:
             source = hit.get("_source") or {}
             label = source.get("name")
-            vector = source.get("name_vector")
-            vector_en = source.get("name_en_vector")
+            row_language = str(source.get("language") or "").strip().lower()
+            vector = source.get("name_vector") or []
+            vector_en = source.get("name_en_vector") or []
+            if row_language == "zh":
+                vector_en = []
+            elif row_language == "en":
+                vector = []
             if not label:
                 continue
             if not vector and not vector_en:
                 continue
+            parent_id = str(source.get("parent_id") or source.get("parent_tag_id") or "")
+            name_en = str(source.get("name_en") or "")
+            if row_language == "en":
+                name_en = str(label)
             tags.append(
                 {
                     "id": hit.get("_id", ""),
                     "label": canonical_tag(source.get("code") or label),
                     "display_name": label,
-                    "name_en": str(source.get("name_en") or ""),
+                    "name_en": name_en,
                     "code": str(source.get("code") or ""),
+                    "language": row_language,
                     "dimension": source.get("type", ""),
                     "vector": vector or [],
                     "vector_en": vector_en or [],
-                    "parent_tag_id": str(source.get("parent_tag_id") or ""),
+                    "parent_id": parent_id,
+                    "parent_tag_id": parent_id,
                 }
             )
         return tags
+
+    def _uses_locale_index(self, language: str = "") -> bool:
+        """量产 GetAudio 中英都走语言表；手板仍查原料索引。"""
+        del language
+        return self._index_profile == "somni" and bool(self._material_locales_index)
 
     async def search_by_description_vector(
         self,
@@ -450,9 +481,18 @@ class EsSearch:
         include_source: bool = True,
         allow_field_override: bool = True,
     ) -> list[dict[str, Any]]:
-        """描述向量语义召回；按 language 选 zh/en 字段，不按文档 language 过滤。"""
+        """描述向量语义召回。量产英文查语言表后再拼回原料。"""
         if not query_vector or size <= 0:
             return []
+        if self._uses_locale_index(language):
+            return await self._search_locales_knn(
+                query_vector,
+                language=resolve_locale_language(language),
+                k=size,
+                num_candidates=max(size * 3, 50),
+                score_field="_description_score",
+                sleep_stage_tags=sleep_stage_tags,
+            )
 
         vector_field = description_vector_field(
             language,
@@ -485,6 +525,7 @@ class EsSearch:
             filters=knn["filter"],
             source=source,
             score_field="_description_score",
+            index=self.audio_index,
         )
 
     async def _search_knn_documents(
@@ -497,10 +538,11 @@ class EsSearch:
         filters: Any,
         source: Any,
         score_field: str,
+        index: str | None = None,
     ) -> list[dict[str, Any]]:
         """Shared ES vector request; each caller owns its filters/projection/score name."""
         response = await self._client.search(
-            index=self.audio_index,
+            index=index or self.audio_index,
             body={
                 "knn": {
                     "field": vector_field,
@@ -539,8 +581,11 @@ class EsSearch:
         return bool(await self._client.indices.exists(index=self.audio_index))
 
     async def refresh_audio_index(self) -> None:
-        """让刚写入的音频立即可搜，避免紧接着的全量查询漏掉末尾几条。"""
-        await self._client.indices.refresh(index=self.audio_index)
+        """让刚写入的原料/语言表/标签立即可搜，再清缓存才不会读到旧结果。"""
+        indexes = [self.audio_index, self.tag_dictionary_index]
+        if self._material_locales_index:
+            indexes.append(self._material_locales_index)
+        await self._client.indices.refresh(index=",".join(indexes))
 
     async def list_audio_catalog_docs(
         self,
@@ -599,10 +644,19 @@ class EsSearch:
         sleep_stage_tags: list[str] | None = None,
         source_includes: tuple[str, ...] = GET_AUDIO_SOURCE_INCLUDES,
     ) -> list[dict[str, Any]]:
-        """量产 GetAudio：按 description_text / description_text_en 做 BM25。
+        """量产 GetAudio：中文按原料 description_text 做 BM25，英文按语言表。
 
         短词整句 match_phrase；长句拆成关键词 phrase（should）。
         """
+        if self._uses_locale_index(language):
+            return await self._search_locales_bm25(
+                query_text,
+                language=resolve_locale_language(language),
+                tag_code=tag_code,
+                content_form_codes=content_form_codes,
+                size=size,
+                sleep_stage_tags=sleep_stage_tags,
+            )
         text_field = description_text_field(language)
         filters = build_get_audio_filters(tag_code=tag_code, content_form_codes=content_form_codes)
         if sleep_stage_tags:
@@ -632,7 +686,17 @@ class EsSearch:
         k: int,
         num_candidates: int,
     ) -> list[dict[str, Any]]:
-        """量产 GetAudio：按 description_vector / description_vector_en 做 Top-K。"""
+        """量产 GetAudio：中英均按语言表向量做 Top-K，再回查原料。"""
+        if self._uses_locale_index(language):
+            return await self._search_locales_knn(
+                query_vector,
+                language=resolve_locale_language(language),
+                k=k,
+                num_candidates=num_candidates,
+                score_field="_knn_score",
+                tag_code=tag_code,
+                content_form_codes=content_form_codes,
+            )
         vector_field = description_vector_field(
             language,
             override=self._settings.get_audio_description_vector_field,
@@ -661,7 +725,15 @@ class EsSearch:
         content_form_codes: list[str] | None = None,
         size: int,
     ) -> list[dict[str, Any]]:
-        """量产 GetAudio：在过滤集上精确计算全部文档向量分数。"""
+        """量产 GetAudio：在过滤集上精确计算全部文档向量分数。中英走语言表。"""
+        if self._uses_locale_index(language):
+            return await self._search_locales_script_score(
+                query_vector,
+                language=resolve_locale_language(language),
+                tag_code=tag_code,
+                content_form_codes=content_form_codes,
+                size=size,
+            )
         vector_field = description_vector_field(
             language,
             override=self._settings.get_audio_description_vector_field,
@@ -696,6 +768,273 @@ class EsSearch:
                 await self._client.indices.delete(index=index)
                 logger.info("已删除旧版 ES 索引：{}", index)
 
+    async def _search_locales_bm25(
+        self,
+        query_text: str,
+        *,
+        language: str,
+        tag_code: str = "",
+        content_form_codes: list[str] | None = None,
+        size: int,
+        sleep_stage_tags: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        lang = resolve_locale_language(language)
+        fetch_size = _locale_fetch_size(size)
+        response = await self._client.search(
+            index=self._material_locales_index,
+            body={
+                "size": fetch_size,
+                "query": {
+                    "bool": {
+                        "filter": [{"term": {"language": lang}}],
+                        "must": [build_bm25_must_clause("description_text", query_text)],
+                    }
+                },
+                "_source": {"includes": list(_LOCALE_SOURCE_INCLUDES)},
+            },
+        )
+        return await self._hydrate_locale_hits(
+            response,
+            score_field="_bm25_score",
+            tag_code=tag_code,
+            content_form_codes=content_form_codes,
+            sleep_stage_tags=sleep_stage_tags,
+            limit=size,
+        )
+
+    async def _search_locales_knn(
+        self,
+        query_vector: list[float],
+        *,
+        language: str,
+        k: int,
+        num_candidates: int,
+        score_field: str,
+        tag_code: str = "",
+        content_form_codes: list[str] | None = None,
+        sleep_stage_tags: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        lang = resolve_locale_language(language)
+        vector_field = locale_vector_field(lang)
+        if not vector_field:
+            return []
+        fetch_k = _locale_fetch_size(k)
+        filters: list[dict[str, Any]] = [
+            {"term": {"language": lang}},
+            {"exists": {"field": vector_field}},
+        ]
+        response = await self._client.search(
+            index=self._material_locales_index,
+            body={
+                "knn": {
+                    "field": vector_field,
+                    "query_vector": query_vector,
+                    "k": fetch_k,
+                    "num_candidates": max(fetch_k * 3, num_candidates, 50),
+                    "filter": {"bool": {"filter": filters}},
+                },
+                "size": fetch_k,
+                "_source": {"includes": list(_LOCALE_SOURCE_INCLUDES)},
+            },
+        )
+        return await self._hydrate_locale_hits(
+            response,
+            score_field=score_field,
+            tag_code=tag_code,
+            content_form_codes=content_form_codes,
+            sleep_stage_tags=sleep_stage_tags,
+            limit=k,
+        )
+
+    async def _search_locales_script_score(
+        self,
+        query_vector: list[float],
+        *,
+        language: str,
+        tag_code: str = "",
+        content_form_codes: list[str] | None = None,
+        size: int,
+    ) -> list[dict[str, Any]]:
+        lang = resolve_locale_language(language)
+        vector_field = locale_vector_field(lang)
+        if not vector_field:
+            return []
+        fetch_size = _locale_fetch_size(size)
+        response = await self._client.search(
+            index=self._material_locales_index,
+            body={
+                "size": fetch_size,
+                "query": {
+                    "script_score": {
+                        "query": {
+                            "bool": {
+                                "filter": [
+                                    {"term": {"language": lang}},
+                                    {"exists": {"field": vector_field}},
+                                ]
+                            }
+                        },
+                        "script": {
+                            "source": (
+                                f"(cosineSimilarity(params.q, '{vector_field}') + 1.0) / 2"
+                            ),
+                            "params": {"q": query_vector},
+                        },
+                    }
+                },
+                "_source": {"includes": list(_LOCALE_SOURCE_INCLUDES)},
+            },
+        )
+        return await self._hydrate_locale_hits(
+            response,
+            score_field="_knn_score",
+            tag_code=tag_code,
+            content_form_codes=content_form_codes,
+            limit=size,
+        )
+
+    async def _hydrate_locale_hits(
+        self,
+        response: dict[str, Any],
+        *,
+        score_field: str,
+        tag_code: str = "",
+        content_form_codes: list[str] | None = None,
+        sleep_stage_tags: list[str] | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """语言表命中按 material_id 拼回启用原料，并贴上该语言展示字段。"""
+        best: dict[str, tuple[float, dict[str, Any]]] = {}
+        order: list[str] = []
+        for hit in response.get("hits", {}).get("hits", []):
+            source = hit.get("_source") or {}
+            if not isinstance(source, dict):
+                continue
+            material_id = str(source.get("material_id") or "").strip()
+            if not material_id:
+                continue
+            score = float(hit.get("_score") or 0)
+            if material_id not in best:
+                order.append(material_id)
+                best[material_id] = (score, source)
+            elif score > best[material_id][0]:
+                best[material_id] = (score, source)
+        if not order:
+            return []
+        materials = await self._load_materials_for_locale_hits(order)
+        by_id = {str(doc.get("_id") or ""): doc for doc in materials}
+        hydrated: list[dict[str, Any]] = []
+        for material_id in order:
+            doc = by_id.get(material_id)
+            if doc is None:
+                continue
+            if not _material_matches_content_codes(
+                doc, tag_code=tag_code, content_form_codes=content_form_codes
+            ):
+                continue
+            if sleep_stage_tags and not _material_matches_sleep_stage(doc, sleep_stage_tags):
+                continue
+            score, source = best[material_id]
+            doc[score_field] = score
+            _overlay_locale_display(doc, source)
+            hydrated.append(doc)
+            if limit is not None and len(hydrated) >= max(1, limit):
+                break
+        return hydrated
+
+    async def _load_materials_for_locale_hits(self, ids: list[str]) -> list[dict[str, Any]]:
+        unique_ids = [doc_id for doc_id in ids if doc_id]
+        if not unique_ids:
+            return []
+        response = await self._client.search(
+            index=self.audio_index,
+            body={
+                "query": {
+                    "bool": {
+                        "filter": [
+                            {"term": {"status": True}},
+                            {"ids": {"values": unique_ids}},
+                        ]
+                    }
+                },
+                "size": len(unique_ids),
+                "_source": {"includes": list(LOCALE_HYDRATE_MATERIAL_SOURCE_INCLUDES)},
+            },
+        )
+        return [_document_from_hit(hit) for hit in response["hits"]["hits"]]
+
+    async def list_locale_displays(self, *, language: str = "en", size: int) -> list[dict[str, Any]]:
+        """拉取某一语言的展示字段，供目录把英文标题/短描述贴回原料。"""
+        if not self._material_locales_index:
+            return []
+        response = await self._client.search(
+            index=self._material_locales_index,
+            body={
+                "query": {"term": {"language": resolve_locale_language(language)}},
+                "size": max(1, size),
+                "_source": {"includes": list(_LOCALE_SOURCE_INCLUDES)},
+            },
+        )
+        return [_document_from_hit(hit) for hit in response["hits"]["hits"]]
+
+    async def locale_displays_by_material_ids(
+        self,
+        material_ids: list[str],
+        *,
+        language: str,
+    ) -> dict[str, dict[str, Any]]:
+        """按 material_id + language 取语言表展示字段（含可播 audio_url）。"""
+        if not self._material_locales_index:
+            return {}
+        unique_ids = [doc_id for doc_id in dict.fromkeys(material_ids) if doc_id]
+        if not unique_ids:
+            return {}
+        lang = resolve_locale_language(language)
+        response = await self._client.search(
+            index=self._material_locales_index,
+            body={
+                "size": len(unique_ids),
+                "query": {
+                    "bool": {
+                        "filter": [
+                            {"terms": {"material_id": unique_ids}},
+                            {"term": {"language": lang}},
+                            {"exists": {"field": "audio_url"}},
+                        ],
+                        "must_not": [{"term": {"audio_url": ""}}],
+                    }
+                },
+                "_source": {"includes": list(_LOCALE_SOURCE_INCLUDES)},
+            },
+        )
+        displays: dict[str, dict[str, Any]] = {}
+        for hit in response.get("hits", {}).get("hits", []):
+            source = hit.get("_source") or {}
+            if not isinstance(source, dict):
+                continue
+            material_id = str(source.get("material_id") or "").strip()
+            audio_url = str(source.get("audio_url") or "").strip()
+            if material_id and audio_url:
+                displays[material_id] = dict(source)
+                displays[material_id]["audio_url"] = audio_url
+        return displays
+
+    async def locale_audio_urls_by_material_ids(
+        self,
+        material_ids: list[str],
+        *,
+        language: str,
+    ) -> dict[str, str]:
+        """按 material_id + language 从语言索引取非空 audio_url。"""
+        displays = await self.locale_displays_by_material_ids(
+            material_ids, language=language
+        )
+        return {
+            material_id: str(row.get("audio_url") or "").strip()
+            for material_id, row in displays.items()
+            if str(row.get("audio_url") or "").strip()
+        }
+
     async def ensure_indices(self) -> None:
         """幂等建索引：handboard / somni 两套 mapping 完全分开。
 
@@ -703,18 +1042,30 @@ class EsSearch:
         量产要换维须先删索引再 ensure（sync_es_from_somni 已处理标签索引）。
         """
         dim = self._settings.embedding_dim
+        indexes: list[tuple[str, dict[str, Any]]]
         if self._index_profile == "somni":
             dim_en = self._settings.embedding_dim_en
-            materials_mapping = {"mappings": build_somni_audio_materials_mapping(dim, dim_en)}
-            dictionary_mapping = {"mappings": build_somni_audio_tag_dictionary_mapping(dim, dim_en)}
+            indexes = [
+                (self.audio_index, {"mappings": build_somni_audio_materials_mapping(dim, dim_en)}),
+                (
+                    self.tag_dictionary_index,
+                    {"mappings": build_somni_audio_tag_dictionary_mapping(dim, dim_en)},
+                ),
+                (
+                    self._material_locales_index,
+                    {"mappings": build_somni_audio_material_locales_mapping(dim, dim_en)},
+                ),
+            ]
         else:
-            materials_mapping = {"mappings": build_handboard_audio_materials_mapping(dim)}
-            dictionary_mapping = {"mappings": build_handboard_audio_tag_dictionary_mapping(dim)}
+            indexes = [
+                (self.audio_index, {"mappings": build_handboard_audio_materials_mapping(dim)}),
+                (
+                    self.tag_dictionary_index,
+                    {"mappings": build_handboard_audio_tag_dictionary_mapping(dim)},
+                ),
+            ]
 
-        for index, mapping in (
-            (self.audio_index, materials_mapping),
-            (self.tag_dictionary_index, dictionary_mapping),
-        ):
+        for index, mapping in indexes:
             if not await self._client.indices.exists(index=index):
                 await self._client.indices.create(index=index, body=mapping)
                 logger.info("已创建 ES 索引：{}", index)
@@ -734,6 +1085,83 @@ class EsSearch:
 def _is_dense_vector_dims_conflict(exc: ApiError) -> bool:
     """put_mapping 因 dense_vector.dims 与现有字段冲突而失败。"""
     return "Cannot update parameter [dims]" in f"{exc.message} {exc}"
+
+
+_LOCALE_SOURCE_INCLUDES = (
+    "material_id",
+    "language",
+    "audio_name",
+    "description",
+    "summary",
+    "audio_url",
+    "cover_url",
+)
+
+
+def _locale_fetch_size(wanted: int) -> int:
+    """语言表先多取一些，hydrate 后再按 status/标签截断，避免后滤空窗。"""
+    base = max(1, int(wanted or 1))
+    return min(max(base * 5, 50), 500)
+
+
+def _overlay_locale_display(doc: dict[str, Any], locale: dict[str, Any]) -> None:
+    """按语言行 language 贴展示字段。en 写入 *_en；其它语言写入主字段。url 空不回退。"""
+    language = resolve_locale_language(str(locale.get("language") or ""))
+    audio_name = str(locale.get("audio_name") or "")
+    summary = str(locale.get("summary") or "")
+    audio_url = str(locale.get("audio_url") or "").strip()
+    cover_url = str(locale.get("cover_url") or "").strip()
+    if language == "en":
+        doc["audio_name_en"] = audio_name
+        doc["summary_en"] = summary
+        doc["short_description_en"] = summary
+        doc["audio_url_en"] = audio_url
+        doc["cover_url_en"] = cover_url
+        return
+    doc["audio_name"] = audio_name
+    doc["summary"] = summary
+    doc["short_description"] = summary
+    doc["description"] = str(locale.get("description") or "")
+    doc["audio_url"] = audio_url
+    doc["cover_url"] = cover_url
+
+
+def _content_codes(tag_code: str, content_form_codes: list[str] | None) -> list[str]:
+    single = (tag_code or "").strip()
+    if single:
+        return [single]
+    return [code.strip() for code in (content_form_codes or []) if code and str(code).strip()]
+
+
+def _material_matches_content_codes(
+    doc: dict[str, Any],
+    *,
+    tag_code: str,
+    content_form_codes: list[str] | None,
+) -> bool:
+    wanted = _content_codes(tag_code, content_form_codes)
+    if not wanted:
+        return True
+    present = {
+        str(item.get("code") or "").strip()
+        for item in doc.get("content_form_tags") or []
+        if isinstance(item, dict)
+    }
+    if len(wanted) == 1:
+        return wanted[0] in present
+    return bool(present.intersection(wanted))
+
+
+def _material_matches_sleep_stage(doc: dict[str, Any], sleep_stage_tags: list[str]) -> bool:
+    wanted = set(canonical_tags(sleep_stage_tags))
+    if not wanted:
+        return True
+    present = {
+        str(item.get("code") or "").strip()
+        for item in doc.get("sleep_stage_tags") or []
+        if isinstance(item, dict)
+    }
+    return bool(present.intersection(wanted))
 
 
 def _sleep_stage_filter(sleep_stage_tags: list[str]) -> dict[str, Any]:

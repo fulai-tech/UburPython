@@ -192,6 +192,8 @@ class SearchAudioRequest(BaseModel):
     content_tag_codes: list[str] = Field(default_factory=list)
     disliked_tags: list[str] = Field(default_factory=list)
     top_k: int | None = Field(default=None, ge=1)
+    # 处方等调用方可显式指定；空则下游按默认 zh 处理
+    language: str = "zh"
 
     @field_validator(
         "sleep_stage_tags", "content_tags", "content_tag_codes", "disliked_tags", mode="before"

@@ -47,11 +47,22 @@ async def test_get_audio_rejects_invalid_language() -> None:
     rpc, service = _make_rpc()
     ctx = _context()
     ctx.abort = AsyncMock(side_effect=grpc.aio.AbortError())
-    req = uburnode_somni_pb2.GetAudioReq(language="fr")
+    req = uburnode_somni_pb2.GetAudioReq(language="de")
     with pytest.raises(grpc.aio.AbortError):
         await rpc.GetAudio(req, ctx)
     service.get_audio.assert_not_called()
     ctx.abort.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_get_audio_accepts_fr_language() -> None:
+    rpc, service = _make_rpc()
+    service.get_audio = AsyncMock(return_value={"list": [], "page": 1, "page_size": 20, "total": 0})
+    ctx = _context()
+    req = uburnode_somni_pb2.GetAudioReq(language="fr", page=1, page_size=20)
+    await rpc.GetAudio(req, ctx)
+    service.get_audio.assert_awaited_once()
+    assert service.get_audio.await_args.kwargs["language"] == "fr"
 
 
 @pytest.mark.asyncio

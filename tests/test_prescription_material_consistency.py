@@ -100,9 +100,30 @@ async def test_retired_reference_rejects_whole_material_with_auditable_warning(m
     warning = MagicMock()
     monkeypatch.setattr(catalog.logger, "warning", warning)
     result = service._filter_prescription_materials(
-        [project_search_material(invalid), project_search_material(valid)]
+        [project_search_material(invalid), project_search_material(valid)],
+        playable_urls={
+            "legacy": "https://example.test/good.mp3",
+            "good": "https://example.test/good.mp3",
+        },
     )
     assert [row["_id"] for row in result] == ["good"]
     args = warning.call_args.args
     assert args[1] == "legacy" and "birdsong" in args[3]
     assert "https://" not in repr(args)
+
+
+def test_filter_prescription_requires_locale_playable_url():
+    row = {
+        "_id": "en-only",
+        "status": True,
+        "audio_url": "",
+        "content_form_tags": [{"code": "steady_rain"}],
+    }
+    service = AudioCatalogService(None, Settings())
+    assert service._filter_prescription_materials([row], playable_urls={}) == []
+    result = service._filter_prescription_materials(
+        [row],
+        playable_urls={"en-only": "https://example.test/en.mp3"},
+    )
+    assert len(result) == 1
+    assert result[0]["audio_url"] == "https://example.test/en.mp3"
