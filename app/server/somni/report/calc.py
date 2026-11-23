@@ -502,6 +502,9 @@ def sleep_quality_from_session(
     timezone_name: str = "",
 ) -> dict[str, Any]:
     bed_from, bed_to = on_bed_bounds(on_bed)
+    _stage_ms, stage_end = _stage_timeline_ms(segments)
+    # on_bed 末段早于分期末尾时（在床检测断档），离床时间对齐分期末尾，与效率补齐一致
+    leave_bed_ms = max(bed_to, stage_end) if stage_end > 0 else bed_to
     structure = sleep_structure_from_segments(on_bed, segments)
     tib = ms_to_minutes(on_bed_duration_ms_for_efficiency(on_bed, segments))
     sleep_min = int(structure["total_minutes"])
@@ -513,21 +516,21 @@ def sleep_quality_from_session(
             sol = ms_to_minutes(as_ms(seg.get("start_ts_ms")) - bed_from)
             break
 
-    # 醒后到离床：最后一条 on_bed.to − 最后一个清醒阶段 start
+    # 醒后到离床：有效离床时间 − 最后一个清醒阶段 start
     wake_to_leave_bed = 0
     last_awake_start = 0
     for seg in segments:
         if as_int(seg.get("stage")) == STAGE_AWAKE:
             last_awake_start = as_ms(seg.get("start_ts_ms"))
-    if last_awake_start > 0 and bed_to > last_awake_start:
-        wake_to_leave_bed = ms_to_minutes(bed_to - last_awake_start)
+    if last_awake_start > 0 and leave_bed_ms > last_awake_start:
+        wake_to_leave_bed = ms_to_minutes(leave_bed_ms - last_awake_start)
 
     return {
         "time_in_bed_minutes": tib,
         "sleep_onset_latency_minutes": max(0, sol),
         "sleep_efficiency": max(0, min(100, efficiency)),
         "bedtime": format_local_ms_hhmm(bed_from, timezone_name),
-        "wake_up_time": format_local_ms_hhmm(bed_to, timezone_name),
+        "wake_up_time": format_local_ms_hhmm(leave_bed_ms, timezone_name),
         "wake_to_leave_bed_minutes": max(0, wake_to_leave_bed),
     }
 
