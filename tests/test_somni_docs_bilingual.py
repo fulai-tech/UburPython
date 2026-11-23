@@ -5,7 +5,9 @@ from app.es.somni_docs import (
     build_material_description_text_en,
     description_text_field,
     description_vector_field,
+    locale_vector_field,
     material_source_for_es,
+    resolve_locale_language,
     resolve_query_language,
     resolve_search_language,
 )
@@ -18,6 +20,19 @@ def test_resolve_search_language() -> None:
     assert resolve_search_language("zh-CN") == "zh"
     assert resolve_search_language("en") == "en"
     assert resolve_search_language("fr") == "en"
+
+
+def test_resolve_locale_language() -> None:
+    assert resolve_locale_language("") == "zh"
+    assert resolve_locale_language(None) == "zh"
+    assert resolve_locale_language("zh-CN") == "zh"
+    assert resolve_locale_language("en-US") == "en"
+    assert resolve_locale_language("fr") == "fr"
+    assert resolve_locale_language("ja") == "ja"
+    assert locale_vector_field("zh") == "description_vector"
+    assert locale_vector_field("en") == "description_vector_en"
+    assert locale_vector_field("fr") is None
+    assert locale_vector_field("ja") is None
 
 
 def test_resolve_query_language() -> None:
@@ -42,15 +57,19 @@ def test_build_material_description_text_zh_and_en() -> None:
             {"name": "雨声", "code": "rain", "en_name": "Rain"},
         ],
     }
-    assert "听涧" in build_material_description_text(doc)
-    assert "雨声助眠" in build_material_description_text(doc)
-    assert "雨声" in build_material_description_text(doc)
+    zh = build_material_description_text(doc)
+    assert "听涧" in zh
+    assert "雨声助眠" in zh
+    assert "雨声" in zh
+    assert "rain" not in zh.lower()
+    assert "Rain" not in zh
 
     en = build_material_description_text_en(doc)
     assert "Listening to the Stream" in en
     assert "Rain for sleep" in en
     assert "Rain" in en
     assert "听涧" not in en
+    assert "雨声" not in en
 
 
 def test_material_source_for_es_writes_both_texts() -> None:

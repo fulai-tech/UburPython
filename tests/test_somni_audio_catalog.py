@@ -71,6 +71,34 @@ _MUSIC = {
     ],
 }
 
+# GetAudio 出参 tag 按 code 查词典；测试默认注入常用 content_form 条目。
+_TAG_DICTIONARY = [
+    {
+        "_id": "dict-natural",
+        "type": "content_form",
+        "code": "natural_sound",
+        "name": "自然声",
+        "name_en": "Natural Sound",
+        "status": "启用",
+    },
+    {
+        "_id": "dict-rain",
+        "type": "content_form",
+        "code": "steady_rain",
+        "name": "中雨/稳定雨声",
+        "name_en": "Steady Rain",
+        "status": "启用",
+    },
+    {
+        "_id": "dict-music",
+        "type": "content_form",
+        "code": "music",
+        "name": "音乐",
+        "name_en": "Music",
+        "status": "启用",
+    },
+]
+
 
 class _CatalogRedis:
     """按 ex 秒过期的内存 Redis，时钟由测试推进。"""
@@ -122,9 +150,31 @@ class _CatalogRedis:
         return None
 
 
+def _tag_dictionary_collection(docs: list | None = None) -> MagicMock:
+    rows = list(_TAG_DICTIONARY if docs is None else docs)
+
+    def _match(query: dict) -> list:
+        matched = list(rows)
+        if query.get("type") is not None:
+            matched = [doc for doc in matched if doc.get("type") == query["type"]]
+        if query.get("status") is not None:
+            matched = [doc for doc in matched if doc.get("status") == query["status"]]
+        codes = (query.get("code") or {}).get("$in") if isinstance(query.get("code"), dict) else None
+        if codes is not None:
+            wanted = {str(code) for code in codes}
+            matched = [doc for doc in matched if str(doc.get("code") or "") in wanted]
+        return matched
+
+    collection = MagicMock()
+    collection.count_documents = AsyncMock(side_effect=lambda query: len(_match(query)))
+    collection.find = MagicMock(side_effect=lambda query, *_a, **_k: _Cursor(_match(query)))
+    return collection
+
+
 def _service(
     collection: MagicMock,
     *,
+    tags_collection: MagicMock | None = None,
     es_search: MagicMock | None = None,
     encoder: MagicMock | None = None,
     hot: MagicMock | None = None,
@@ -132,13 +182,19 @@ def _service(
     cache_ttl_sec: float = 60.0,
     redis: _CatalogRedis | None = None,
 ) -> AudioCatalogService:
+    tags = tags_collection if tags_collection is not None else _tag_dictionary_collection()
+    collections = {
+        "somni_audio_materials": collection,
+        "somni_audio_tag_dictionary": tags,
+    }
     db = MagicMock()
-    db.__getitem__ = MagicMock(return_value=collection)
+    db.__getitem__ = MagicMock(side_effect=lambda name: collections.get(name, collection))
     client = MagicMock()
     client.__getitem__ = MagicMock(return_value=db)
     settings = Settings(
         somni_mongo_db="Somni",
         somni_mongo_materials_collection="somni_audio_materials",
+        somni_mongo_tag_dictionary_collection="somni_audio_tag_dictionary",
         default_page_size=1,
         max_page_size=200,
         fetch_all_hard_limit=fetch_all_hard_limit,
@@ -152,6 +208,8 @@ def _service(
             es_search.list_audio_catalog_docs = _es_catalog_from_collection(
                 collection
             ).list_audio_catalog_docs
+        if not isinstance(getattr(es_search, "list_locale_displays", None), AsyncMock):
+            es_search.list_locale_displays = AsyncMock(return_value=[])
         if not isinstance(getattr(es_search, "search_get_audio_bm25", None), AsyncMock):
             es_search.search_get_audio_bm25 = AsyncMock(return_value=[])
         if not isinstance(getattr(es_search, "search_get_audio_knn", None), AsyncMock):
@@ -160,6 +218,34 @@ def _service(
             es_search.search_get_audio_vector_all = AsyncMock(return_value=[])
         if not isinstance(getattr(es_search, "audio_index_exists", None), AsyncMock):
             es_search.audio_index_exists = AsyncMock(return_value=True)
+        if not isinstance(
+            getattr(es_search, "locale_audio_urls_by_material_ids", None), AsyncMock
+        ):
+            es_search.locale_audio_urls_by_material_ids = AsyncMock(
+                side_effect=lambda material_ids, *, language="zh": {
+                    str(doc_id): f"https://cdn.example/{doc_id}.mp3"
+                    for doc_id in material_ids
+                    if doc_id
+                }
+            )
+        if not isinstance(
+            getattr(es_search, "locale_displays_by_material_ids", None), AsyncMock
+        ):
+            es_search.locale_displays_by_material_ids = AsyncMock(
+                side_effect=lambda material_ids, *, language="zh": {
+                    str(doc_id): {
+                        "material_id": str(doc_id),
+                        "language": language,
+                        "audio_name": "",
+                        "description": "",
+                        "summary": "",
+                        "audio_url": f"https://cdn.example/{doc_id}.mp3",
+                        "cover_url": "",
+                    }
+                    for doc_id in material_ids
+                    if doc_id
+                }
+            )
     return AudioCatalogService(
         client,
         settings,
@@ -181,10 +267,37 @@ def _es_catalog_from_collection(collection: MagicMock) -> MagicMock:
         return docs[:size]
 
     es_search.list_audio_catalog_docs = AsyncMock(side_effect=_list)
+    es_search.list_locale_displays = AsyncMock(return_value=[])
     es_search.search_get_audio_bm25 = AsyncMock(return_value=[])
     es_search.search_get_audio_knn = AsyncMock(return_value=[])
     es_search.search_get_audio_vector_all = AsyncMock(return_value=[])
     es_search.audio_index_exists = AsyncMock(return_value=True)
+
+    async def _locale_urls(material_ids: list, *, language: str = "zh") -> dict:
+        del language
+        return {
+            str(doc_id): f"https://cdn.example/{doc_id}.mp3"
+            for doc_id in material_ids
+            if doc_id
+        }
+
+    async def _locale_displays(material_ids: list, *, language: str = "zh") -> dict:
+        return {
+            str(doc_id): {
+                "material_id": str(doc_id),
+                "language": language,
+                "audio_name": "",
+                "description": "",
+                "summary": "",
+                "audio_url": f"https://cdn.example/{doc_id}.mp3",
+                "cover_url": "",
+            }
+            for doc_id in material_ids
+            if doc_id
+        }
+
+    es_search.locale_audio_urls_by_material_ids = AsyncMock(side_effect=_locale_urls)
+    es_search.locale_displays_by_material_ids = AsyncMock(side_effect=_locale_displays)
     return es_search
 
 
@@ -212,7 +325,7 @@ def _mongo_collection(docs: list) -> MagicMock:
 
 
 @pytest.mark.asyncio
-async def test_get_audio_list_keeps_empty_or_matching_language() -> None:
+async def test_get_audio_list_does_not_filter_by_material_language() -> None:
     zh_doc = {**_RAIN, "_id": "zh1", "language": "zh", "status": True}
     en_doc = {
         **_MUSIC,
@@ -248,8 +361,8 @@ async def test_get_audio_list_keeps_empty_or_matching_language() -> None:
         language="en",
     )
 
-    assert {item["id"] for item in zh_payload["list"]} == {"zh1", "any1"}
-    assert {item["id"] for item in en_payload["list"]} == {"en1", "any1"}
+    assert {item["id"] for item in zh_payload["list"]} == {"zh1", "en1", "any1"}
+    assert {item["id"] for item in en_payload["list"]} == {"zh1", "en1", "any1"}
     assert collection.find.call_count == 1
 
 
@@ -342,21 +455,21 @@ async def test_get_audio_maps_short_description_into_description() -> None:
 async def test_get_audio_tag_uses_english_name_when_language_en() -> None:
     doc = {
         **_RAIN,
-        # 空 language 对 en/zh 请求都可见；此处测展示语言走 name_en
+        # 空 language 对 en/zh 请求都可见；展示名只信词典 name_en，不信原料嵌套名
         "language": "",
         "content_form_tags": [
             {
                 "tag_id": "root-rain",
                 "code": "natural_sound",
-                "name": "自然声",
-                "name_en": "Natural Sound",
+                "name": "原料里的中文不应返回",
+                "en_name": "Material Embedded EN",
                 "parent_tag_id": None,
             },
             {
                 "tag_id": "child-rain",
                 "code": "steady_rain",
-                "name": "中雨/稳定雨声",
-                "name_en": "Steady Rain",
+                "name": "原料里的二级中文",
+                "en_name": "Material Nested EN",
                 "parent_tag_id": "root-rain",
             },
         ],
@@ -371,6 +484,87 @@ async def test_get_audio_tag_uses_english_name_when_language_en() -> None:
         language="en",
     )
     assert payload["list"][0]["tag"] == ["Natural Sound", "Steady Rain"]
+
+
+@pytest.mark.asyncio
+async def test_get_audio_tag_resolves_zh_name_from_dictionary_by_code() -> None:
+    doc = {
+        **_RAIN,
+        "language": "",
+        "content_form_tags": [
+            {
+                "tag_id": "child-rain",
+                "code": "steady_rain",
+                "name": "原料脏数据",
+                "parent_tag_id": "root-rain",
+            }
+        ],
+    }
+    svc = _service(_mongo_collection([doc]))
+    payload = await svc.get_audio(
+        page=1,
+        page_size=10,
+        fetch_all=False,
+        query_text="",
+        tag_code="",
+        language="zh",
+    )
+    assert payload["list"][0]["tag"] == ["中雨/稳定雨声"]
+
+
+@pytest.mark.asyncio
+async def test_get_audio_tag_empty_string_when_dictionary_name_en_missing() -> None:
+    doc = {
+        "_id": "a-brown",
+        "audio_name": "棕噪音",
+        "language": "",
+        "content_form_tags": [{"tag_id": "t1", "code": "brown_noise", "name": "忽略"}],
+    }
+    tags = _tag_dictionary_collection(
+        [
+            {
+                "_id": "dict-brown",
+                "type": "content_form",
+                "code": "brown_noise",
+                "name": "棕噪音",
+                "name_en": "",
+                "status": "启用",
+            }
+        ]
+    )
+    svc = _service(_mongo_collection([doc]), tags_collection=tags)
+    payload = await svc.get_audio(
+        page=1,
+        page_size=10,
+        fetch_all=False,
+        query_text="",
+        tag_code="",
+        language="en",
+    )
+    assert payload["list"][0]["tag"] == [""]
+
+
+@pytest.mark.asyncio
+async def test_get_audio_tag_empty_string_when_code_missing_in_dictionary() -> None:
+    doc = {
+        "_id": "a-orphan",
+        "audio_name": "孤儿标签",
+        "language": "",
+        "content_form_tags": [{"tag_id": "t1", "code": "not_in_dictionary", "name": "脏名"}],
+    }
+    svc = _service(
+        _mongo_collection([doc]),
+        tags_collection=_tag_dictionary_collection([]),
+    )
+    payload = await svc.get_audio(
+        page=1,
+        page_size=10,
+        fetch_all=False,
+        query_text="",
+        tag_code="",
+        language="zh",
+    )
+    assert payload["list"][0]["tag"] == [""]
 
 
 @pytest.mark.asyncio
@@ -636,6 +830,7 @@ async def test_get_audio_hybrid_filters_by_request_language() -> None:
         **_MUSIC,
         "_id": "en1",
         "audio_name": "Rain Piano",
+        "audio_name_en": "Rain Piano",
         "language": "en",
         "_knn_score": 0.89,
     }
@@ -643,6 +838,7 @@ async def test_get_audio_hybrid_filters_by_request_language() -> None:
         **_RAIN,
         "_id": "any1",
         "audio_name": "雨幕",
+        "audio_name_en": "Rain Curtain",
         "language": "",
         "_knn_score": 0.88,
     }
@@ -673,18 +869,20 @@ async def test_get_audio_hybrid_filters_by_request_language() -> None:
         language="en",
     )
 
+    # 不再按原料 language 字段硬过滤；英文字面匹配看 audio_name_en
     assert [item["id"] for item in zh_payload["list"]] == ["zh1", "any1"]
     assert [item["id"] for item in en_payload["list"]] == ["en1", "any1"]
 
 
 @pytest.mark.asyncio
-async def test_get_audio_hybrid_routes_by_query_text_not_request_language() -> None:
-    """英文请求下输入中文，仍走中文模型与中文字段。"""
+async def test_get_audio_hybrid_routes_by_request_language_not_query_text() -> None:
+    """检索字段/模型只跟请求 language，不按输入文字识别语种。"""
     zh_hit = {**_RAIN, "_id": "zh1", "language": "zh", "_knn_score": 0.95}
     any_hit = {
         **_RAIN,
         "_id": "any1",
         "audio_name": "雨幕",
+        "audio_name_en": "rain curtain 雨",
         "language": "",
         "_knn_score": 0.94,
     }
@@ -707,11 +905,12 @@ async def test_get_audio_hybrid_routes_by_query_text_not_request_language() -> N
         language="en",
     )
 
+    # 请求 language=en → 英文模型/字段；字面匹配只看英文名，zh_hit 无 audio_name_en 被滤掉
     assert [item["id"] for item in payload["list"]] == ["any1"]
     encoder.encode_one.assert_awaited_once()
-    assert encoder.encode_one.await_args.kwargs["language"] == "zh"
-    assert es_search.search_get_audio_knn.await_args.kwargs["language"] == "zh"
-    assert es_search.search_get_audio_bm25.await_args.kwargs["language"] == "zh"
+    assert encoder.encode_one.await_args.kwargs["language"] == "en"
+    assert es_search.search_get_audio_knn.await_args.kwargs["language"] == "en"
+    assert es_search.search_get_audio_bm25.await_args.kwargs["language"] == "en"
 
 
 @pytest.mark.asyncio
@@ -1030,7 +1229,7 @@ async def test_get_audio_tag_maps_root_fields() -> None:
             ]
         )
     )
-    svc = _service(collection)
+    svc = _service(_mongo_collection([]), tags_collection=collection)
     payload = await svc.get_audio_tag()
     assert payload["tags"][0] == {
         "type": "content_form",
@@ -1051,8 +1250,10 @@ async def test_get_audio_tag_maps_root_fields() -> None:
             "id": 1,
             "type": 1,
             "code": 1,
+            "language": 1,
             "name": 1,
             "name_en": 1,
+            "parent_id": 1,
             "parent_tag_id": 1,
             "status": 1,
         },
@@ -1093,7 +1294,7 @@ async def test_get_audio_query_text_rain_matches_via_code_token() -> None:
         page=1,
         page_size=10,
         fetch_all=False,
-        query_text="rain",
+        query_text="雨声",
         tag_code="",
         language="zh",
     )
@@ -1217,8 +1418,14 @@ async def test_prescription_search_resolves_codes_and_uses_ranked_search_without
     monkeypatch.setattr(service, "_materials", lambda: materials)
 
     class Cursor:
-        def __init__(self, projection):
-            document = {"code": "breathing_guidance", "type": "content_form", "name": "呼吸引导"}
+        def __init__(self, query, projection):
+            self.query = query
+            document = {
+                "code": "breathing_guidance",
+                "type": "content_form",
+                "language": "zh",
+                "name": "呼吸引导",
+            }
             self.document = {key: value for key, value in document.items() if projection.get(key)}
 
         def __aiter__(self):
@@ -1232,7 +1439,13 @@ async def test_prescription_search_resolves_codes_and_uses_ranked_search_without
                 raise StopAsyncIteration
 
     tags = MagicMock()
-    tags.find.side_effect = lambda query, projection: Cursor(projection)
+    seen_queries: list[dict] = []
+
+    def _find(query, projection):
+        seen_queries.append(query)
+        return Cursor(query, projection)
+
+    tags.find.side_effect = _find
     monkeypatch.setattr(service, "_tags", lambda: tags)
     result = await service.search_prescription_audio(
         {
@@ -1242,14 +1455,151 @@ async def test_prescription_search_resolves_codes_and_uses_ranked_search_without
             "content_tags": ["stream"],
             "disliked_tags": ["heavy_rain"],
             "top_k": 5,
+            "language": "zh",
         }
     )
     assert result[0]["_id"] == "a1"
+    assert seen_queries[0]["language"] == "zh"
     request = retrieval.search.await_args.args[0]
     assert request.sleep_stage_tags == ["unwind"]
     assert request.content_tags == ["breathing_guidance", "stream"]
     assert request.disliked_tags == ["heavy_rain"]
+    assert request.language == "zh"
     service._hot.record_search.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_prescription_fills_locale_text_not_only_url(monkeypatch) -> None:
+    """原料表去掉文案后，处方候选须按请求语言补齐标题/描述/封面，不能只改 audio_url。"""
+    retrieval = MagicMock()
+    retrieval.search = AsyncMock(
+        return_value=[
+            {
+                "_id": "a1",
+                "status": True,
+                "audio_name": "",
+                "description": "",
+                "cover_url": "",
+                "audio_url": "",
+                "sleep_stage_tags": [{"code": "unwind"}],
+                "content_form_tags": [{"code": "natural_sound"}],
+            }
+        ]
+    )
+    retrieval.search_prescription = retrieval.search
+    service = _service(MagicMock())
+    service._retrieval = retrieval
+    service._es_search.locale_displays_by_material_ids = AsyncMock(
+        return_value={
+            "a1": {
+                "material_id": "a1",
+                "language": "en",
+                "audio_name": "Night Rain",
+                "description": "Soft rain",
+                "summary": "Soft",
+                "audio_url": "https://cdn/en.mp3",
+                "cover_url": "https://cdn/en.png",
+            }
+        }
+    )
+
+    class Cursor:
+        def __init__(self, query, projection):
+            self.document = {
+                "code": "natural_sound",
+                "type": "content_form",
+                "language": "en",
+                "name": "Natural",
+            }
+
+        def __aiter__(self):
+            self.items = iter([self.document])
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self.items)
+            except StopIteration:
+                raise StopAsyncIteration
+
+    monkeypatch.setattr(service, "_tags", lambda: MagicMock(find=MagicMock(side_effect=Cursor)))
+    result = await service.search_prescription_audio(
+        {
+            "query_text": "rain",
+            "sleep_stage_tags": ["unwind"],
+            "content_tag_codes": ["natural_sound"],
+            "top_k": 3,
+            "language": "en",
+        }
+    )
+    assert result[0]["audio_url"] == "https://cdn/en.mp3"
+    assert result[0]["audio_name"] == "Night Rain"
+    assert result[0]["description"] == "Soft rain"
+    assert result[0]["cover_url"] == "https://cdn/en.png"
+    service._es_search.locale_displays_by_material_ids.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_prescription_content_tag_codes_scoped_by_language(monkeypatch) -> None:
+    """同一 code 的 zh/en 行不应再被当成冲突；只取请求语言那一行。"""
+    retrieval = MagicMock()
+    retrieval.search = AsyncMock(
+        return_value=[
+            {
+                "_id": "a1",
+                "status": True,
+                "audio_url": "https://cdn/a.mp3",
+                "sleep_stage_tags": [{"code": "unwind"}],
+            }
+        ]
+    )
+    retrieval.search_prescription = retrieval.search
+    service = _service(MagicMock())
+    service._retrieval = retrieval
+
+    class Cursor:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def __aiter__(self):
+            self.items = iter(self.rows)
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self.items)
+            except StopIteration:
+                raise StopAsyncIteration
+
+    tags = MagicMock()
+
+    def _find(query, projection):
+        del projection
+        assert query.get("language") == "en"
+        return Cursor(
+            [
+                {
+                    "code": "steady_rain",
+                    "type": "content_form",
+                    "language": "en",
+                    "name": "Steady Rain",
+                }
+            ]
+        )
+
+    tags.find.side_effect = _find
+    monkeypatch.setattr(service, "_tags", lambda: tags)
+    result = await service.search_prescription_audio(
+        {
+            "query_text": "rain",
+            "sleep_stage_tags": ["unwind"],
+            "content_tag_codes": ["steady_rain"],
+            "top_k": 1,
+            "language": "en",
+        }
+    )
+    assert result[0]["_id"] == "a1"
+    assert retrieval.search.await_args.args[0].language == "en"
 
 
 @pytest.mark.asyncio
@@ -1556,7 +1906,7 @@ async def test_get_audio_english_like_matches_en_name_and_dislike_matches_englis
     wave = {
         "_id": "wave",
         "audio_name": "海浪",
-        "language": "zh",
+        "language": "en",
         "created_at": "2026-08-01T00:00:00Z",
         "content_form_tags": [
             {
@@ -1570,7 +1920,7 @@ async def test_get_audio_english_like_matches_en_name_and_dislike_matches_englis
     fire = {
         "_id": "fire",
         "audio_name": "壁炉",
-        "language": "zh",
+        "language": "en",
         "created_at": "2026-07-01T00:00:00Z",
         "content_form_tags": [
             {"tag_id": "f", "code": "fireplace", "name": "篝火/壁炉", "en_name": "Fireplace"}
@@ -1579,7 +1929,7 @@ async def test_get_audio_english_like_matches_en_name_and_dislike_matches_englis
     thunder = {
         "_id": "thunder",
         "audio_name": "雷声",
-        "language": "zh",
+        "language": "en",
         "created_at": "2026-06-01T00:00:00Z",
         "content_form_tags": [
             {"tag_id": "t", "code": "thunder", "name": "雷声", "en_name": "Thunder"}
@@ -1588,7 +1938,7 @@ async def test_get_audio_english_like_matches_en_name_and_dislike_matches_englis
     insects = {
         "_id": "insects",
         "audio_name": "虫鸣",
-        "language": "zh",
+        "language": "en",
         "created_at": "2026-05-01T00:00:00Z",
         "content_form_tags": [
             {
@@ -1632,6 +1982,7 @@ async def test_get_audio_english_like_matches_en_name_and_dislike_matches_englis
         fetch_all=False,
         query_text="",
         tag_code="",
+        language="en",
         content_form_codes=["Natural Sound", "Gentle Ocean Wave"],
         dislike_text="Keep out thunder, barking, and sirens.",
     )
@@ -1644,7 +1995,7 @@ async def test_get_audio_free_text_drops_scores_below_threshold() -> None:
     fire = {
         "_id": "fire",
         "audio_name": "壁炉",
-        "language": "zh",
+        "language": "en",
         "created_at": "2026-07-01T00:00:00Z",
         "content_form_tags": [
             {"tag_id": "f", "code": "fireplace", "name": "篝火/壁炉", "en_name": "Fireplace"}
@@ -1653,7 +2004,7 @@ async def test_get_audio_free_text_drops_scores_below_threshold() -> None:
     thunder = {
         "_id": "thunder",
         "audio_name": "雷声",
-        "language": "zh",
+        "language": "en",
         "created_at": "2026-06-01T00:00:00Z",
         "content_form_tags": [
             {"tag_id": "t", "code": "thunder", "name": "雷声", "en_name": "Thunder"}
@@ -1707,10 +2058,68 @@ async def test_get_audio_free_text_drops_scores_below_threshold() -> None:
         fetch_all=False,
         query_text="",
         tag_code="",
+        language="en",
         dislike_text="campfire thunder",
     )
 
     assert [item["id"] for item in payload["list"]] == ["fire", "thunder"]
+
+
+@pytest.mark.asyncio
+async def test_get_audio_zh_ignores_english_dislike_words() -> None:
+    """zh 环境只走中文分词，英文 dislike 词不参与沉底。"""
+    fire = {
+        "_id": "fire",
+        "audio_name": "壁炉",
+        "language": "zh",
+        "created_at": "2026-07-01T00:00:00Z",
+        "content_form_tags": [
+            {"tag_id": "f", "code": "fireplace", "name": "篝火/壁炉", "en_name": "Fireplace"}
+        ],
+    }
+    thunder = {
+        "_id": "thunder",
+        "audio_name": "雷声",
+        "language": "zh",
+        "created_at": "2026-06-01T00:00:00Z",
+        "content_form_tags": [
+            {"tag_id": "t", "code": "thunder", "name": "雷声", "en_name": "Thunder"}
+        ],
+    }
+    encoder = MagicMock()
+    encoder.is_loaded = True
+    encoder.encode_one = AsyncMock(return_value=[1.0, 0.0])
+    es_search = MagicMock()
+    es_search.list_content_tag_vectors = AsyncMock(
+        return_value=[
+            {
+                "id": "t",
+                "label": "雷声",
+                "name_en": "Thunder",
+                "dimension": "content_form",
+                "vector": [0.0, 1.0],
+                "vector_en": [1.0, 0.0],
+            }
+        ]
+    )
+    svc = _service(
+        _mongo_collection([fire, thunder]),
+        es_search=es_search,
+        encoder=encoder,
+    )
+
+    payload = await svc.get_audio(
+        page=1,
+        page_size=10,
+        fetch_all=False,
+        query_text="",
+        tag_code="",
+        language="zh",
+        dislike_text="Keep out thunder, barking, and sirens.",
+    )
+
+    assert [item["id"] for item in payload["list"]] == ["fire", "thunder"]
+    encoder.encode_one.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -2019,6 +2428,6 @@ def test_filter_docs_keeps_blank_and_null_language() -> None:
         {"id": "7", "language": "en"},
     ]
     kept = _filter_docs_by_request_language(docs, "zh")
-    assert [d["id"] for d in kept] == ["1", "2", "3", "4", "5", "6"]
+    assert [d["id"] for d in kept] == ["1", "2", "3", "4", "5", "6", "7"]
     kept_en = _filter_docs_by_request_language(docs, "en")
-    assert [d["id"] for d in kept_en] == ["1", "2", "3", "4", "5", "7"]
+    assert [d["id"] for d in kept_en] == ["1", "2", "3", "4", "5", "6", "7"]

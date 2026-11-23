@@ -35,7 +35,7 @@ from app.core.audio_tags import (
 from app.core.config import Settings
 from app.embedding.encoder import Encoder
 from app.es.search import CANDIDATE_QUERY_SIZE, SEARCH_CANDIDATE_SOURCE_INCLUDES, EsSearch
-from app.es.somni_docs import resolve_query_language
+from app.es.somni_docs import resolve_locale_language, resolve_search_language
 from app.schemas.audio import (
     EVIDENCE_WEIGHT_MAP,
     AudioTags,
@@ -300,13 +300,15 @@ class RetrievalService:
             )
             if not positive:
                 return await self._search_tag_only(effective)
-            language = resolve_query_language(positive)
+            # 处方请求 language 决定查哪路语言表；编码器仍只有中英两套模型。
+            language = resolve_locale_language(request.language)
+            encode_language = resolve_search_language(language)
             size = _recall_size(request.top_k)
 
             async def vector_lane():
-                if language == "zh" and not vectors_available:
+                if encode_language == "zh" and not vectors_available:
                     raise RuntimeError("prescription_query_encoder_unavailable")
-                vector = await self._encode_hybrid_query(positive, language)
+                vector = await self._encode_hybrid_query(positive, encode_language)
                 return await self._es_search.search_by_description_vector(
                     vector,
                     sleep_stage_tags=request.sleep_stage_tags,

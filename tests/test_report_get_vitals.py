@@ -15,6 +15,9 @@ from app.server.somni.report.service import ReportService
 @pytest.mark.asyncio
 async def test_get_vitals_by_session() -> None:
     store = MagicMock()
+    store.find_session_payload = AsyncMock(
+        return_value={"timezone": "Asia/Shanghai", "payload": {}}
+    )
     store.list_telemetry_by_filter = AsyncMock(
         return_value=[
             {
@@ -33,6 +36,7 @@ async def test_get_vitals_by_session() -> None:
     assert isinstance(payload["hr"]["value"], int)
     assert len(payload["hr"]["series"]) == 2
     assert payload["hr"]["series"][0]["value"] == 72
+    assert payload["hr"]["series"][0]["collected_at"] == "2026-09-23T23:00:00+08:00"
     assert isinstance(payload["hr"]["series"][0]["value"], int)
     assert payload["hrv"]["value"] == 39
     assert isinstance(payload["hrv"]["value"], int)
@@ -77,6 +81,7 @@ async def test_get_vitals_by_device_window() -> None:
 @pytest.mark.asyncio
 async def test_get_vitals_floors_average() -> None:
     store = MagicMock()
+    store.find_session_payload = AsyncMock(return_value=None)
     store.list_telemetry_by_filter = AsyncMock(
         return_value=[
             {
@@ -104,6 +109,9 @@ async def test_get_vitals_floors_average() -> None:
 @pytest.mark.asyncio
 async def test_get_vitals_series_half_hour_buckets() -> None:
     store = MagicMock()
+    store.find_session_payload = AsyncMock(
+        return_value={"timezone": "Asia/Shanghai", "payload": {}}
+    )
     anchor = datetime(2026, 9, 23, 15, 7, tzinfo=timezone.utc)
     store.list_telemetry_by_filter = AsyncMock(
         return_value=[
@@ -135,6 +143,27 @@ async def test_get_vitals_series_half_hour_buckets() -> None:
     assert all(isinstance(point["value"], int) for point in payload["hr"]["series"])
     assert payload["hr"]["value"] == 53
     assert isinstance(payload["hr"]["value"], int)
+
+
+@pytest.mark.asyncio
+async def test_get_vitals_series_uses_session_timezone() -> None:
+    store = MagicMock()
+    store.find_session_payload = AsyncMock(
+        return_value={"timezone": "America/Los_Angeles", "payload": {}}
+    )
+    store.list_telemetry_by_filter = AsyncMock(
+        return_value=[
+            {
+                "ts": datetime(2026, 8, 9, 18, 0, tzinfo=timezone.utc),
+                "data": {"hr": 60, "br": 14},
+            }
+        ]
+    )
+    payload = await ReportService(None, Settings(), store=store).get_vitals(
+        session_id="session-tz"
+    )
+    assert payload["hr"]["series"][0]["collected_at"] == "2026-08-09T11:00:00-07:00"
+    assert payload["br"]["series"][0]["collected_at"] == "2026-08-09T11:00:00-07:00"
 
 
 @pytest.mark.asyncio

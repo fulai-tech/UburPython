@@ -42,17 +42,17 @@ def _tag_labels(doc: dict[str, Any], *, keys: tuple[str, ...]) -> list[str]:
 
 
 def build_material_description_text(doc: dict[str, Any]) -> str:
-    """中文混合文本：audio_name + description + 标签 name/code/en_name。"""
+    """中文混合文本（语种纯净）：audio_name + description + 标签中文名。"""
     parts = [
         str(doc.get("audio_name", "")).strip(),
         str(doc.get("description", "")).strip(),
-        " ".join(_tag_labels(doc, keys=("name", "code", "en_name"))).strip(),
+        " ".join(_tag_labels(doc, keys=("name",))).strip(),
     ]
     return " ".join(part for part in parts if part)
 
 
 def build_material_description_text_en(doc: dict[str, Any]) -> str:
-    """英文混合文本：audio_name_en + description_en + 标签 en_name。"""
+    """英文混合文本（语种纯净）：audio_name_en + description_en + 标签英文名。"""
     parts = [
         str(doc.get("audio_name_en", "")).strip(),
         str(doc.get("description_en", "")).strip(),
@@ -62,7 +62,7 @@ def build_material_description_text_en(doc: dict[str, Any]) -> str:
 
 
 def material_source_for_es(doc: dict[str, Any]) -> dict[str, Any] | None:
-    """Mongo/HTTP 文档 → ES _source（无 _id/id）；缺 audio_url 返回 None。"""
+    """手板 Mongo/HTTP 文档 → ES _source（无 _id/id）；缺 audio_url 返回 None。"""
     audio_url = str(doc.get("audio_url", "")).strip()
     if not audio_url:
         return None
@@ -74,12 +74,98 @@ def material_source_for_es(doc: dict[str, Any]) -> dict[str, Any] | None:
     return payload
 
 
+_SOMNI_MATERIAL_DROPPED_FIELDS = (
+    "_id",
+    "id",
+    "embedding",
+    "language",
+    "audio_name",
+    "audio_name_en",
+    "description",
+    "description_en",
+    "summary",
+    "short_description",
+    "short_description_en",
+    "audio_url",
+    "cover_url",
+    "description_text",
+    "description_text_en",
+    "description_vector",
+    "description_vector_en",
+    "mechanism_tags",
+    "medical_risk_tags",
+)
+
+
+def has_indexable_locale(rows: list[dict[str, Any]]) -> bool:
+    """语言表至少有一行 language 非空，原料才进 ES 原料索引。"""
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("language") or "").strip():
+            return True
+    return False
+
+
+def somni_material_source_for_es(doc: dict[str, Any]) -> dict[str, Any] | None:
+    """量产原料 → ES _source。不含语言表字段；标题/地址按 material_id+language 查语言索引。"""
+    doc_id = str(doc.get("_id") or doc.get("id") or "").strip()
+    if not doc_id:
+        return None
+    payload = {k: v for k, v in doc.items() if k not in _SOMNI_MATERIAL_DROPPED_FIELDS}
+    payload["sleep_stage_names"] = extract_sleep_stage_names(payload)
+    return payload
+
+
+def build_locale_description_text(doc: dict[str, Any]) -> str:
+    """语言行检索文本：标题 + 描述 + 短描述。标签名在原料上，按 code 另查。"""
+    parts = [
+        str(doc.get("audio_name", "")).strip(),
+        str(doc.get("description", "")).strip(),
+        str(doc.get("summary", "")).strip(),
+    ]
+    return " ".join(part for part in parts if part)
+
+
+def locale_source_for_es(doc: dict[str, Any]) -> dict[str, Any] | None:
+    """语言表文档 → ES _source。缺 material_id 或 language 则跳过。"""
+    material_id = str(doc.get("material_id", "")).strip()
+    language = str(doc.get("language", "")).strip().lower()
+    if not material_id or not language:
+        return None
+    summary = str(doc.get("summary") or doc.get("short_description") or "")
+    payload = {
+        "material_id": material_id,
+        "language": language,
+        "audio_name": str(doc.get("audio_name") or ""),
+        "description": str(doc.get("description") or ""),
+        "summary": summary,
+        "audio_url": str(doc.get("audio_url") or ""),
+        "cover_url": str(doc.get("cover_url") or ""),
+        "create_time": doc.get("create_time"),
+        "update_time": doc.get("update_time"),
+    }
+    payload["description_text"] = build_locale_description_text(payload)
+    return payload
+
+
 def resolve_search_language(language: str | None) -> str:
-    """请求/展示语言：缺省/zh→zh；en 及其它→en。"""
+    """编码器 / 手板双字段：缺省/zh→zh；其它→en（仅中英两套模型）。"""
     lang = (language or "").strip().lower()
     if not lang or lang == "zh" or lang.startswith("zh"):
         return "zh"
     return "en"
+
+
+def resolve_locale_language(language: str | None) -> str:
+    """语言表 term 过滤：保留 zh/en/fr/ja 等主语言码；缺省→zh。"""
+    lang = (language or "").strip().lower()
+    if not lang or lang == "zh" or lang.startswith("zh"):
+        return "zh"
+    if lang == "en" or lang.startswith("en"):
+        return "en"
+    primary = lang.split("-", 1)[0].strip()
+    return primary or "zh"
 
 
 def resolve_query_language(text: str, request_language: str | None = None) -> str:
@@ -91,8 +177,18 @@ def resolve_query_language(text: str, request_language: str | None = None) -> st
     return resolve_search_language(request_language)
 
 
+def locale_vector_field(language: str) -> str | None:
+    """语言表 knn 字段：仅 zh/en 有向量；其它语言返回 None（走 BM25）。"""
+    lang = resolve_locale_language(language)
+    if lang == "zh":
+        return "description_vector"
+    if lang == "en":
+        return "description_vector_en"
+    return None
+
+
 def description_text_field(language: str) -> str:
-    """BM25 字段：zh→description_text，en→description_text_en。"""
+    """手板 BM25 字段：zh→description_text，en→description_text_en。量产语言表固定用 description_text。"""
     return (
         "description_text_en"
         if resolve_search_language(language) == "en"

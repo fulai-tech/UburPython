@@ -5,6 +5,7 @@ from __future__ import annotations
 from app.es.index_mappings import (
     build_handboard_audio_materials_mapping,
     build_handboard_audio_tag_dictionary_mapping,
+    build_somni_audio_material_locales_mapping,
     build_somni_audio_materials_mapping,
     build_somni_audio_tag_dictionary_mapping,
 )
@@ -14,12 +15,13 @@ from app.es.search import EsSearch
 def test_materials_mapping_fields_have_descriptions() -> None:
     mapping = build_somni_audio_materials_mapping(512, 384)
     props = mapping["properties"]
-    assert props["audio_name"]["meta"]["description"]
-    assert props["audio_name_en"]["type"] == "keyword"
-    assert props["description_en"]["type"] == "text"
-    assert props["description_text_en"]["type"] == "text"
-    assert props["description_vector"]["dims"] == 512
-    assert props["description_vector_en"]["dims"] == 384
+    assert "audio_name" not in props
+    assert "summary" not in props
+    assert "audio_url" not in props
+    assert "description_text" not in props
+    assert "description_vector" not in props
+    assert "language" not in props
+    assert props["status"]["type"] == "boolean"
     assert mapping["_meta"]["field_descriptions"]["sleep_stage_tags"]
     assert mapping["_meta"]["field_descriptions"]["sleep_stage_names"]
     assert props["sleep_stage_names"]["type"] == "keyword"
@@ -32,8 +34,22 @@ def test_dictionary_mapping_vector_fields_have_descriptions() -> None:
     assert "512" in props["name_vector"]["meta"]["description"]
     assert props["name_en_vector"]["dims"] == 384
     assert "384" in props["name_en_vector"]["meta"]["description"]
+    assert props["language"]["type"] == "keyword"
+    assert props["parent_id"]["type"] == "keyword"
+    assert "name_en" not in props
+    assert "parent_tag_id" not in props
     assert props["created_by"]["meta"]["description"] == "标签创建人"
     assert props["updated_by"]["meta"]["description"] == "标签最后更新人"
+
+
+def test_locale_mapping_keeps_two_vector_slots() -> None:
+    props = build_somni_audio_material_locales_mapping(512, 384)["properties"]
+    assert props["material_id"]["type"] == "keyword"
+    assert props["language"]["type"] == "keyword"
+    assert props["summary"]["type"] == "text"
+    assert props["description_text"]["type"] == "text"
+    assert props["description_vector"]["dims"] == 512
+    assert props["description_vector_en"]["dims"] == 384
 
 
 def test_parse_tags_maps_somni_material_structure() -> None:

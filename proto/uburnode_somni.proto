@@ -304,7 +304,7 @@ message AudioListItem {
   optional string cover_url = 4;
   optional string description = 5;  // 量产列表用短描述 short_description 填充；缺省空串
   optional int32 vip = 6;  // 库无该字段时显式返回 0
-  repeated string tag = 7;  // 内容形态标签名；zh 取 name，en 取 name_en（缺省回退 name）
+  repeated string tag = 7;  // 内容形态标签名；按 code 查词典，zh 取 name，en 取 name_en（缺省空串，不回退）
   optional bool is_voice = 8;  // voice_presence_ratio 为 0 或缺失时 false，其余数值为 true
   optional string audio_name_en = 9;  // 英文名；前端按 language 切换展示
   optional string description_en = 10;  // 英文短描述（库字段 short_description_en）；前端按 language 切换展示
@@ -315,6 +315,26 @@ message GetAudioRes {
   int32 page = 2;
   int32 page_size = 3;
   int32 total = 4;
+}
+
+message GetAudioByIdsReq {
+  repeated string ids = 1;       // 原料文档 id；空则返回空 list；去重后上限 100
+  optional string language = 2;  // zh / en；缺省 zh
+}
+
+message AudioDetailItem {
+  optional string id = 1;
+  optional string audio_name = 2;   // 按 language 就地填充；无平行 *_en
+  optional string audio_url = 3;
+  optional string cover_url = 4;
+  optional string description = 5;  // 短描述；按 language 就地填充
+  optional int32 vip = 6;
+  repeated string tag = 7;          // 按 code 查词典后按 language 取名
+  optional bool is_voice = 8;
+}
+
+message GetAudioByIdsRes {
+  repeated AudioDetailItem list = 1;
 }
 
 message GetAudioTagReq {}
@@ -371,6 +391,8 @@ message PrescriptionAudioSearchTask {
   repeated string disliked_tags = 7;
   int32 top_k = 8;
   repeated string content_tags = 9;
+  // 展示/召回语言：zh / en / fr / ja；空或缺省为 zh
+  string language = 10;
 }
 message SearchPrescriptionAudioReq { repeated PrescriptionAudioSearchTask tasks = 1; }
 message PrescriptionAudioSearchResult {
@@ -379,12 +401,130 @@ message PrescriptionAudioSearchResult {
 }
 message SearchPrescriptionAudioRes { repeated PrescriptionAudioSearchResult results = 1; }
 
+// 原料文档上的嵌套标签引用。原料写接口不改标签字典。
+message AudioTagRef {
+  optional string tag_id = 1;
+  optional string code = 2;
+  optional string name = 3;
+}
+
+message AudioContentTag {
+  optional string tag_id = 1;
+  optional string code = 2;
+  optional string name = 3;
+  optional string en_name = 4;
+  optional string parent_tag_id = 5;
+  optional string parent_tag_code = 6;
+}
+
+message AudioEngineeringValue {
+  optional string tag_id = 1;
+  optional string code = 2;
+  optional string name = 3;
+}
+
+message AudioEngineeringTag {
+  optional string tag_id = 1;
+  optional string code = 2;
+  optional string name = 3;
+  optional AudioEngineeringValue value = 4;
+  repeated double band_values = 5;
+  optional double relative_loudness = 6;
+}
+
+message AudioTagRefList { repeated AudioTagRef items = 1; }
+message AudioContentTagList { repeated AudioContentTag items = 1; }
+message AudioEngineeringTagList { repeated AudioEngineeringTag items = 1; }
+message AudioEmbedding { repeated double values = 1; }
+
+// 只序列化调用方显式传入的字段。列表字段用包装消息，空列表也能表示“清空”。
+message AudioMaterialInput {
+  optional string audio_name = 1;
+  optional string audio_url = 2;
+  optional string cover_url = 3;
+  optional string description = 4;
+  optional string summary = 5;
+  optional bool status = 6;
+  optional int32 operation_type = 7;
+  optional string source = 8;
+  optional int32 vip = 9;
+  optional string created_by = 10;
+  optional string updated_by = 11;
+  optional AudioTagRefList sleep_stage_tags = 12;
+  optional AudioContentTagList content_form_tags = 13;
+  reserved 14;
+  reserved "mechanism_tags";
+  optional AudioEngineeringTagList audio_engineering_tags = 15;
+  reserved 16;
+  reserved "medical_risk_tags";
+  optional AudioTagRefList evidence_level_tags = 17;
+  optional AudioEmbedding embedding = 18;
+  // 语言表行。新增必填；更新标题、描述、短描述或地址时也必填。
+  optional string language = 19;
+}
+
+message UpdateAudioItem {
+  string id = 1;
+  AudioMaterialInput fields = 2;
+}
+
+message DeleteAudioItem {
+  string id = 1;
+}
+
+message CreateAudioReq { repeated AudioMaterialInput items = 1; }  // 单次最多 200 条
+message UpdateAudioReq { repeated UpdateAudioItem items = 1; }
+message DeleteAudioReq { repeated DeleteAudioItem items = 1; }
+
+message AudioWriteItemRes {
+  int32 index = 1;    // 请求 items 下标
+  bool ok = 2;
+  string id = 3;      // 成功时为原料 _id；失败时可能仍带回已落库的 id
+  string message = 4; // 失败原因；成功为空
+}
+
+message AudioWriteBatchRes {
+  repeated AudioWriteItemRes items = 1;
+}
+
+// 标签字典。一行一种语言。中文名向量是 name_vector，英文名向量是 name_en_vector。
+message AudioTagInput {
+  optional string type = 1;
+  optional string code = 2;
+  optional string language = 3;
+  optional string name = 4;
+  optional string status = 5;
+  optional string parent_id = 6;
+  optional string created_by = 7;
+  optional string updated_by = 8;
+}
+
+message UpdateAudioTagItem {
+  string id = 1;
+  AudioTagInput fields = 2;
+}
+
+message DeleteAudioTagItem {
+  string id = 1;
+}
+
+message CreateAudioTagReq { repeated AudioTagInput items = 1; }  // 单次最多 200 条
+message UpdateAudioTagReq { repeated UpdateAudioTagItem items = 1; }
+message DeleteAudioTagReq { repeated DeleteAudioTagItem items = 1; }
+
 service AudioService {
   rpc GetAudio (GetAudioReq) returns (GetAudioRes);
+  rpc GetAudioByIds (GetAudioByIdsReq) returns (GetAudioByIdsRes);
   rpc GetAudioTag (GetAudioTagReq) returns (GetAudioTagRes);
   rpc GetHot (GetHotReq) returns (GetHotRes);
   rpc SearchAudio (SearchAudioReq) returns (SearchAudioRes);
   rpc SearchPrescriptionAudio (SearchPrescriptionAudioReq) returns (SearchPrescriptionAudioRes);
+  rpc CreateAudio (CreateAudioReq) returns (AudioWriteBatchRes);
+  rpc UpdateAudio (UpdateAudioReq) returns (AudioWriteBatchRes);
+  rpc DeleteAudio (DeleteAudioReq) returns (AudioWriteBatchRes);
+  rpc CreateAudioTag (CreateAudioTagReq) returns (AudioWriteBatchRes);
+  rpc UpdateAudioTag (UpdateAudioTagReq) returns (AudioWriteBatchRes);
+  rpc DeleteAudioTag (DeleteAudioTagReq) returns (AudioWriteBatchRes);
 }
 
 message GetUserProfileReq {

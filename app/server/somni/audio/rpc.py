@@ -13,6 +13,11 @@ from app.core.exceptions import AppError, ServiceNotReadyError
 from app.schemas.audio import SearchAudioRequest
 from app.server.errors import abort_from_app_error, abort_invalid, run_rpc_call
 from app.server.somni.audio.hot import parse_hot_kind
+from app.server.somni.audio.tag_writes import audio_tag_input_to_fields
+from app.server.somni.audio.writes import (
+    AUDIO_WRITE_BATCH_LIMIT,
+    audio_material_input_to_fields,
+)
 from app.server.somni.metadata import parse_language
 from app.uburnode_grpc.grpc_gen import uburnode_somni_pb2, uburnode_somni_pb2_grpc
 
@@ -37,6 +42,22 @@ class AudioRpc(uburnode_somni_pb2_grpc.AudioServiceServicer):
                 language=language,
             )
             return _to_audio_res(payload)
+
+        return await run_rpc_call(context, _do)
+
+    async def GetAudioByIds(self, request, context):
+        service = await self._require(context)
+        try:
+            language = parse_language(request.language if request.HasField("language") else None)
+        except ValueError as exc:
+            await abort_invalid(context, str(exc))
+
+        async def _do():
+            payload = await service.get_audio_by_ids(
+                ids=list(request.ids),
+                language=language,
+            )
+            return _to_audio_by_ids_res(payload)
 
         return await run_rpc_call(context, _do)
 
@@ -86,6 +107,7 @@ class AudioRpc(uburnode_somni_pb2_grpc.AudioServiceServicer):
                         "content_tags": list(task.content_tags),
                         "disliked_tags": list(task.disliked_tags),
                         "top_k": task.top_k,
+                        "language": parse_language(task.language),
                     }
                 )
                 result = response.results.add(task_id=task.task_id)
@@ -94,6 +116,78 @@ class AudioRpc(uburnode_somni_pb2_grpc.AudioServiceServicer):
                     struct = ParseDict(structured, Struct())
                     result.candidates.add().CopyFrom(struct)
             return response
+
+        return await run_rpc_call(context, _do)
+
+    async def CreateAudio(self, request, context):
+        if len(request.items) > AUDIO_WRITE_BATCH_LIMIT:
+            await abort_invalid(context, f"单次最多 {AUDIO_WRITE_BATCH_LIMIT} 条")
+        service = await self._require(context)
+        items = [audio_material_input_to_fields(item) for item in request.items]
+
+        async def _do():
+            return _to_write_batch_res(await service.create_audios(items))
+
+        return await run_rpc_call(context, _do)
+
+    async def UpdateAudio(self, request, context):
+        if len(request.items) > AUDIO_WRITE_BATCH_LIMIT:
+            await abort_invalid(context, f"单次最多 {AUDIO_WRITE_BATCH_LIMIT} 条")
+        service = await self._require(context)
+        items = [
+            {"id": item.id, "fields": audio_material_input_to_fields(item.fields)}
+            for item in request.items
+        ]
+
+        async def _do():
+            return _to_write_batch_res(await service.update_audios(items))
+
+        return await run_rpc_call(context, _do)
+
+    async def DeleteAudio(self, request, context):
+        if len(request.items) > AUDIO_WRITE_BATCH_LIMIT:
+            await abort_invalid(context, f"单次最多 {AUDIO_WRITE_BATCH_LIMIT} 条")
+        service = await self._require(context)
+        items = [{"id": item.id} for item in request.items]
+
+        async def _do():
+            return _to_write_batch_res(await service.delete_audios(items))
+
+        return await run_rpc_call(context, _do)
+
+    async def CreateAudioTag(self, request, context):
+        if len(request.items) > AUDIO_WRITE_BATCH_LIMIT:
+            await abort_invalid(context, f"单次最多 {AUDIO_WRITE_BATCH_LIMIT} 条")
+        service = await self._require(context)
+        items = [audio_tag_input_to_fields(item) for item in request.items]
+
+        async def _do():
+            return _to_write_batch_res(await service.create_audio_tags(items))
+
+        return await run_rpc_call(context, _do)
+
+    async def UpdateAudioTag(self, request, context):
+        if len(request.items) > AUDIO_WRITE_BATCH_LIMIT:
+            await abort_invalid(context, f"单次最多 {AUDIO_WRITE_BATCH_LIMIT} 条")
+        service = await self._require(context)
+        items = [
+            {"id": item.id, "fields": audio_tag_input_to_fields(item.fields)}
+            for item in request.items
+        ]
+
+        async def _do():
+            return _to_write_batch_res(await service.update_audio_tags(items))
+
+        return await run_rpc_call(context, _do)
+
+    async def DeleteAudioTag(self, request, context):
+        if len(request.items) > AUDIO_WRITE_BATCH_LIMIT:
+            await abort_invalid(context, f"单次最多 {AUDIO_WRITE_BATCH_LIMIT} 条")
+        service = await self._require(context)
+        items = [{"id": item.id} for item in request.items]
+
+        async def _do():
+            return _to_write_batch_res(await service.delete_audio_tags(items))
 
         return await run_rpc_call(context, _do)
 
@@ -215,6 +309,38 @@ def _to_audio_res(payload: dict[str, Any]) -> uburnode_somni_pb2.GetAudioRes:
             is_voice=bool(item.get("is_voice")),
             audio_name_en=str(item.get("audio_name_en") or ""),
             description_en=str(item.get("description_en") or ""),
+        )
+        for tag in item.get("tag") or []:
+            entry.tag.append(str(tag))
+        res.list.append(entry)
+    return res
+
+
+def _to_write_batch_res(items: list[dict[str, Any]]) -> uburnode_somni_pb2.AudioWriteBatchRes:
+    response = uburnode_somni_pb2.AudioWriteBatchRes()
+    for item in items:
+        response.items.append(
+            uburnode_somni_pb2.AudioWriteItemRes(
+                index=int(item.get("index") or 0),
+                ok=bool(item.get("ok")),
+                id=str(item.get("id") or ""),
+                message=str(item.get("message") or ""),
+            )
+        )
+    return response
+
+
+def _to_audio_by_ids_res(payload: dict[str, Any]) -> uburnode_somni_pb2.GetAudioByIdsRes:
+    res = uburnode_somni_pb2.GetAudioByIdsRes()
+    for item in payload.get("list") or []:
+        entry = uburnode_somni_pb2.AudioDetailItem(
+            id=str(item.get("id") or ""),
+            audio_name=str(item.get("audio_name") or ""),
+            audio_url=str(item.get("audio_url") or ""),
+            cover_url=str(item.get("cover_url") or ""),
+            description=str(item.get("description") or ""),
+            vip=int(item.get("vip") or 0),
+            is_voice=bool(item.get("is_voice")),
         )
         for tag in item.get("tag") or []:
             entry.tag.append(str(tag))

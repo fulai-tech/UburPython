@@ -45,7 +45,7 @@ class ReportService:
         self, uid: str, record_date: str, session_id: str = ""
     ) -> dict[str, Any]:
         _ = uid, record_date
-        on_bed, segments = await self._session_segments(session_id)
+        on_bed, segments, _tz = await self._session_segments(session_id)
         structure = calc.sleep_structure_from_segments(on_bed, segments)
         docs = await self._store.list_telemetry_by_session(session_id, "sleep")
         return {
@@ -78,7 +78,7 @@ class ReportService:
     ) -> dict[str, Any]:
         events = await self._store.list_events(uid, record_date)
         sleep_events, abnormal_count, intervention_count = _assemble_sleep_events(events)
-        on_bed, segments = await self._session_segments(session_id)
+        on_bed, segments, timezone_name = await self._session_segments(session_id)
         sid = session_id.strip()
         sleep_docs = await self._store.list_telemetry_by_session(sid, "sleep")
         env_docs = await self._store.list_telemetry_by_session(sid, "env")
@@ -89,9 +89,13 @@ class ReportService:
             "event_count": abnormal_count,
             "abnormal_count": abnormal_count,
             "intervention_count": intervention_count,
-            "idf_data": calc.idf_from_segments(segments, on_bed),
-            "physio_data": _physio_data(sleep_docs, percent),
-            "env_data": _env_data(env_docs, percent),
+            "idf_data": calc.idf_from_segments(
+                segments, on_bed, timezone_name=timezone_name
+            ),
+            "physio_data": _physio_data(
+                sleep_docs, percent, timezone_name=timezone_name
+            ),
+            "env_data": _env_data(env_docs, timezone_name=timezone_name),
         }
 
     async def get_structure(
@@ -109,7 +113,7 @@ class ReportService:
             "deep_sleep": {"minutes": 0, "percent": 0},
         }
         if record_date.strip() or session_id.strip():
-            on_bed, segments = await self._session_segments(session_id)
+            on_bed, segments, _tz = await self._session_segments(session_id)
             if segments:
                 parts = calc.sleep_structure_from_segments(on_bed, segments)
                 sleep_structure = {
@@ -164,8 +168,12 @@ class ReportService:
         self, uid: str, record_date: str, session_id: str = ""
     ) -> dict[str, Any]:
         _ = uid, record_date
-        on_bed, segments = await self._session_segments(session_id)
-        return {"sleep_quality": calc.sleep_quality_from_session(on_bed, segments)}
+        on_bed, segments, timezone_name = await self._session_segments(session_id)
+        return {
+            "sleep_quality": calc.sleep_quality_from_session(
+                on_bed, segments, timezone_name=timezone_name
+            )
+        }
 
     async def get_vitals(
         self,
@@ -185,10 +193,19 @@ class ReportService:
             end_time=end_time,
         )
         docs = await self._store.list_telemetry_by_filter(query)
-        hr = _avg_series(_metric_series(docs, "hr"))
-        br = _avg_series(_metric_series(docs, "br"))
-        hr["series"] = _half_hour_metric_series(docs, "hr")
-        br["series"] = _half_hour_metric_series(docs, "br")
+        timezone_name = await self._vitals_timezone_name(
+            session_id=session_id,
+            start_time=start_time,
+            end_time=end_time,
+        )
+        hr = _avg_series(_metric_series(docs, "hr", timezone_name=timezone_name))
+        br = _avg_series(_metric_series(docs, "br", timezone_name=timezone_name))
+        hr["series"] = _half_hour_metric_series(
+            docs, "hr", timezone_name=timezone_name
+        )
+        br["series"] = _half_hour_metric_series(
+            docs, "br", timezone_name=timezone_name
+        )
         return {
             "hr": hr,
             "br": br,
@@ -196,12 +213,28 @@ class ReportService:
             "brv": fixed_brv(),
         }
 
+    async def _vitals_timezone_name(
+        self,
+        *,
+        session_id: str,
+        start_time: str,
+        end_time: str,
+    ) -> str:
+        """仅 session 模式读会话包时区；时间窗模式无会话，回退上海。"""
+        sid = session_id.strip()
+        if not sid or (start_time.strip() and end_time.strip()):
+            return calc.resolve_report_timezone_name("")
+        doc = await self._store.find_session_payload(sid)
+        body = calc.session_body(doc)
+        return calc.session_timezone_name(body, doc)
+
     async def _session_segments(
         self, session_id: str
-    ) -> tuple[Any, list[dict[str, Any]]]:
+    ) -> tuple[Any, list[dict[str, Any]], str]:
         doc = await self._store.find_session_payload(session_id)
         body = calc.session_body(doc)
-        return calc.final_stages_segments(body)
+        on_bed, segments = calc.final_stages_segments(body)
+        return on_bed, segments, calc.session_timezone_name(body, doc)
 
 
 def _data_floats(docs: list[dict[str, Any]], key: str) -> list[float]:
@@ -217,7 +250,10 @@ def _data_floats(docs: list[dict[str, Any]], key: str) -> list[float]:
 
 
 def _physio_data(
-    docs: list[dict[str, Any]], bucket_percent: float
+    docs: list[dict[str, Any]],
+    bucket_percent: float,
+    *,
+    timezone_name: str = "",
 ) -> list[dict[str, Any]]:
     points: list[dict[str, Any]] = []
     for start, bucket in _percent_groups(docs, bucket_percent):
@@ -225,7 +261,9 @@ def _physio_data(
         brs = _bucket_floats(bucket, "br")
         points.append(
             {
-                "collected_at": calc.format_collected_at(start),
+                "collected_at": calc.format_collected_at(
+                    start, timezone_name=timezone_name
+                ),
                 "metrics": {
                     "heart_rate": _round_mean(hrs),
                     "respiration_rate": _round_mean(brs),
@@ -236,13 +274,18 @@ def _physio_data(
 
 
 def _env_data(
-    docs: list[dict[str, Any]], bucket_percent: float
+    docs: list[dict[str, Any]],
+    *,
+    timezone_name: str = "",
 ) -> list[dict[str, Any]]:
+    """环境曲线按半小时分桶；锚点为最早 env 采样时间（与 vitals series 一致）。"""
     points: list[dict[str, Any]] = []
-    for start, bucket in _percent_groups(docs, bucket_percent):
+    for start, bucket in _half_hour_groups(docs):
         points.append(
             {
-                "collected_at": calc.format_collected_at(start),
+                "collected_at": calc.format_collected_at(
+                    start, timezone_name=timezone_name
+                ),
                 "temperature": _round_mean(_bucket_floats(bucket, "temp")),
                 "humidity": _round_mean(_bucket_floats(bucket, "humi")),
                 "illuminance": _round_mean(_bucket_floats(bucket, "lux")),
@@ -328,38 +371,53 @@ def _round_mean(values: list[float]) -> int:
     return int(mean.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
-def _percent_metric_series(
-    docs: list[dict[str, Any]], key: str, bucket_percent: float
+def _metric_series_from_groups(
+    groups: list[tuple[datetime, list[dict[str, Any]]]],
+    key: str,
+    *,
+    timezone_name: str = "",
 ) -> list[dict[str, Any]]:
     series: list[dict[str, Any]] = []
-    for start, bucket in _percent_groups(docs, bucket_percent):
+    for start, bucket in groups:
         values = _bucket_floats(bucket, key)
         if not values:
             continue
         series.append(
             {
-                "collected_at": calc.format_collected_at(start),
+                "collected_at": calc.format_collected_at(
+                    start, timezone_name=timezone_name
+                ),
                 "value": _round_mean(values),
             }
         )
     return series
+
+
+def _percent_metric_series(
+    docs: list[dict[str, Any]],
+    key: str,
+    bucket_percent: float,
+    *,
+    timezone_name: str = "",
+) -> list[dict[str, Any]]:
+    return _metric_series_from_groups(
+        _percent_groups(docs, bucket_percent),
+        key,
+        timezone_name=timezone_name,
+    )
 
 
 def _half_hour_metric_series(
-    docs: list[dict[str, Any]], key: str
+    docs: list[dict[str, Any]],
+    key: str,
+    *,
+    timezone_name: str = "",
 ) -> list[dict[str, Any]]:
-    series: list[dict[str, Any]] = []
-    for start, bucket in _half_hour_groups(docs):
-        values = _bucket_floats(bucket, key)
-        if not values:
-            continue
-        series.append(
-            {
-                "collected_at": calc.format_collected_at(start),
-                "value": _round_mean(values),
-            }
-        )
-    return series
+    return _metric_series_from_groups(
+        _half_hour_groups(docs),
+        key,
+        timezone_name=timezone_name,
+    )
 
 
 def _assemble_sleep_events(
@@ -483,7 +541,12 @@ def _parse_iso(value: str) -> datetime:
     return datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
 
 
-def _metric_series(docs: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
+def _metric_series(
+    docs: list[dict[str, Any]],
+    key: str,
+    *,
+    timezone_name: str = "",
+) -> list[dict[str, Any]]:
     points: list[dict[str, Any]] = []
     for doc in docs:
         data = doc.get("data") or {}
@@ -494,7 +557,9 @@ def _metric_series(docs: list[dict[str, Any]], key: str) -> list[dict[str, Any]]
             continue
         points.append(
             {
-                "collected_at": calc.format_collected_at(doc.get("ts")),
+                "collected_at": calc.format_collected_at(
+                    doc.get("ts"), timezone_name=timezone_name
+                ),
                 "value": math.floor(num),
             }
         )

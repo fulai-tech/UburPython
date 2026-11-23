@@ -106,11 +106,13 @@ def format_hhmm(value: Any) -> str:
     return to_report_tz(dt).strftime("%H:%M")
 
 
-def format_collected_at(value: Any) -> str:
+def format_collected_at(value: Any, timezone_name: str = "") -> str:
+    """格式化为指定时区 ISO；空/非法 timezone_name 回退 Asia/Shanghai。"""
     dt = coerce_datetime(value)
     if dt is None:
         return ""
-    return to_report_tz(dt).isoformat()
+    tz = resolve_report_timezone(timezone_name)
+    return ensure_aware(dt).astimezone(tz).isoformat()
 
 
 def sleep_stage_parts(raw: dict[str, Any]) -> dict[str, Any]:
@@ -232,7 +234,7 @@ def align_weekly_days(
     return aligned
 
 
-# ---- session payload / final_stages（本地墙钟毫秒戳，不做 UTC 换算）----
+# ---- session payload / final_stages（epoch 毫秒按 payload 时区格式化为墙钟）----
 
 STAGE_AWAKE = 1
 STAGE_LIGHT = 2
@@ -260,11 +262,12 @@ def ms_to_minutes(ms: int) -> int:
     return math.floor(ms / 60_000)
 
 
-def format_local_ms_hhmm(ms: int) -> str:
-    """把本地墙钟毫秒戳直接格式化为 HH:mm（按 UTC 日历字段，不做时区换算）。"""
+def format_local_ms_hhmm(ms: int, timezone_name: str = "") -> str:
+    """UTC epoch 毫秒 → 指定时区墙钟 HH:mm；空/非法时区回退 Asia/Shanghai。"""
     if ms <= 0:
         return ""
-    return datetime.fromtimestamp(ms / 1000.0, tz=UTC).strftime("%H:%M")
+    tz = resolve_report_timezone(timezone_name)
+    return datetime.fromtimestamp(ms / 1000.0, tz=UTC).astimezone(tz).strftime("%H:%M")
 
 
 def _on_bed_segment_ms(item: Any) -> tuple[int, int, int]:
@@ -308,6 +311,77 @@ def on_bed_duration_ms(on_bed: Any) -> int:
         _start, _end, duration = _on_bed_segment_ms(item)
         total += duration
     return total
+
+
+def _stage_timeline_ms(segments: list[dict[str, Any]]) -> tuple[int, int]:
+    """阶段 duration 合计，以及最后一段结束时间（start_ts_ms + duration_ms）。"""
+    total = 0
+    for seg in segments:
+        if not isinstance(seg, dict):
+            continue
+        duration = as_ms(seg.get("duration_ms"))
+        if duration > 0:
+            total += duration
+    if not segments or not isinstance(segments[-1], dict):
+        return total, 0
+    last = segments[-1]
+    start = as_ms(last.get("start_ts_ms"))
+    duration = as_ms(last.get("duration_ms"))
+    if start <= 0 or duration < 0:
+        return total, 0
+    return total, start + duration
+
+
+def _on_bed_intervals(on_bed: Any) -> list[tuple[int, int]]:
+    if not isinstance(on_bed, list):
+        return []
+    intervals: list[tuple[int, int]] = []
+    for item in on_bed:
+        start, end, _duration = _on_bed_segment_ms(item)
+        if start > 0 and end > start:
+            intervals.append((start, end))
+    return intervals
+
+
+def _merge_intervals(intervals: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(intervals):
+        if end <= start:
+            continue
+        if not merged or start > merged[-1][1]:
+            merged.append((start, end))
+        else:
+            prev_start, prev_end = merged[-1]
+            merged[-1] = (prev_start, max(prev_end, end))
+    return merged
+
+
+def on_bed_duration_ms_for_efficiency(
+    on_bed: Any,
+    segments: list[dict[str, Any]],
+) -> int:
+    """在床时长短于阶段时间轴时，从第一处离床空档补到最后一段结束。
+
+    补上的区间和已有 on_bed 重叠的部分只算一次。例如在床 23:00-23:10、23:30-23:50，
+    最后阶段到 00:50，则补 23:10-00:50，在床合计为 23:00-00:50。
+    """
+    tib = on_bed_duration_ms(on_bed)
+    stage_ms, stage_end = _stage_timeline_ms(segments)
+    if tib <= 0 or stage_ms <= tib or stage_end <= 0:
+        return tib
+    merged = _merge_intervals(_on_bed_intervals(on_bed))
+    if not merged or stage_end <= merged[-1][1]:
+        return tib
+    pad_start = merged[-1][1]
+    for index, (_start, end) in enumerate(merged):
+        next_start = merged[index + 1][0] if index + 1 < len(merged) else stage_end
+        if end < next_start and end < stage_end:
+            pad_start = end
+            break
+    if pad_start >= stage_end:
+        return tib
+    covered = _merge_intervals([*merged, (pad_start, stage_end)])
+    return sum(end - start for start, end in covered)
 
 
 def normalize_segments(
@@ -358,6 +432,29 @@ def normalize_segments(
     return normalized
 
 
+def allocate_percentages(weights: list[int | float], target: int = 100) -> list[int]:
+    """按权重切整数百分比，合计为 target（最大余数法）。"""
+    total = sum(float(weight) for weight in weights)
+    if total <= 0:
+        return [0 for _ in weights]
+    exact = [(float(weight) * target) / total for weight in weights]
+    floors = [math.floor(value + 1e-9) for value in exact]
+    left = target - sum(floors)
+    order = sorted(
+        (
+            (value - math.floor(value + 1e-9), index)
+            for index, value in enumerate(exact)
+        ),
+        key=lambda item: (-item[0], item[1]),
+    )
+    for _fraction, index in order:
+        if left <= 0:
+            break
+        floors[index] += 1
+        left -= 1
+    return floors
+
+
 def sleep_structure_from_segments(
     on_bed: Any,
     segments: list[dict[str, Any]],
@@ -385,18 +482,15 @@ def sleep_structure_from_segments(
     sleep_ms = (
         stage_ms["rem_sleep"] + stage_ms["light_sleep"] + stage_ms["deep_sleep"]
     )
-    mins = {key: ms_to_minutes(value) for key, value in stage_ms.items()}
-
-    def part(key: str) -> dict[str, int]:
-        m = mins[key]
-        pct = math.floor(m / tib_min * 100) if tib_min > 0 else 0
-        return {"minutes": m, "percent": pct}
+    keys = ("awake", "rem_sleep", "light_sleep", "deep_sleep")
+    # 占比按原始毫秒切到 100%，避免不足 1 分钟的阶段被 floor 成 0 后挤占份额
+    percents = allocate_percentages([stage_ms[key] for key in keys])
+    mins = {key: ms_to_minutes(stage_ms[key]) for key in keys}
 
     return {
-        "awake": part("awake"),
-        "rem_sleep": part("rem_sleep"),
-        "light_sleep": part("light_sleep"),
-        "deep_sleep": part("deep_sleep"),
+        key: {"minutes": mins[key], "percent": percents[index]}
+        for index, key in enumerate(keys)
+    } | {
         "total_minutes": ms_to_minutes(sleep_ms),
         "tib_minutes": tib_min,
     }
@@ -405,10 +499,14 @@ def sleep_structure_from_segments(
 def sleep_quality_from_session(
     on_bed: Any,
     segments: list[dict[str, Any]],
+    timezone_name: str = "",
 ) -> dict[str, Any]:
     bed_from, bed_to = on_bed_bounds(on_bed)
+    _stage_ms, stage_end = _stage_timeline_ms(segments)
+    # on_bed 末段早于分期末尾时（在床检测断档），离床时间对齐分期末尾，与效率补齐一致
+    leave_bed_ms = max(bed_to, stage_end) if stage_end > 0 else bed_to
     structure = sleep_structure_from_segments(on_bed, segments)
-    tib = int(structure["tib_minutes"])
+    tib = ms_to_minutes(on_bed_duration_ms_for_efficiency(on_bed, segments))
     sleep_min = int(structure["total_minutes"])
     efficiency = math.floor(sleep_min / tib * 100) if tib > 0 else 0
 
@@ -418,21 +516,21 @@ def sleep_quality_from_session(
             sol = ms_to_minutes(as_ms(seg.get("start_ts_ms")) - bed_from)
             break
 
-    # 醒后到离床：最后一条 on_bed.to − 最后一个清醒阶段 start
+    # 醒后到离床：有效离床时间 − 最后一个清醒阶段 start
     wake_to_leave_bed = 0
     last_awake_start = 0
     for seg in segments:
         if as_int(seg.get("stage")) == STAGE_AWAKE:
             last_awake_start = as_ms(seg.get("start_ts_ms"))
-    if last_awake_start > 0 and bed_to > last_awake_start:
-        wake_to_leave_bed = ms_to_minutes(bed_to - last_awake_start)
+    if last_awake_start > 0 and leave_bed_ms > last_awake_start:
+        wake_to_leave_bed = ms_to_minutes(leave_bed_ms - last_awake_start)
 
     return {
         "time_in_bed_minutes": tib,
         "sleep_onset_latency_minutes": max(0, sol),
         "sleep_efficiency": max(0, min(100, efficiency)),
-        "bedtime": format_local_ms_hhmm(bed_from),
-        "wake_up_time": format_local_ms_hhmm(bed_to),
+        "bedtime": format_local_ms_hhmm(bed_from, timezone_name),
+        "wake_up_time": format_local_ms_hhmm(leave_bed_ms, timezone_name),
         "wake_to_leave_bed_minutes": max(0, wake_to_leave_bed),
     }
 
@@ -440,6 +538,7 @@ def sleep_quality_from_session(
 def idf_from_segments(
     segments: list[dict[str, Any]],
     on_bed: Any = None,
+    timezone_name: str = "",
 ) -> list[dict[str, str]]:
     """把 segments 转成 idf 行；末段 end 若早于最后一条 on_bed.to 则补齐（仅展示）。"""
     _, bed_to = on_bed_bounds(on_bed)
@@ -454,11 +553,24 @@ def idf_from_segments(
         rows.append(
             {
                 "stage": stage.lower() if stage else "",
-                "start": format_local_ms_hhmm(start),
-                "end": format_local_ms_hhmm(end),
+                "start": format_local_ms_hhmm(start, timezone_name),
+                "end": format_local_ms_hhmm(end, timezone_name),
             }
         )
     return rows
+
+
+def session_timezone_name(
+    body: dict[str, Any] | None,
+    payload_doc: dict[str, Any] | None = None,
+) -> str:
+    """优先 payload.timezone，其次文档顶层 timezone；非法回退 Asia/Shanghai。"""
+    tz = ""
+    if isinstance(body, dict):
+        tz = str(body.get("timezone") or "")
+    if not tz.strip() and isinstance(payload_doc, dict):
+        tz = str(payload_doc.get("timezone") or "")
+    return resolve_report_timezone_name(tz)
 
 
 def session_body(payload_doc: dict[str, Any] | None) -> dict[str, Any]:

@@ -238,3 +238,22 @@ def test_lexical_match_keeps_title_or_tag_overlap() -> None:
         [rain, piano, voice], query_text="钢琴"
     )
     assert kept == []
+
+
+def test_lexical_match_is_language_pure() -> None:
+    rain = {
+        "_id": "1",
+        "audio_name": "雨落林间",
+        "audio_name_en": "Rain in Woods",
+        "content_form_tags": [
+            {
+                "name": "场景雨声",
+                "code": "scene_rain",
+                "en_name": "Rain in Different Settings",
+            }
+        ],
+    }
+    assert not doc_matches_query_lexically(rain, "rain", language="zh")
+    assert doc_matches_query_lexically(rain, "rain", language="en")
+    assert doc_matches_query_lexically(rain, "雨", language="zh")
+    assert not doc_matches_query_lexically(rain, "雨", language="en")
