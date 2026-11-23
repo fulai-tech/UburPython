@@ -106,11 +106,13 @@ def format_hhmm(value: Any) -> str:
     return to_report_tz(dt).strftime("%H:%M")
 
 
-def format_collected_at(value: Any) -> str:
+def format_collected_at(value: Any, timezone_name: str = "") -> str:
+    """格式化为指定时区 ISO；空/非法 timezone_name 回退 Asia/Shanghai。"""
     dt = coerce_datetime(value)
     if dt is None:
         return ""
-    return to_report_tz(dt).isoformat()
+    tz = resolve_report_timezone(timezone_name)
+    return ensure_aware(dt).astimezone(tz).isoformat()
 
 
 def sleep_stage_parts(raw: dict[str, Any]) -> dict[str, Any]:

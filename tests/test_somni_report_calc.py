@@ -137,6 +137,12 @@ def test_coerce_datetime_and_format_string() -> None:
     assert format_collected_at("2026-08-09T15:30:00+00:00") == (
         "2026-08-09T23:30:00+08:00"
     )
+    assert format_collected_at(
+        "2026-08-09T18:00:00+00:00", timezone_name="America/Los_Angeles"
+    ) == ("2026-08-09T11:00:00-07:00")
+    assert format_collected_at(
+        "2026-08-09T15:30:00+00:00", timezone_name="Not/AZone"
+    ) == ("2026-08-09T23:30:00+08:00")
     assert format_collected_at("bad") == ""
 
 
