@@ -422,13 +422,20 @@ async def test_get_audio_returns_english_display_fields() -> None:
         "short_description_en": "Gentle rain for sleep",
     }
     svc = _service(_mongo_collection([rain]))
-    payload = await svc.get_audio(
+    zh = await svc.get_audio(
+        page=1, page_size=10, fetch_all=False, query_text="", tag_code="", language="zh"
+    )
+    en = await svc.get_audio(
         page=1, page_size=10, fetch_all=False, query_text="", tag_code="", language="en"
     )
-    item = payload["list"][0]
-    assert item["audio_name"] == "雨夜"
+    assert zh["list"][0]["audio_name"] == "雨夜"
+    assert zh["list"][0]["description"] == "轻柔雨声助眠"
+    assert zh["list"][0]["audio_name_en"] == "Night Rain"
+    assert zh["list"][0]["description_en"] == "Gentle rain for sleep"
+    item = en["list"][0]
+    assert item["audio_name"] == "Night Rain"
+    assert item["description"] == "Gentle rain for sleep"
     assert item["audio_name_en"] == "Night Rain"
-    assert item["description"] == "轻柔雨声助眠"
     assert item["description_en"] == "Gentle rain for sleep"
 
 

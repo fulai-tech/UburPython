@@ -299,15 +299,15 @@ message GetAudioReq {
 
 message AudioListItem {
   optional string id = 1;
-  optional string audio_name = 2;
+  optional string audio_name = 2;   // 按 language 填充；en 取英文名，其它语言取主字段；缺失为空，不回退
   optional string audio_url = 3;
   optional string cover_url = 4;
-  optional string description = 5;  // 量产列表用短描述 short_description 填充；缺省空串
+  optional string description = 5;  // 短描述；按 language 填充；en 取英文，其它语言取主字段；缺失为空，不回退
   optional int32 vip = 6;  // 库无该字段时显式返回 0
   repeated string tag = 7;  // 内容形态标签名；按 code 查词典，zh 取 name，en 取 name_en（缺省空串，不回退）
   optional bool is_voice = 8;  // voice_presence_ratio 为 0 或缺失时 false，其余数值为 true
-  optional string audio_name_en = 9;  // 英文名；前端按 language 切换展示
-  optional string description_en = 10;  // 英文短描述（库字段 short_description_en）；前端按 language 切换展示
+  optional string audio_name_en = 9;  // 英文名，固定英文，不随 language 切换
+  optional string description_en = 10;  // 英文短描述，固定英文，不随 language 切换
 }
 
 message GetAudioRes {

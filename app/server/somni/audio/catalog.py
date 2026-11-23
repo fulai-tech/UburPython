@@ -1351,20 +1351,33 @@ def _normalize_audio_ids(ids: list[str]) -> list[str]:
     return ordered
 
 
+def _localized_copy(doc: dict[str, Any], language: str) -> tuple[str, str]:
+    """按请求语言取标题和短描述。en 读英文；其它语言读主字段。缺失为空，不跨语言回退。"""
+    if language == "en":
+        return (
+            str(doc.get("audio_name_en") or ""),
+            str(doc.get("summary_en") or doc.get("short_description_en") or ""),
+        )
+    return (
+        str(doc.get("audio_name") or ""),
+        str(doc.get("summary") or doc.get("short_description") or ""),
+    )
+
+
 def _to_audio_list_item(
     doc: dict[str, Any],
     *,
     language: str,
     tag_labels_by_code: dict[str, dict[str, str]],
 ) -> dict[str, Any]:
+    audio_name, description = _localized_copy(doc, language)
     return {
         "id": str(doc.get("id") or ""),
-        "audio_name": str(doc.get("audio_name") or ""),
+        "audio_name": audio_name,
         "audio_name_en": str(doc.get("audio_name_en") or ""),
         "audio_url": _display_url(doc, language=language, field="audio_url"),
         "cover_url": _display_url(doc, language=language, field="cover_url"),
-        # 量产列表展示用短描述 summary，写入 description 出参
-        "description": str(doc.get("summary") or doc.get("short_description") or ""),
+        "description": description,
         "description_en": str(doc.get("summary_en") or doc.get("short_description_en") or ""),
         "vip": _to_vip(doc.get("vip")),
         "tag": _map_audio_tags(
@@ -1383,12 +1396,7 @@ def _to_audio_detail_item(
     tag_labels_by_code: dict[str, dict[str, str]],
 ) -> dict[str, Any]:
     """详情就地切语言：无平行 *_en 出参。"""
-    if language == "en":
-        audio_name = str(doc.get("audio_name_en") or "")
-        description = str(doc.get("summary_en") or doc.get("short_description_en") or "")
-    else:
-        audio_name = str(doc.get("audio_name") or "")
-        description = str(doc.get("summary") or doc.get("short_description") or "")
+    audio_name, description = _localized_copy(doc, language)
     return {
         "id": str(doc.get("id") or ""),
         "audio_name": audio_name,
