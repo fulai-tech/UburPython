@@ -113,8 +113,6 @@ def tag_doc_to_es(doc: dict[str, Any]) -> dict[str, Any] | None:
     payload.pop("name_en_vector", None)
     payload.pop("name_vector", None)
     parent = payload.pop("parent_id", None)
-    if parent in (None, ""):
-        parent = payload.get("parent_tag_id")
     payload.pop("parent_tag_id", None)
     payload["parent_id"] = None if parent in (None, "") else str(parent)
     language = str(payload.get("language") or "").strip().lower()

@@ -167,10 +167,6 @@ def _doc_title(doc: dict[str, Any]) -> str:
     return str(doc.get("audio_name") or "").lower()
 
 
-def _doc_title_en(doc: dict[str, Any]) -> str:
-    return str(doc.get("audio_name_en") or "").lower()
-
-
 def _doc_tag_blob(doc: dict[str, Any], *, language: str = "zh") -> str:
     """标签字面块；language=en 只用英文名，否则只用中文名（不含 code）。"""
     parts: list[str] = []
@@ -322,7 +318,8 @@ def doc_matches_query_lexically(
     q = normalize_get_audio_query(query_text)
     if not q:
         return True
-    title = _doc_title_en(doc) if language == "en" else _doc_title(doc)
+    # 混合检索 hydrate 后请求语言已写入 audio_name；不再读平行 *_en。
+    title = _doc_title(doc)
     blob = f"{title} {_doc_tag_blob(doc, language=language)}"
     ql = q.lower()
     if ql in blob:

@@ -104,6 +104,11 @@ class SleepStageCandidateCache:
         self._owns_client = owns_client
         self._mutation_lock = asyncio.Lock()
 
+    @property
+    def redis(self) -> Any:
+        """供同连接复用（如 embedding 文本向量缓存）。"""
+        return self._redis
+
     async def aclose(self) -> None:
         close = getattr(self._redis, "aclose", None)
         if self._owns_client and close is not None:

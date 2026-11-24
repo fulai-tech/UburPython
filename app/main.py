@@ -50,6 +50,7 @@ from app.cache.audio_search_cache import (
     create_audio_search_cache,
     shutdown_audio_search_cache,
 )
+from app.cache.embedding_text_cache import EmbeddingTextCache
 from app.cache.sleep_stage_cache import (
     SleepStageCandidateCache,
     create_sleep_stage_candidate_cache,
@@ -154,6 +155,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     sleep_stage_cache = await create_sleep_stage_candidate_cache(settings, redis=sleep_redis)
     _app_state.sleep_stage_cache = sleep_stage_cache
 
+    # 功能手板仍用 RetrievalService 进程内文本向量 LRU，不接 Redis。
     retrieval = RetrievalService(
         es_search,
         encoder,
@@ -222,11 +224,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         settings,
         redis_url=settings.somni_redis_url,
     )
+    # 量产文本向量只走 Redis；无 Redis 时不回退进程缓存，每次现场编码。
+    somni_text_vector_cache = (
+        EmbeddingTextCache(
+            somni_sleep_stage_cache.redis,
+            max_size=max(1, settings.embedding_text_cache_size),
+            ttl_sec=max(1, settings.search_cache_ttl_sec),
+        )
+        if somni_sleep_stage_cache is not None
+        else None
+    )
     somni_retrieval = RetrievalService(
         somni_es_search,
         encoder,
         settings,
         sleep_stage_cache=somni_sleep_stage_cache,
+        text_vector_cache=somni_text_vector_cache,
+        use_process_text_vector_cache=False,
     )
     somni_redis = await create_somni_redis(settings)
     events_store = SearchEventsStore(somni_es_client, settings)

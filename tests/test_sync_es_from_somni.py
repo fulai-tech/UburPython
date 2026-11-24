@@ -612,6 +612,19 @@ async def test_rebuild_catalog_cache_refreshes_directory_and_keeps_hot_key() -> 
         ]
 
     es_search.list_audio_catalog_docs = AsyncMock(side_effect=_list)
+    es_search.list_locale_languages = AsyncMock(return_value=["zh"])
+    es_search.list_locale_displays = AsyncMock(
+        return_value=[
+            {
+                "material_id": "a1",
+                "language": "zh",
+                "audio_name": "雨夜",
+                "summary": "短描述",
+                "audio_url": "https://cdn.example/a.mp3",
+                "cover_url": "",
+            }
+        ]
+    )
     settings = Settings(somni_redis_url="redis://127.0.0.1:6380/0", fetch_all_hard_limit=50)
 
     with patch(
@@ -620,11 +633,15 @@ async def test_rebuild_catalog_cache_refreshes_directory_and_keeps_hot_key() -> 
     ):
         ok = await _rebuild_catalog_cache(settings, es_search)
 
-    current = catalog_cache_key(from_es=True, language="all")
+    from app.cache.somni_audio_locale_cache import locale_cache_key
+
+    current = catalog_cache_key(from_es=True)
     assert ok is True
     assert calls == ["refresh", "list"]
     assert current in redis.store
     assert '"voice_presence_ratio":0' in redis.store[current][0]
+    assert "audio_name" not in redis.store[current][0]
+    assert locale_cache_key("zh") in redis.store
     assert "somni:audio:catalog:v1:oldhash:es:zh" not in redis.store
     assert redis.store["somni:audio:hot:v1:query:zh:2026-W45"] == ("hot", None)
 

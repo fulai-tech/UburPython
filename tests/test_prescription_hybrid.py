@@ -67,7 +67,9 @@ async def test_keyword_only_and_vector_only_preserve_original_scores():
     assert bm25["source_includes"] == SEARCH_CANDIDATE_SOURCE_INCLUDES
     assert vector["language"] == bm25["language"] == "en"
     assert len(es.search_by_description_vector.await_args.args[0]) == 2
-    assert encoder.encode.await_args.args[0] == ["relaxing instrumental music"]
+    # 自然语言按 language 走 encode_one（中/英模型），不再走 encoder.encode 批接口
+    assert encoder.encode_one.await_args.kwargs.get("language") == "en"
+    assert encoder.encode_one.await_args.args[0] == "relaxing instrumental music"
     assert all("_rrf_score" not in row for row in output)
 
 
