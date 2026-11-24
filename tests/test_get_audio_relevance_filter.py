@@ -241,10 +241,10 @@ def test_lexical_match_keeps_title_or_tag_overlap() -> None:
 
 
 def test_lexical_match_is_language_pure() -> None:
-    rain = {
+    """标题只用 audio_name（hydrate 后已是请求语言）；标签名仍按 language 分中英。"""
+    zh_rain = {
         "_id": "1",
         "audio_name": "雨落林间",
-        "audio_name_en": "Rain in Woods",
         "content_form_tags": [
             {
                 "name": "场景雨声",
@@ -253,7 +253,18 @@ def test_lexical_match_is_language_pure() -> None:
             }
         ],
     }
-    assert not doc_matches_query_lexically(rain, "rain", language="zh")
-    assert doc_matches_query_lexically(rain, "rain", language="en")
-    assert doc_matches_query_lexically(rain, "雨", language="zh")
-    assert not doc_matches_query_lexically(rain, "雨", language="en")
+    en_rain = {
+        "_id": "1",
+        "audio_name": "Rain in Woods",
+        "content_form_tags": [
+            {
+                "name": "场景雨声",
+                "code": "scene_rain",
+                "en_name": "Rain in Different Settings",
+            }
+        ],
+    }
+    assert not doc_matches_query_lexically(zh_rain, "rain", language="zh")
+    assert doc_matches_query_lexically(en_rain, "rain", language="en")
+    assert doc_matches_query_lexically(zh_rain, "雨", language="zh")
+    assert not doc_matches_query_lexically(en_rain, "雨", language="en")

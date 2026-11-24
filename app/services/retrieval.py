@@ -56,6 +56,7 @@ from app.services.hybrid_recall import (
 )
 
 if TYPE_CHECKING:
+    from app.cache.embedding_text_cache import EmbeddingTextCache
     from app.cache.sleep_stage_cache import SleepStageCandidateCache
 
 AUTO_TAG_TOP_K = 5
@@ -231,11 +232,17 @@ class RetrievalService:
         encoder: Encoder,
         settings: Settings,
         sleep_stage_cache: SleepStageCandidateCache | None = None,
+        text_vector_cache: EmbeddingTextCache | None = None,
+        *,
+        use_process_text_vector_cache: bool = True,
     ) -> None:
         self._es_search = es_search
         self._encoder = encoder
         self._settings = settings
         self._sleep_stage_cache = sleep_stage_cache
+        self._redis_text_vector_cache = text_vector_cache
+        # 手板默认 True（进程 LRU）；量产 False：有 Redis 用 Redis，没有则不缓存只编码。
+        self._use_process_text_vector_cache = use_process_text_vector_cache
         self._search_semaphore = asyncio.Semaphore(settings.search_max_concurrency)
         self._text_vector_cache: TextVectorCache = OrderedDict()
         self._text_vector_cache_max = max(1, settings.embedding_text_cache_size)
@@ -262,11 +269,15 @@ class RetrievalService:
                 flags=re.I,
             ):
                 positive = ""
+            # 处方请求 language 决定查哪路语言表；编码器仍只有中英两套模型。
+            language = resolve_locale_language(request.language)
+            encode_language = resolve_search_language(language)
             tag_vector = []
             vectors_available = True
             try:
                 if positive:
-                    tag_vector = await self._encode_one(positive)
+                    # 标签抽取对着 512 维词典，固定走中文模型；混合召回另按 language 编码。
+                    tag_vector = await self._encode_one(positive, language="zh")
             except Exception as exc:
                 vectors_available = False
                 logger.warning("prescription_tag_encoding_unavailable type={}", type(exc).__name__)
@@ -300,9 +311,6 @@ class RetrievalService:
             )
             if not positive:
                 return await self._search_tag_only(effective)
-            # 处方请求 language 决定查哪路语言表；编码器仍只有中英两套模型。
-            language = resolve_locale_language(request.language)
-            encode_language = resolve_search_language(language)
             size = _recall_size(request.top_k)
 
             async def vector_lane():
@@ -430,23 +438,23 @@ class RetrievalService:
             return [project_search_material(candidate.source) for candidate in candidates]
 
     async def _encode_hybrid_query(self, text: str, language: str) -> list[float]:
-        key = _vector_key(text, natural=True, language=language, model=self._model_identity())
-        vector = self._text_vector_cache.get(key)
-        if vector is None:
-            vector = await encode_query(self._encoder, text, language)
         dimension = (
             self._settings.embedding_dim_en if language == "en" else self._settings.embedding_dim
         )
+        vector = await self._lookup_text_vector(text, natural=True, language=language)
+        if vector is not None and len(vector) != dimension:
+            await self._drop_text_vector(text, natural=True, language=language)
+            vector = None
+        if vector is None:
+            vector = await encode_query(self._encoder, text, language)
         if len(vector) != dimension:
-            self._text_vector_cache.pop(key, None)
+            await self._drop_text_vector(text, natural=True, language=language)
             raise ValueError("prescription_embedding_dimension_mismatch")
-        self._text_vector_cache[key] = vector
-        self._text_vector_cache.move_to_end(key)
-        while len(self._text_vector_cache) > self._text_vector_cache_max:
-            self._text_vector_cache.popitem(last=False)
-        return self._text_vector_cache[key]
+        await self._store_text_vector(text, vector, natural=True, language=language)
+        return vector
 
     def _model_identity(self) -> str:
+        """手板进程 LRU 用；量产 Redis 不带模型指纹，换模型需手动清缓存。"""
         return hashlib.sha256(
             repr(
                 (
@@ -461,6 +469,7 @@ class RetrievalService:
         ).hexdigest()
 
     def _cache_key(self, text: str, *, natural: bool) -> str:
+        """仅手板进程缓存键（仍含模型指纹）。"""
         return _vector_key(text, natural=natural, model=self._model_identity() if natural else "")
 
     async def fallback_empty_search(self, request: SearchAudioRequest) -> EmptySearchFallback:
@@ -1091,8 +1100,8 @@ class RetrievalService:
             [by_tag[tag] for tag in disliked_tags],
         )
 
-    async def _encode_one(self, text: str) -> list[float]:
-        return (await self._encode_texts([text], natural=True))[0]
+    async def _encode_one(self, text: str, *, language: str = "zh") -> list[float]:
+        return (await self._encode_texts([text], natural=True, language=language))[0]
 
     async def _tag_dictionary(self) -> list[dict[str, Any]]:
         try:
@@ -1101,21 +1110,25 @@ class RetrievalService:
             logger.warning("标签向量词典读取失败，使用只读快照做词面匹配：{}", type(exc).__name__)
             return _canonical_dictionary(dictionary_records())
 
-    async def _encode_texts(self, texts: list[str], *, natural: bool = False) -> list[list[float]]:
-        """文本→向量，带进程内 LRU，命中则跳过 ONNX。"""
+    async def _encode_texts(
+        self,
+        texts: list[str],
+        *,
+        natural: bool = False,
+        language: str = "zh",
+    ) -> list[list[float]]:
+        """文本→向量；Redis（量产）或进程 LRU（手板）。命中则跳过 ONNX。"""
         if not texts:
             return []
         unique = _unique_preserve_order(texts)
-        missing = [
-            text
-            for text in unique
-            if self._cache_key(text, natural=natural) not in self._text_vector_cache
-        ]
-        resolved = {
-            text: self._get_text_vector(text, natural=natural)
-            for text in unique
-            if text not in missing
-        }
+        cached = await self._lookup_text_vectors(unique, natural=natural, language=language)
+        resolved: dict[str, list[float]] = {}
+        missing: list[str] = []
+        for text, vector in zip(unique, cached, strict=True):
+            if vector is None:
+                missing.append(text)
+            else:
+                resolved[text] = vector
         if missing:
             # Codes are identifiers, not new embedding text. Reuse the reviewed
             # dictionary vector so both locales use exactly the same semantic basis.
@@ -1126,28 +1139,114 @@ class RetrievalService:
                 code = canonical_tag(text, strict=False)
                 if code in by_code:
                     resolved[text] = by_code[code]
-                    self._put_text_vector(text, by_code[code], natural=natural)
+                    await self._put_text_vector(
+                        text, by_code[code], natural=natural, language=language
+                    )
                 else:
                     unresolved.append(text)
             if unresolved:
-                encoded = await self._encoder.encode(unresolved)
+                if natural:
+                    # 自然语言必须按 language 选中/英模型，避免写入错误维度污染 Redis。
+                    encoded = [
+                        await encode_query(self._encoder, text, language)
+                        for text in unresolved
+                    ]
+                else:
+                    encoded = await self._encoder.encode(unresolved)
                 for text, vector in zip(unresolved, encoded, strict=True):
                     resolved[text] = vector
-                    self._put_text_vector(text, vector, natural=natural)
+                    await self._put_text_vector(
+                        text, vector, natural=natural, language=language
+                    )
         return [resolved[text.strip()] for text in texts]
 
-    def _put_text_vector(self, text: str, vector: list[float], *, natural: bool = False) -> None:
-        key = self._cache_key(text, natural=natural)
-        self._text_vector_cache[key] = vector
-        self._text_vector_cache.move_to_end(key)
+    async def _lookup_text_vector(
+        self,
+        text: str,
+        *,
+        natural: bool,
+        language: str = "zh",
+    ) -> list[float] | None:
+        if self._redis_text_vector_cache is not None:
+            kind = "query" if natural else "tag"
+            return await self._redis_text_vector_cache.get(
+                text, language=language, kind=kind
+            )
+        if not self._use_process_text_vector_cache:
+            return None
+        return self._text_vector_cache.get(self._cache_key(text, natural=natural))
+
+    async def _lookup_text_vectors(
+        self,
+        texts: list[str],
+        *,
+        natural: bool,
+        language: str = "zh",
+    ) -> list[list[float] | None]:
+        if not texts:
+            return []
+        if self._redis_text_vector_cache is not None:
+            kind = "query" if natural else "tag"
+            return await self._redis_text_vector_cache.mget(
+                texts, language=language, kind=kind
+            )
+        if not self._use_process_text_vector_cache:
+            return [None] * len(texts)
+        return [
+            self._text_vector_cache.get(self._cache_key(text, natural=natural))
+            for text in texts
+        ]
+
+    async def _store_text_vector(
+        self,
+        text: str,
+        vector: list[float],
+        *,
+        natural: bool,
+        language: str = "zh",
+    ) -> None:
+        if self._redis_text_vector_cache is not None:
+            kind = "query" if natural else "tag"
+            await self._redis_text_vector_cache.set(
+                text, vector, language=language, kind=kind
+            )
+            return
+        if not self._use_process_text_vector_cache:
+            return
+        logical_key = self._cache_key(text, natural=natural)
+        self._text_vector_cache[logical_key] = vector
+        self._text_vector_cache.move_to_end(logical_key)
         while len(self._text_vector_cache) > self._text_vector_cache_max:
             self._text_vector_cache.popitem(last=False)
 
-    def _get_text_vector(self, text: str, *, natural: bool = False) -> list[float]:
-        key = self._cache_key(text, natural=natural)
-        vector = self._text_vector_cache[key]
-        self._text_vector_cache.move_to_end(key)
-        return vector
+    async def _drop_text_vector(
+        self,
+        text: str,
+        *,
+        natural: bool,
+        language: str = "zh",
+    ) -> None:
+        if self._redis_text_vector_cache is not None:
+            kind = "query" if natural else "tag"
+            await self._redis_text_vector_cache.delete(
+                text, language=language, kind=kind
+            )
+            return
+        if not self._use_process_text_vector_cache:
+            return
+        self._text_vector_cache.pop(self._cache_key(text, natural=natural), None)
+
+    async def _put_text_vector(
+        self,
+        text: str,
+        vector: list[float],
+        *,
+        natural: bool = False,
+        language: str = "zh",
+    ) -> None:
+        await self._store_text_vector(
+            text, vector, natural=natural, language=language
+        )
 
     async def _apply_content_admission(
         self,

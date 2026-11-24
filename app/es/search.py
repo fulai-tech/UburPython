@@ -445,7 +445,7 @@ class EsSearch:
                 continue
             if not vector and not vector_en:
                 continue
-            parent_id = str(source.get("parent_id") or source.get("parent_tag_id") or "")
+            parent_id = str(source.get("parent_id") or "")
             name_en = str(source.get("name_en") or "")
             if row_language == "en":
                 name_en = str(label)
@@ -461,7 +461,6 @@ class EsSearch:
                     "vector": vector or [],
                     "vector_en": vector_en or [],
                     "parent_id": parent_id,
-                    "parent_tag_id": parent_id,
                 }
             )
         return tags
@@ -963,8 +962,35 @@ class EsSearch:
         )
         return [_document_from_hit(hit) for hit in response["hits"]["hits"]]
 
+    async def list_locale_languages(self) -> list[str]:
+        """语言表里实际出现过的 language（terms 聚合）。"""
+        if not self._material_locales_index:
+            return []
+        response = await self._client.search(
+            index=self._material_locales_index,
+            body={
+                "size": 0,
+                "aggs": {
+                    "languages": {
+                        "terms": {"field": "language", "size": 100},
+                    }
+                },
+            },
+        )
+        buckets = (
+            ((response.get("aggregations") or {}).get("languages") or {}).get("buckets") or []
+        )
+        out: list[str] = []
+        for bucket in buckets:
+            if not isinstance(bucket, dict):
+                continue
+            lang = resolve_locale_language(str(bucket.get("key") or ""))
+            if lang and lang not in out:
+                out.append(lang)
+        return out
+
     async def list_locale_displays(self, *, language: str = "en", size: int) -> list[dict[str, Any]]:
-        """拉取某一语言的展示字段，供目录把英文标题/短描述贴回原料。"""
+        """拉取某一语言的展示字段，供语言表缓存。"""
         if not self._material_locales_index:
             return []
         response = await self._client.search(
@@ -1073,10 +1099,10 @@ class EsSearch:
             try:
                 await self._client.indices.put_mapping(index=index, body=mapping["mappings"])
             except ApiError as exc:
-                if not _is_dense_vector_dims_conflict(exc):
+                if not _is_mapping_update_conflict(exc):
                     raise
                 logger.warning(
-                    "跳过更新 ES 映射（向量 dims 不可变，保留现有索引）：index={} err={}",
+                    "跳过更新 ES 映射（与现有字段冲突，全量同步 wipe 后重建）：index={} err={}",
                     index,
                     exc.message,
                 )
@@ -1085,6 +1111,15 @@ class EsSearch:
 def _is_dense_vector_dims_conflict(exc: ApiError) -> bool:
     """put_mapping 因 dense_vector.dims 与现有字段冲突而失败。"""
     return "Cannot update parameter [dims]" in f"{exc.message} {exc}"
+
+
+def _is_mapping_update_conflict(exc: ApiError) -> bool:
+    """put_mapping 无法原地改字段类型 / dims 时，留给 wipe+create。"""
+    text = f"{exc.message} {exc}"
+    return _is_dense_vector_dims_conflict(exc) or (
+        "cannot be changed from type" in text
+        or "mapper [" in text and "cannot be changed" in text
+    )
 
 
 _LOCALE_SOURCE_INCLUDES = (
@@ -1105,19 +1140,11 @@ def _locale_fetch_size(wanted: int) -> int:
 
 
 def _overlay_locale_display(doc: dict[str, Any], locale: dict[str, Any]) -> None:
-    """按语言行 language 贴展示字段。en 写入 *_en；其它语言写入主字段。url 空不回退。"""
-    language = resolve_locale_language(str(locale.get("language") or ""))
+    """把语言行展示字段写入主字段（不再拍成 *_en）。url 空不回退。"""
     audio_name = str(locale.get("audio_name") or "")
-    summary = str(locale.get("summary") or "")
+    summary = str(locale.get("summary") or locale.get("short_description") or "")
     audio_url = str(locale.get("audio_url") or "").strip()
     cover_url = str(locale.get("cover_url") or "").strip()
-    if language == "en":
-        doc["audio_name_en"] = audio_name
-        doc["summary_en"] = summary
-        doc["short_description_en"] = summary
-        doc["audio_url_en"] = audio_url
-        doc["cover_url_en"] = cover_url
-        return
     doc["audio_name"] = audio_name
     doc["summary"] = summary
     doc["short_description"] = summary

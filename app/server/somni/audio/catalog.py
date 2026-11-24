@@ -15,6 +15,12 @@ from app.cache.somni_audio_catalog_cache import (
     catalog_cache_key,
     clear_somni_audio_catalog_cache,
 )
+from app.cache.somni_audio_locale_cache import (
+    LOCALE_KEY_ROOT,
+    SomniAudioLocaleCache,
+    locale_cache_key,
+    normalize_locale_display,
+)
 from app.core.audio_tags import (
     canonical_disliked_tags,
     canonical_tags,
@@ -30,7 +36,7 @@ from app.core.codes import HttpStatus
 from app.core.config import Settings
 from app.core.exceptions import AppError, EncoderNotReadyError
 from app.embedding.encoder import Encoder
-from app.es.search import EsSearch, _overlay_locale_display
+from app.es.search import EsSearch
 from app.es.somni_docs import resolve_locale_language, resolve_search_language
 from app.server.somni.metadata import parse_language
 from app.schemas.audio import SearchAudioRequest
@@ -95,7 +101,13 @@ class AudioCatalogService:
             if redis is not None
             else None
         )
+        self._locale_cache = (
+            SomniAudioLocaleCache(redis, ttl_sec=settings.somni_audio_catalog_cache_ttl_sec)
+            if redis is not None
+            else None
+        )
         self._catalog_load_lock = asyncio.Lock()
+        self._locale_load_lock = asyncio.Lock()
         self._hot_tasks: set[asyncio.Task[None]] = set()
         self._hot_sem = asyncio.Semaphore(32)
 
@@ -115,7 +127,6 @@ class AudioCatalogService:
                 "name": 1,
                 "name_en": 1,
                 "parent_id": 1,
-                "parent_tag_id": 1,
                 "status": 1,
             },
         )
@@ -143,8 +154,7 @@ class AudioCatalogService:
                 status_code=HttpStatus.SERVICE_UNAVAILABLE,
             )
         docs = await self._es_search.get_audio_docs_by_ids(ordered_ids)
-        # 只按请求 language 贴语言表，缺行则主字段为空，不回退其它语言。
-        await self._overlay_english_locales(docs, languages=(language,))
+        locales = await self._load_locale_map(language)
         by_id = {
             str(doc.get("id") or doc.get("_id") or ""): _map_material(doc) for doc in docs
         }
@@ -154,6 +164,7 @@ class AudioCatalogService:
                 by_id[audio_id],
                 language=language,
                 tag_labels_by_code=tag_labels,
+                locale=locales.get(audio_id),
             )
             for audio_id in ordered_ids
             if audio_id in by_id
@@ -194,10 +205,21 @@ class AudioCatalogService:
                 page=page,
                 page_size=page_size,
             )
-        # 列表 / 标签筛选：读全量启用音频，再按请求 language 软过滤（空串或同语言）。
-        docs = await self._load_audios(from_es=True, language="all")
+        # 列表 / 标签筛选：原料骨架 + 语言表缓存组装展示字段。
+        docs = await self._load_audios(from_es=True)
+        locales = await self._load_locale_map(language)
+        en_locales = (
+            locales if language == "en" else await self._load_locale_map("en")
+        )
+        # 偏好/厌恶字面匹配需要标题；只挂请求语言，不写进原料缓存。
+        docs = [
+            _attach_locale_display_fields(doc, locales.get(str(doc.get("id") or "")))
+            for doc in docs
+        ]
         catalog_size = len(docs)
         docs = _filter_docs_by_request_language(docs, language)
+        # 请求语言无可播地址的条目不进列表。
+        docs = [doc for doc in docs if _has_playable_audio_url(doc)]
         hot_tag_codes: set[str] = set()
         if code:
             docs = [doc for doc in docs if _has_content_form_code(doc, code)]
@@ -222,7 +244,13 @@ class AudioCatalogService:
         payload = _paginate_docs(docs, page, page_size, fetch_all, self._settings)
         tag_labels = await self._content_form_tag_labels_by_code()
         payload["list"] = [
-            _to_audio_list_item(item, language=language, tag_labels_by_code=tag_labels)
+            _to_audio_list_item(
+                item,
+                language=language,
+                tag_labels_by_code=tag_labels,
+                locale=locales.get(str(item.get("id") or "")),
+                en_locale=en_locales.get(str(item.get("id") or "")),
+            )
             for item in payload["list"]
         ]
         self._schedule_hot(
@@ -313,13 +341,36 @@ class AudioCatalogService:
             )
         if self._settings.get_audio_rerank_by_relevance:
             merged_docs = _rerank_hybrid_docs_by_relevance(merged_docs)
+        # 请求语言展示直接用 hydrate 结果，不再剥掉后全量读语言表。
+        hydrated_locales = {
+            str(doc.get("id") or doc.get("_id") or ""): normalize_locale_display(doc)
+            for doc in merged_docs
+            if str(doc.get("id") or doc.get("_id") or "").strip()
+        }
         mapped = [_map_material(doc) for doc in merged_docs]
         if not fetch_all:
             mapped = mapped[: self._settings.get_audio_search_top_k]
+        mapped = [
+            doc
+            for doc in mapped
+            if _has_playable_audio_url(hydrated_locales.get(str(doc.get("id") or "")))
+        ]
+        # 列表仍要 audio_name_en / description_en：非 en 请求再读 en 语言表；en 请求与 hydrate 同源。
+        en_locales = (
+            hydrated_locales
+            if language == "en"
+            else await self._load_locale_map("en")
+        )
         payload = _paginate_docs(mapped, page, page_size, fetch_all, self._settings)
         tag_labels = await self._content_form_tag_labels_by_code()
         payload["list"] = [
-            _to_audio_list_item(item, language=language, tag_labels_by_code=tag_labels)
+            _to_audio_list_item(
+                item,
+                language=language,
+                tag_labels_by_code=tag_labels,
+                locale=hydrated_locales.get(str(item.get("id") or "")),
+                en_locale=en_locales.get(str(item.get("id") or "")),
+            )
             for item in payload["list"]
         ]
         self._schedule_hot(
@@ -964,8 +1015,8 @@ class AudioCatalogService:
                 logger.warning("量产热点后台记账失败：{}", exc)
 
     async def warm_audio_catalog(self) -> int:
-        """从 ES 覆盖写入 GetAudio 正在使用的目录缓存，并删掉不再读取的目录键。"""
-        if self._catalog_cache is None:
+        """从 ES 覆盖写入原料目录缓存 + 各语言语言表缓存，并删掉过期键。"""
+        if self._catalog_cache is None or self._locale_cache is None:
             logger.info("未配置量产 Redis，跳过 GetAudio 目录缓存")
             return 0
         if self._es_search is not None and not await self._es_search.audio_index_exists():
@@ -973,43 +1024,122 @@ class AudioCatalogService:
                 f"量产音频索引不存在：{self._es_search.audio_index}，"
                 "请先运行 scripts/sync_es_from_somni.py 同步数据"
             )
-        language = "all"
-        raw = await self._fetch_audios_es(language)
-        await self._overlay_english_locales(raw)
+        raw = await self._fetch_audios_es()
         docs = [_map_material(doc) for doc in raw]
-        written = await self._catalog_cache.set(from_es=True, language=language, docs=docs)
+        written = await self._catalog_cache.set(from_es=True, docs=docs)
         if not written:
             raise RuntimeError("写入量产 GetAudio 目录缓存失败")
+
+        keep: set[str] = {catalog_cache_key(from_es=True)}
+        locale_languages = await self._list_locale_languages()
+        if docs and not locale_languages:
+            logger.warning(
+                "原料目录有 {} 条，但语言表索引无 language；保留已有语言表缓存，"
+                "请确认已同步 somni_audio_material_locales",
+                len(docs),
+            )
+            # 聚合空/失败时不清 locale，避免误删仍可用的语言表键。
+            async for key in self._catalog_cache._redis.scan_iter(
+                match=f"{LOCALE_KEY_ROOT}:*",
+                count=100,
+            ):
+                keep.add(str(key))
+        for language in locale_languages:
+            by_material = await self._fetch_locale_map(language)
+            if not by_material:
+                logger.warning(
+                    "语言表 language={} 无文档，保留旧缓存键（若有）",
+                    language,
+                )
+                keep.add(locale_cache_key(language))
+                continue
+            if not await self._locale_cache.set(language, by_material):
+                raise RuntimeError(f"写入量产语言表缓存失败 language={language}")
+            keep.add(locale_cache_key(language))
+
         removed = await clear_somni_audio_catalog_cache(
             self._catalog_cache._redis,
-            keep=catalog_cache_key(from_es=True, language=language),
+            keep=keep,
         )
-        logger.info("已重建量产 GetAudio 目录缓存，条数={}，删除过期键={}", len(docs), removed)
+        logger.info(
+            "已重建量产 GetAudio 缓存：原料={}，语言={}，删除过期键={}",
+            len(docs),
+            locale_languages,
+            removed,
+        )
         return len(docs)
 
-    async def _load_audios(self, *, from_es: bool, language: str) -> list[dict[str, Any]]:
+    async def _load_audios(self, *, from_es: bool = True) -> list[dict[str, Any]]:
         if self._catalog_cache is not None:
-            cached = await self._catalog_cache.get(from_es=from_es, language=language)
+            cached = await self._catalog_cache.get(from_es=from_es)
             if cached is not None:
                 return cached
         async with self._catalog_load_lock:
             if self._catalog_cache is not None:
-                cached = await self._catalog_cache.get(from_es=from_es, language=language)
+                cached = await self._catalog_cache.get(from_es=from_es)
                 if cached is not None:
                     return cached
             raw = (
-                await self._fetch_audios_es(language)
+                await self._fetch_audios_es()
                 if from_es
-                else await self._fetch_audios_mongo(language)
+                else await self._fetch_audios_mongo()
             )
-            await self._overlay_english_locales(raw)
             docs = [_map_material(doc) for doc in raw]
             if self._catalog_cache is not None:
-                await self._catalog_cache.set(from_es=from_es, language=language, docs=docs)
+                await self._catalog_cache.set(from_es=from_es, docs=docs)
             return docs
 
-    async def _fetch_audios_mongo(self, language: str) -> list[dict[str, Any]]:
-        del language  # 目录不再按请求 language 过滤
+    async def _load_locale_map(self, language: str) -> dict[str, dict[str, str]]:
+        """按语言取 material_id → 展示字段；有缓存用缓存，空缓存当未命中再查 ES。"""
+        language = resolve_locale_language(language)
+        if self._locale_cache is not None:
+            cached = await self._locale_cache.get(language)
+            # 空 map 视为未命中，避免语言表尚未同步时把空结果写死
+            if cached:
+                return cached
+        async with self._locale_load_lock:
+            if self._locale_cache is not None:
+                cached = await self._locale_cache.get(language)
+                if cached:
+                    return cached
+            by_material = await self._fetch_locale_map(language)
+            if by_material and self._locale_cache is not None:
+                await self._locale_cache.set(language, by_material)
+            return by_material
+
+    async def _fetch_locale_map(self, language: str) -> dict[str, dict[str, str]]:
+        language = resolve_locale_language(language)
+        if self._es_search is None:
+            return {}
+        try:
+            rows = await self._es_search.list_locale_displays(
+                language=language,
+                size=self._settings.fetch_all_hard_limit + 1,
+            )
+        except Exception as exc:  # noqa: BLE001 — 语言表缺失时展示为空
+            logger.warning("读取音频语言表失败 language={}：{}", language, exc)
+            return {}
+        out: dict[str, dict[str, str]] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            material_id = str(row.get("material_id") or "").strip()
+            if not material_id:
+                continue
+            out[material_id] = normalize_locale_display(row)
+        return out
+
+    async def _list_locale_languages(self) -> list[str]:
+        if self._es_search is None:
+            return []
+        try:
+            languages = await self._es_search.list_locale_languages()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("聚合语言表 language 失败：{}", exc)
+            return []
+        return [resolve_locale_language(lang) for lang in languages if lang]
+
+    async def _fetch_audios_mongo(self) -> list[dict[str, Any]]:
         collection = self._materials()
         query = {"status": True}
         limit = self._settings.fetch_all_hard_limit + 1
@@ -1018,7 +1148,7 @@ class AudioCatalogService:
         self._reject_over_limit(len(docs))
         return docs
 
-    async def _fetch_audios_es(self, language: str) -> list[dict[str, Any]]:
+    async def _fetch_audios_es(self) -> list[dict[str, Any]]:
         if self._es_search is None:
             raise AppError(
                 message="Elasticsearch 未就绪，无法查询音频",
@@ -1026,51 +1156,9 @@ class AudioCatalogService:
             )
         docs = await self._es_search.list_audio_catalog_docs(
             size=self._settings.fetch_all_hard_limit + 1,
-            language=language,
         )
         self._reject_over_limit(len(docs))
         return docs
-
-    async def _overlay_english_locales(
-        self,
-        docs: list[dict[str, Any]],
-        *,
-        languages: tuple[str, ...] | list[str] = ("zh", "en"),
-    ) -> None:
-        """把语言表标题、短描述和地址贴到原料文档上。
-
-        en 写入 *_en；其它语言写入主字段。后写的非英语言会覆盖主字段，
-        因此 fr/ja 请求应把对应语言放在序列末尾。
-        """
-        if self._es_search is None or not docs:
-            return
-        ordered: list[str] = []
-        seen: set[str] = set()
-        for raw in languages:
-            language = resolve_locale_language(raw)
-            if language in seen:
-                continue
-            seen.add(language)
-            ordered.append(language)
-        for language in ordered:
-            try:
-                locales = await self._es_search.list_locale_displays(
-                    language=language,
-                    size=self._settings.fetch_all_hard_limit + 1,
-                )
-            except Exception as exc:  # noqa: BLE001 — 语言表缺失时仍返回原料骨架
-                logger.warning("读取音频语言表失败 language={}：{}", language, exc)
-                continue
-            by_material = {
-                str(row.get("material_id") or ""): row
-                for row in locales
-                if str(row.get("material_id") or "")
-            }
-            for doc in docs:
-                material_id = str(doc.get("_id") or doc.get("id") or "")
-                locale = by_material.get(material_id)
-                if locale:
-                    _overlay_locale_display(doc, locale)
 
     async def create_audios(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """批量新增原料。只写传入字段，缺省字段用原料默认值。逐条返回结果。"""
@@ -1159,14 +1247,6 @@ def _hybrid_document_id(doc: dict[str, Any]) -> str:
 
 
 _AUDIO_LIST_PROJECTION = {
-    "audio_name": 1,
-    "audio_name_en": 1,
-    "audio_url": 1,
-    "cover_url": 1,
-    "description": 1,
-    "summary": 1,
-    "short_description": 1,
-    "short_description_en": 1,
     "vip": 1,
     "content_form_tags": 1,
     "acoustic_metrics": 1,
@@ -1196,10 +1276,7 @@ def _root_tag_query() -> dict[str, Any]:
     return {
         "type": _CONTENT_FORM,
         "status": _TAG_ENABLED,
-        "$and": [
-            _blank_parent_clause("parent_id"),
-            _blank_parent_clause("parent_tag_id"),
-        ],
+        **_blank_parent_clause("parent_id"),
     }
 
 
@@ -1234,9 +1311,7 @@ def _page_window(
 
 
 def _parent_ref(doc: dict[str, Any]) -> Any:
-    if "parent_id" in doc and doc.get("parent_id") not in (None, ""):
-        return doc.get("parent_id")
-    return doc.get("parent_tag_id")
+    return doc.get("parent_id")
 
 
 def _assign_tag_label(slot: dict[str, str], row: dict[str, Any]) -> None:
@@ -1271,7 +1346,6 @@ def _merge_tag_language_rows(docs: list[dict[str, Any]]) -> list[dict[str, Any]]
                 "name_en": "",
                 "id": str(doc.get("id") or doc.get("_id") or ""),
                 "parent_id": _parent_ref(doc),
-                "parent_tag_id": _parent_ref(doc),
                 "status": doc.get("status"),
             }
         slot = merged[code]
@@ -1287,7 +1361,6 @@ def _merge_tag_language_rows(docs: list[dict[str, Any]]) -> list[dict[str, Any]]
         parent = _parent_ref(doc)
         if parent not in (None, ""):
             slot["parent_id"] = parent
-            slot["parent_tag_id"] = parent
     return [merged[code] for code in order]
 
 
@@ -1299,41 +1372,50 @@ def _map_tag_dict(doc: dict[str, Any]) -> dict[str, Any]:
         "name": str(doc.get("name") or ""),
         "name_en": str(doc.get("name_en") or ""),
         "id": str(doc.get("id") or doc.get("_id") or ""),
+        # proto TagDictItem 字段名仍为 parent_tag_id，值来自库字段 parent_id
         "parent_tag_id": None if parent is None else str(parent),
         "status": str(doc.get("status") or ""),
     }
 
 
 def _map_material(doc: dict[str, Any]) -> dict[str, Any]:
-    """缓存/过滤用中间形态，保留 content_form_tags。"""
+    """原料骨架：标签/vip 等；展示文案走语言表缓存。"""
     return {
         "id": str(doc.get("id") or doc.get("_id") or ""),
-        "audio_name": str(doc.get("audio_name") or ""),
-        "audio_name_en": str(doc.get("audio_name_en") or ""),
-        "audio_url": str(doc.get("audio_url") or ""),
-        "cover_url": str(doc.get("cover_url") or ""),
-        "description": str(doc.get("description") or ""),
-        "summary": str(doc.get("summary") or doc.get("short_description") or ""),
-        "short_description": str(doc.get("summary") or doc.get("short_description") or ""),
-        "summary_en": str(doc.get("summary_en") or doc.get("short_description_en") or ""),
-        "short_description_en": str(
-            doc.get("summary_en") or doc.get("short_description_en") or ""
-        ),
         "vip": _to_vip(doc.get("vip")),
-        "language": str(doc.get("language") or ""),
-        "audio_url_en": str(doc.get("audio_url_en") or ""),
-        "cover_url_en": str(doc.get("cover_url_en") or ""),
         "content_form_tags": doc.get("content_form_tags") or [],
         "acoustic_metrics": _acoustic_metrics(doc.get("acoustic_metrics")),
         "created_at": doc.get("created_at") or doc.get("create_time") or "",
     }
 
 
+def _attach_locale_display_fields(
+    doc: dict[str, Any],
+    locale: dict[str, str] | None,
+) -> dict[str, Any]:
+    """把语言表展示字段挂到原料副本上，供厌恶/偏好字面匹配；不改缓存骨架。"""
+    out = dict(doc)
+    loc = locale or {}
+    out["audio_name"] = str(loc.get("audio_name") or "")
+    out["summary"] = str(loc.get("summary") or "")
+    out["short_description"] = str(loc.get("summary") or "")
+    out["audio_url"] = str(loc.get("audio_url") or "").strip()
+    out["cover_url"] = str(loc.get("cover_url") or "").strip()
+    return out
+
+
+def _has_playable_audio_url(doc_or_locale: dict[str, Any] | None) -> bool:
+    """请求语言下 audio_url 非空才可播。"""
+    if not doc_or_locale:
+        return False
+    return bool(str(doc_or_locale.get("audio_url") or "").strip())
+
+
 def _filter_docs_by_request_language(
     docs: list[dict[str, Any]],
     language: str,
 ) -> list[dict[str, Any]]:
-    """原料不再按内容语种过滤。英文展示来自语言表，中文留在原料上。"""
+    """原料不再按内容语种过滤；展示语种由语言表决定。"""
     del language
     return list(docs)
 
@@ -1351,21 +1433,30 @@ def _normalize_audio_ids(ids: list[str]) -> list[str]:
     return ordered
 
 
+def _locale_summary(locale: dict[str, str] | None) -> str:
+    if not locale:
+        return ""
+    return str(locale.get("summary") or "")
+
+
 def _to_audio_list_item(
     doc: dict[str, Any],
     *,
     language: str,
     tag_labels_by_code: dict[str, dict[str, str]],
+    locale: dict[str, str] | None = None,
+    en_locale: dict[str, str] | None = None,
 ) -> dict[str, Any]:
+    loc = locale or {}
+    en = en_locale or {}
     return {
         "id": str(doc.get("id") or ""),
-        "audio_name": str(doc.get("audio_name") or ""),
-        "audio_name_en": str(doc.get("audio_name_en") or ""),
-        "audio_url": _display_url(doc, language=language, field="audio_url"),
-        "cover_url": _display_url(doc, language=language, field="cover_url"),
-        # 量产列表展示用短描述 summary，写入 description 出参
-        "description": str(doc.get("summary") or doc.get("short_description") or ""),
-        "description_en": str(doc.get("summary_en") or doc.get("short_description_en") or ""),
+        "audio_name": str(loc.get("audio_name") or ""),
+        "audio_name_en": str(en.get("audio_name") or ""),
+        "audio_url": str(loc.get("audio_url") or "").strip(),
+        "cover_url": str(loc.get("cover_url") or "").strip(),
+        "description": _locale_summary(loc),
+        "description_en": _locale_summary(en),
         "vip": _to_vip(doc.get("vip")),
         "tag": _map_audio_tags(
             doc.get("content_form_tags"),
@@ -1381,20 +1472,16 @@ def _to_audio_detail_item(
     *,
     language: str,
     tag_labels_by_code: dict[str, dict[str, str]],
+    locale: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """详情就地切语言：无平行 *_en 出参。"""
-    if language == "en":
-        audio_name = str(doc.get("audio_name_en") or "")
-        description = str(doc.get("summary_en") or doc.get("short_description_en") or "")
-    else:
-        audio_name = str(doc.get("audio_name") or "")
-        description = str(doc.get("summary") or doc.get("short_description") or "")
+    """详情按语言表缓存填展示字段；无平行 *_en 出参。"""
+    loc = locale or {}
     return {
         "id": str(doc.get("id") or ""),
-        "audio_name": audio_name,
-        "audio_url": _display_url(doc, language=language, field="audio_url"),
-        "cover_url": _display_url(doc, language=language, field="cover_url"),
-        "description": description,
+        "audio_name": str(loc.get("audio_name") or ""),
+        "audio_url": str(loc.get("audio_url") or "").strip(),
+        "cover_url": str(loc.get("cover_url") or "").strip(),
+        "description": _locale_summary(loc),
         "vip": _to_vip(doc.get("vip")),
         "tag": _map_audio_tags(
             doc.get("content_form_tags"),
@@ -1464,14 +1551,6 @@ def _to_vip(value: Any) -> int:
     return 1 if bool(value) else 0
 
 
-def _display_url(doc: dict[str, Any], *, language: str, field: str) -> str:
-    """按请求语言取地址；英文空不回退中文。"""
-    if language == "en":
-        return str(doc.get(f"{field}_en") or "").strip()
-    return str(doc.get(field) or "").strip()
-
-
-
 def _tag_vector_for_language(tag: dict[str, Any], language: str) -> list[float] | None:
     """按标签行的 language 取对应向量。旧的一行双语标签仍可回退另一侧。"""
     row_language = str(tag.get("language") or "").strip().lower()
@@ -1504,8 +1583,7 @@ def _is_content_form_dict(tag: dict[str, Any]) -> bool:
 
 
 def _is_root_content_form_dict(tag: dict[str, Any]) -> bool:
-    parent = tag.get("parent_id", tag.get("parent_tag_id"))
-    return _is_content_form_dict(tag) and _is_blank(parent)
+    return _is_content_form_dict(tag) and _is_blank(tag.get("parent_id"))
 
 
 def _normalize_content_form_codes(codes: list[str] | None) -> set[str]:
@@ -1654,7 +1732,7 @@ def _spread_tag_ids(
     roots = {
         str(tag.get("id") or "")
         for tag in tags
-        if _is_blank(tag.get("parent_id", tag.get("parent_tag_id")))
+        if _is_blank(tag.get("parent_id"))
     }
     carried = {
         str(item.get("tag_id") or "")

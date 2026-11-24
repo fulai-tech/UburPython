@@ -64,27 +64,13 @@ class SomniAudioService:
         if enabled_only:
             query["status"] = "启用"
         if level == 1:
-            query["$and"] = [
-                {
-                    "$or": [
-                        {"parent_id": {"$exists": False}},
-                        {"parent_id": None},
-                        {"parent_id": ""},
-                    ]
-                },
-                {
-                    "$or": [
-                        {"parent_tag_id": {"$exists": False}},
-                        {"parent_tag_id": None},
-                        {"parent_tag_id": ""},
-                    ]
-                },
+            query["$or"] = [
+                {"parent_id": {"$exists": False}},
+                {"parent_id": None},
+                {"parent_id": ""},
             ]
         elif level == 2:
-            query["$or"] = [
-                {"parent_id": {"$exists": True, "$nin": [None, ""]}},
-                {"parent_tag_id": {"$exists": True, "$nin": [None, ""]}},
-            ]
+            query["parent_id"] = {"$exists": True, "$nin": [None, ""]}
         return await self._paginate(
             self._tags(),
             query,
@@ -188,7 +174,7 @@ class SomniAudioService:
             name_en = name
             name = ""
         display = name or name_en
-        parent_id = str(doc.get("parent_id") or doc.get("parent_tag_id") or "")
+        parent_id = str(doc.get("parent_id") or "")
         return {
             "id": str(doc.get("id") or doc.get("_id") or ""),
             "display_name": display,

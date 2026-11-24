@@ -190,8 +190,6 @@ def _tag_source(doc: dict[str, Any]) -> dict[str, Any]:
     for key in ("_id", "id", "name_en", "name_vector", "name_en_vector"):
         payload.pop(key, None)
     parent = payload.pop("parent_id", None)
-    if parent in (None, ""):
-        parent = payload.get("parent_tag_id")
     payload.pop("parent_tag_id", None)
     payload["parent_id"] = None if parent in (None, "") else str(parent)
     language = str(payload.get("language") or "").strip().lower()

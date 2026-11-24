@@ -156,18 +156,40 @@ async def test_get_audio_by_ids_localizes_fields_and_tags() -> None:
         es_docs_by_id={
             "a1": {
                 "status": True,
-                "audio_name": "雨夜",
-                "audio_name_en": "Night Rain",
-                "short_description": "轻柔雨声",
-                "short_description_en": "Gentle rain",
-                "audio_url": "https://cdn/a.mp3",
-                "cover_url": "https://cdn/a.png",
                 "vip": 0,
                 "content_form_tags": [{"code": "steady_rain"}],
                 "acoustic_metrics": {"voice_presence_ratio": 0},
             }
         }
     )
+
+    async def _locales(*, language: str, size: int) -> list[dict]:
+        del size
+        if language == "zh":
+            return [
+                {
+                    "material_id": "a1",
+                    "language": "zh",
+                    "audio_name": "雨夜",
+                    "summary": "轻柔雨声",
+                    "audio_url": "https://cdn/a.mp3",
+                    "cover_url": "https://cdn/a.png",
+                }
+            ]
+        if language == "en":
+            return [
+                {
+                    "material_id": "a1",
+                    "language": "en",
+                    "audio_name": "Night Rain",
+                    "summary": "Gentle rain",
+                    "audio_url": "https://cdn/a-en.mp3",
+                    "cover_url": "https://cdn/a-en.png",
+                }
+            ]
+        return []
+
+    es.list_locale_displays = AsyncMock(side_effect=_locales)
     zh = await svc.get_audio_by_ids(ids=["a1"], language="zh")
     en = await svc.get_audio_by_ids(ids=["a1"], language="en")
 

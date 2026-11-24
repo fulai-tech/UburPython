@@ -1,4 +1,4 @@
-"""量产 GetAudio 目录 Redis 缓存。按语言、数据源各存一份已映射文档。"""
+"""量产 GetAudio 原料目录 Redis 缓存。只存标签/vip 等骨架，不含展示文案。"""
 
 from __future__ import annotations
 
@@ -8,20 +8,22 @@ from typing import Any
 
 from loguru import logger
 
-from app.core.audio_tags import audio_tag_contract_version
+from app.cache.somni_audio_locale_cache import (
+    LOCALE_KEY_ROOT,
+    clear_somni_audio_locale_cache,
+)
 from app.core.bson_util import bson_to_jsonable
 
-# 目录缓存都挂在这个前缀下。写入时覆盖当前键，并删掉其它版本，避免旧键占着内存。
-# v3：短描述改为 summary，英文标题来自语言表。写入时清掉 v2 及更早的键。
+# 固定键名；结构变更靠重建脚本 / warm 覆盖，并 scan 清掉历史杂键。
 CATALOG_KEY_ROOT = "somni:audio:catalog"
-CATALOG_KEY_PREFIX = f"{CATALOG_KEY_ROOT}:v3"
+CATALOG_MATERIALS_TOKEN = "materials"
 
 
-def catalog_cache_key(*, from_es: bool, language: str) -> str:
+def catalog_cache_key(*, from_es: bool, language: str = CATALOG_MATERIALS_TOKEN) -> str:
+    """language 参数保留兼容旧调用；原料目录固定 materials 段。"""
+    del language
     source = "es" if from_es else "mongo"
-    return (
-        f"{CATALOG_KEY_PREFIX}:{audio_tag_contract_version()}:{source}:{language.strip() or 'zh'}"
-    )
+    return f"{CATALOG_KEY_ROOT}:{source}:{CATALOG_MATERIALS_TOKEN}"
 
 
 class SomniAudioCatalogCache:
@@ -29,7 +31,7 @@ class SomniAudioCatalogCache:
         self._redis = redis
         self._ttl_sec = ttl_sec
 
-    async def get(self, *, from_es: bool, language: str) -> list[dict[str, Any]] | None:
+    async def get(self, *, from_es: bool, language: str = CATALOG_MATERIALS_TOKEN) -> list[dict[str, Any]] | None:
         key = catalog_cache_key(from_es=from_es, language=language)
         try:
             raw = await self._redis.get(key)
@@ -51,7 +53,7 @@ class SomniAudioCatalogCache:
         self,
         *,
         from_es: bool,
-        language: str,
+        language: str = CATALOG_MATERIALS_TOKEN,
         docs: list[dict[str, Any]],
     ) -> bool:
         key = catalog_cache_key(from_es=from_es, language=language)
@@ -71,15 +73,28 @@ class SomniAudioCatalogCache:
         return True
 
 
-async def clear_somni_audio_catalog_cache(redis: Any, *, keep: str | None = None) -> int:
-    """删除目录缓存。keep 指定的当前键保留，热榜等其它前缀不动。"""
+async def clear_somni_audio_catalog_cache(
+    redis: Any,
+    *,
+    keep: str | set[str] | None = None,
+) -> int:
+    """删除原料目录缓存（及同次失效的语言表缓存）。keep 指定的当前键保留。热榜不动。"""
+    keep_set: set[str] = set()
+    if isinstance(keep, str) and keep:
+        keep_set.add(keep)
+    elif isinstance(keep, set):
+        keep_set = {key for key in keep if key}
+
     keys: list[str] = []
     async for key in redis.scan_iter(match=f"{CATALOG_KEY_ROOT}:*", count=100):
         text = str(key)
-        if keep is not None and text == keep:
+        if text in keep_set:
             continue
         keys.append(text)
-    if not keys:
-        return 0
-    deleted = await redis.delete(*keys)
-    return int(deleted or 0)
+    deleted = 0
+    if keys:
+        deleted = int(await redis.delete(*keys) or 0)
+    # 写入失效时一并清语言表；warm 会传入 keep 集合保留刚写入的 locale 键。
+    locale_keep = {key for key in keep_set if key.startswith(f"{LOCALE_KEY_ROOT}:")}
+    deleted += await clear_somni_audio_locale_cache(redis, keep=locale_keep or None)
+    return deleted
