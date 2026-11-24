@@ -119,11 +119,20 @@ def somni_material_source_for_es(doc: dict[str, Any]) -> dict[str, Any] | None:
 
 def build_tag_name_by_code_language(
     tag_docs: list[dict[str, Any]],
+    *,
+    tag_type: str = "content_form",
 ) -> dict[tuple[str, str], str]:
-    """标签词典 → (code, language) → 展示名。同键后者覆盖。"""
+    """标签词典 → (code, language) → 展示名。
+
+    默认只收 content_form，避免同 code 跨 type 互相覆盖。
+    同键后者覆盖。
+    """
+    wanted = str(tag_type or "").strip()
     out: dict[tuple[str, str], str] = {}
     for row in tag_docs:
         if not isinstance(row, dict):
+            continue
+        if wanted and str(row.get("type") or "").strip() != wanted:
             continue
         code = str(row.get("code") or "").strip()
         name = str(row.get("name") or "").strip()

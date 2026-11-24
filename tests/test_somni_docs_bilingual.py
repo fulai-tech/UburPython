@@ -106,9 +106,24 @@ def test_description_fields_by_language() -> None:
 def test_locale_description_text_appends_dictionary_tag_labels() -> None:
     name_by = build_tag_name_by_code_language(
         [
-            {"code": "voice_guidance", "language": "zh", "name": "人声引导"},
-            {"code": "voice_guidance", "language": "en", "name": "Voice Guidance"},
-            {"code": "breathing_guidance", "language": "zh", "name": "呼吸引导"},
+            {
+                "type": "content_form",
+                "code": "voice_guidance",
+                "language": "zh",
+                "name": "人声引导",
+            },
+            {
+                "type": "content_form",
+                "code": "voice_guidance",
+                "language": "en",
+                "name": "Voice Guidance",
+            },
+            {
+                "type": "content_form",
+                "code": "breathing_guidance",
+                "language": "zh",
+                "name": "呼吸引导",
+            },
         ]
     )
     material = {
@@ -149,3 +164,29 @@ def test_locale_description_text_appends_dictionary_tag_labels() -> None:
     )
     assert source is not None
     assert source["description_text"] == "人声引导 呼吸引导"
+
+
+def test_build_tag_name_by_code_language_keeps_content_form_over_other_types() -> None:
+    name_by = build_tag_name_by_code_language(
+        [
+            {
+                "type": "mechanism",
+                "code": "auditory_rhythm_stimulation",
+                "language": "en",
+                "name": "Auditory Rhythm Stimulation",
+            },
+            {
+                "type": "content_form",
+                "code": "auditory_rhythm_stimulation",
+                "language": "en",
+                "name": "RAS",
+            },
+            {
+                "type": "mechanism",
+                "code": "auditory_rhythm_stimulation",
+                "language": "en",
+                "name": "Should Not Win",
+            },
+        ]
+    )
+    assert name_by[("auditory_rhythm_stimulation", "en")] == "RAS"

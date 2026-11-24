@@ -13,6 +13,7 @@ from pymongo.errors import DuplicateKeyError
 from app.cache.somni_audio_catalog_cache import clear_somni_audio_catalog_cache
 from app.core.bson_util import bson_to_jsonable, utc_now
 from app.core.exceptions import AppError
+from app.server.somni.audio.writes import refresh_locale_indexes_for_materials
 
 _FIELDS = (
     "type",
@@ -26,6 +27,8 @@ _FIELDS = (
 )
 _REQUIRED = ("type", "code", "language", "name")
 _VECTOR_FIELDS = ("name", "language")
+_CONTENT_FORM = "content_form"
+_LOCALE_AFFECTING_FIELDS = ("name", "language", "type", "code", "status")
 _CREATE_DEFAULTS: dict[str, Any] = {
     "status": "启用",
     "parent_id": None,
@@ -94,10 +97,20 @@ async def _create_one(service: Any, fields: dict[str, Any]) -> str:
     except DuplicateKeyError as exc:
         raise ValueError("标签已存在：type + code + language") from exc
     tag_id = str(result.inserted_id)
+    saved = {**doc, "_id": result.inserted_id}
     try:
-        await _index_tag(service, tag_id, {**doc, "_id": result.inserted_id})
+        await _index_tag(service, tag_id, saved)
+        await _refresh_linked_material_locales(service, saved)
     except Exception:
         await _compensate_create_failure(service, tag_id)
+        try:
+            await _refresh_linked_material_locales(service, saved)
+        except Exception as restore_exc:
+            logger.error(
+                "标签创建补偿后语言索引回滚失败，tag_id={}，原因：{}",
+                tag_id,
+                restore_exc,
+            )
         raise
     return tag_id
 
@@ -112,6 +125,7 @@ async def _update_one(service: Any, tag_id: str, fields: dict[str, Any]) -> None
     if before is None:
         raise ValueError(f"标签不存在：{tag_id}")
     recompute_vector = any(name in payload for name in _VECTOR_FIELDS)
+    refresh_locales = _should_refresh_linked_locales(before, payload)
     payload["updated_at"] = utc_now()
     try:
         saved = await service._tags().find_one_and_update(
@@ -131,8 +145,22 @@ async def _update_one(service: Any, tag_id: str, fields: dict[str, Any]) -> None
             changed=set(payload),
             recompute_vector=recompute_vector,
         )
+        if refresh_locales:
+            for tag in _locale_refresh_keys(before, saved):
+                await _refresh_linked_material_locales(service, tag)
     except Exception:
         await _compensate_update_failure(service, tag_id, before=before)
+        if refresh_locales:
+            # 新旧两个键都可能已被刷过，回滚后按恢复的词典各重刷一次。
+            for tag in _locale_refresh_keys(before, saved):
+                try:
+                    await _refresh_linked_material_locales(service, tag)
+                except Exception as restore_exc:
+                    logger.error(
+                        "标签更新后语言索引回滚失败，tag_id={}，原因：{}",
+                        tag_id,
+                        restore_exc,
+                    )
         raise
 
 
@@ -146,9 +174,75 @@ async def _delete_one(service: Any, tag_id: str) -> None:
         raise ValueError(f"标签不存在：{tag_id}")
     try:
         await _delete_index(service, tag_id)
+        await _refresh_linked_material_locales(service, before)
     except Exception:
         await _compensate_delete_failure(service, before)
+        try:
+            await _refresh_linked_material_locales(service, before)
+        except Exception as restore_exc:
+            logger.error(
+                "标签删除补偿后语言索引回滚失败，tag_id={}，原因：{}",
+                tag_id,
+                restore_exc,
+            )
         raise
+
+
+def _is_content_form_tag(doc: dict[str, Any] | None) -> bool:
+    if not doc:
+        return False
+    return str(doc.get("type") or "").strip() == _CONTENT_FORM
+
+
+def _should_refresh_linked_locales(
+    before: dict[str, Any], payload: dict[str, Any]
+) -> bool:
+    """内容形态标签的展示名/语言/code/type/status 变更时，需重刷关联素材语言索引。"""
+    if not any(name in payload for name in _LOCALE_AFFECTING_FIELDS):
+        return False
+    after_type = str(payload.get("type") or before.get("type") or "").strip()
+    return _is_content_form_tag(before) or after_type == _CONTENT_FORM
+
+
+def _locale_refresh_keys(
+    before: dict[str, Any], saved: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """改名只刷一次；改 type/code/language 时旧键、新键各刷一次。"""
+    def key(tag: dict[str, Any]) -> tuple[str, str, str]:
+        return (
+            str(tag.get("type") or "").strip(),
+            str(tag.get("code") or "").strip(),
+            str(tag.get("language") or "").strip().lower(),
+        )
+
+    if key(before) == key(saved):
+        return [saved]
+    return [before, saved]
+
+
+async def _refresh_linked_material_locales(service: Any, tag: dict[str, Any]) -> None:
+    """重刷挂了该 content_form code 的原料语言索引。"""
+    if not _is_content_form_tag(tag):
+        return
+    code = str(tag.get("code") or "").strip()
+    if not code:
+        return
+    language = str(tag.get("language") or "").strip().lower()
+    materials_getter = getattr(service, "_materials", None)
+    if not callable(materials_getter):
+        logger.warning("服务未暴露 _materials，跳过标签关联语言索引刷新 code={}", code)
+        return
+    try:
+        materials = await materials_getter().find(
+            {"content_form_tags.code": code}
+        ).to_list(length=None)
+    except Exception as exc:
+        raise RuntimeError(f"查询标签关联原料失败：{exc}") from exc
+    await refresh_locale_indexes_for_materials(
+        service,
+        materials,
+        languages={language} if language else None,
+    )
 
 
 def _normalize(fields: dict[str, Any]) -> dict[str, Any]:
