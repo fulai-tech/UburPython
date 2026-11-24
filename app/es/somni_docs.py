@@ -117,17 +117,77 @@ def somni_material_source_for_es(doc: dict[str, Any]) -> dict[str, Any] | None:
     return payload
 
 
-def build_locale_description_text(doc: dict[str, Any]) -> str:
-    """语言行检索文本：标题 + 描述 + 短描述。标签名在原料上，按 code 另查。"""
-    parts = [
-        str(doc.get("audio_name", "")).strip(),
-        str(doc.get("description", "")).strip(),
-        str(doc.get("summary", "")).strip(),
-    ]
-    return " ".join(part for part in parts if part)
+def build_tag_name_by_code_language(
+    tag_docs: list[dict[str, Any]],
+) -> dict[tuple[str, str], str]:
+    """标签词典 → (code, language) → 展示名。同键后者覆盖。"""
+    out: dict[tuple[str, str], str] = {}
+    for row in tag_docs:
+        if not isinstance(row, dict):
+            continue
+        code = str(row.get("code") or "").strip()
+        name = str(row.get("name") or "").strip()
+        if not code or not name:
+            continue
+        lang = resolve_locale_language(str(row.get("language") or ""))
+        out[(code, lang)] = name
+    return out
 
 
-def locale_source_for_es(doc: dict[str, Any]) -> dict[str, Any] | None:
+def material_content_form_tag_codes(material: dict[str, Any] | None) -> list[str]:
+    """原料 content_form_tags 上的 code，去重且保序。"""
+    if not material:
+        return []
+    codes: list[str] = []
+    seen: set[str] = set()
+    items = material.get("content_form_tags") or []
+    if not isinstance(items, list):
+        return []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        code = str(item.get("code") or "").strip()
+        if not code or code in seen:
+            continue
+        seen.add(code)
+        codes.append(code)
+    return codes
+
+
+def material_tag_labels_from_dictionary(
+    material: dict[str, Any] | None,
+    *,
+    language: str,
+    name_by_code_lang: dict[tuple[str, str], str],
+) -> list[str]:
+    """按语言表 language 从词典取内容形态标签展示名；缺该语言名时跳过该 code。"""
+    lang = resolve_locale_language(language)
+    labels: list[str] = []
+    seen: set[str] = set()
+    for code in material_content_form_tag_codes(material):
+        name = str(name_by_code_lang.get((code, lang)) or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        labels.append(name)
+    return labels
+
+
+def build_locale_description_text(
+    doc: dict[str, Any],
+    *,
+    tag_labels: list[str] | tuple[str, ...] = (),
+) -> str:
+    """语言行检索文本：仅内容形态标签展示名（不含标题/描述/短描述）。"""
+    del doc
+    return " ".join(str(label).strip() for label in tag_labels if str(label).strip()).strip()
+
+
+def locale_source_for_es(
+    doc: dict[str, Any],
+    *,
+    tag_labels: list[str] | tuple[str, ...] = (),
+) -> dict[str, Any] | None:
     """语言表文档 → ES _source。缺 material_id 或 language 则跳过。"""
     material_id = str(doc.get("material_id", "")).strip()
     language = str(doc.get("language", "")).strip().lower()
@@ -145,7 +205,9 @@ def locale_source_for_es(doc: dict[str, Any]) -> dict[str, Any] | None:
         "create_time": doc.get("create_time"),
         "update_time": doc.get("update_time"),
     }
-    payload["description_text"] = build_locale_description_text(payload)
+    payload["description_text"] = build_locale_description_text(
+        payload, tag_labels=tag_labels
+    )
     return payload
 
 

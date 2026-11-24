@@ -1,12 +1,16 @@
 """双语混合文本与检索语言解析。"""
 
 from app.es.somni_docs import (
+    build_locale_description_text,
     build_material_description_text,
     build_material_description_text_en,
+    build_tag_name_by_code_language,
     description_text_field,
     description_vector_field,
+    locale_source_for_es,
     locale_vector_field,
     material_source_for_es,
+    material_tag_labels_from_dictionary,
     resolve_locale_language,
     resolve_query_language,
     resolve_search_language,
@@ -97,3 +101,51 @@ def test_description_fields_by_language() -> None:
     assert description_vector_field("en", override="description_vector") == (
         "description_vector"
     )
+
+
+def test_locale_description_text_appends_dictionary_tag_labels() -> None:
+    name_by = build_tag_name_by_code_language(
+        [
+            {"code": "voice_guidance", "language": "zh", "name": "人声引导"},
+            {"code": "voice_guidance", "language": "en", "name": "Voice Guidance"},
+            {"code": "breathing_guidance", "language": "zh", "name": "呼吸引导"},
+        ]
+    )
+    material = {
+        "content_form_tags": [
+            {"code": "voice_guidance"},
+            {"code": "breathing_guidance"},
+        ]
+    }
+    zh_labels = material_tag_labels_from_dictionary(
+        material, language="zh", name_by_code_lang=name_by
+    )
+    en_labels = material_tag_labels_from_dictionary(
+        material, language="en", name_by_code_lang=name_by
+    )
+    assert zh_labels == ["人声引导", "呼吸引导"]
+    assert en_labels == ["Voice Guidance"]
+
+    zh_text = build_locale_description_text(
+        {
+            "audio_name": "延长呼气呼吸引导",
+            "description": "旁白引导呼吸",
+            "summary": "",
+        },
+        tag_labels=zh_labels,
+    )
+    assert zh_text == "人声引导 呼吸引导"
+    assert "延长呼气呼吸引导" not in zh_text
+    assert "旁白引导呼吸" not in zh_text
+
+    source = locale_source_for_es(
+        {
+            "material_id": "m1",
+            "language": "zh",
+            "audio_name": "延长呼气呼吸引导",
+            "description": "旁白引导呼吸",
+        },
+        tag_labels=zh_labels,
+    )
+    assert source is not None
+    assert source["description_text"] == "人声引导 呼吸引导"

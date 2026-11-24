@@ -18,9 +18,11 @@ from app.cache.somni_audio_catalog_cache import clear_somni_audio_catalog_cache
 from app.core.bson_util import bson_to_jsonable, utc_now
 from app.core.exceptions import AppError
 from app.es.somni_docs import (
-    build_locale_description_text,
+    build_tag_name_by_code_language,
     extract_sleep_stage_names,
     locale_source_for_es,
+    material_content_form_tag_codes,
+    material_tag_labels_from_dictionary,
 )
 
 AUDIO_WRITE_BATCH_LIMIT = 200
@@ -414,7 +416,9 @@ async def _compensate_update_failure(
                     key: value for key, value in before_locale.items() if key != "_id"
                 }
                 await locales.replace_one({"_id": locale_oid}, restore_locale)
-                source = locale_source_for_es(bson_to_jsonable(before_locale))
+                source = await _locale_source_for_index(
+                    service, before_locale, material=before_material
+                )
                 if source is not None:
                     await _index_locale_document(service, str(locale_oid), source)
                 else:
@@ -452,7 +456,9 @@ async def _compensate_delete_failure(
             )
         for row in locale_rows:
             locale_id = str(row.get("_id") or "")
-            source = locale_source_for_es(bson_to_jsonable(row))
+            source = await _locale_source_for_index(
+                service, row, material=before_material
+            )
             if locale_id and source is not None:
                 await _index_locale_document(service, locale_id, source)
     except Exception as exc:
@@ -522,9 +528,12 @@ async def _sync_after_write(
             await _index_material_document(service, material_id, body)
         else:
             await _patch_material_index(service, material_id, body, changed=changed)
+    tags_changed = any(name in changed for name in _TAG_FIELDS)
     if wrote_locale is not None and str(wrote_locale.get("language") or "").strip():
         if create:
-            source = locale_source_for_es(bson_to_jsonable(wrote_locale))
+            source = await _locale_source_for_index(
+                service, wrote_locale, material=material
+            )
             if source is not None:
                 await _index_locale_document(service, str(wrote_locale.get("_id") or ""), source)
         else:
@@ -532,7 +541,33 @@ async def _sync_after_write(
                 service,
                 wrote_locale,
                 changed=changed,
-                recompute_vector=recompute_locale_vector,
+                recompute_vector=recompute_locale_vector or tags_changed,
+                material=material,
+            )
+    if tags_changed and material_id and not create:
+        # 标签变更影响所有语言的 description_text / 向量
+        try:
+            locale_rows = [
+                doc
+                async for doc in _locale_collection(service).find(
+                    {"material_id": material_id}
+                )
+            ]
+        except Exception as exc:
+            logger.warning("标签变更后读取语言行失败 material_id={}：{}", material_id, exc)
+            locale_rows = []
+        wrote_id = str((wrote_locale or {}).get("_id") or "")
+        for row in locale_rows:
+            if not str(row.get("language") or "").strip():
+                continue
+            if wrote_id and str(row.get("_id") or "") == wrote_id:
+                continue
+            await _patch_locale_index(
+                service,
+                row,
+                changed={"description_text"},
+                recompute_vector=True,
+                material=material,
             )
 
 
@@ -594,12 +629,62 @@ async def _index_material_document(
         raise RuntimeError(f"检索索引写入失败：{exc}") from exc
 
 
+async def _tag_labels_for_locale(
+    service: Any,
+    *,
+    material: dict[str, Any] | None,
+    language: str,
+) -> list[str]:
+    """原料 code → 标签词典该语言展示名。"""
+    codes = material_content_form_tag_codes(material)
+    if not codes:
+        return []
+    lang = str(language or "").strip().lower() or "zh"
+    try:
+        rows = [
+            doc
+            async for doc in service._tags().find(
+                {"code": {"$in": codes}, "language": lang},
+                projection={"code": 1, "name": 1, "language": 1},
+            )
+        ]
+    except Exception as exc:
+        logger.warning("语言检索文本解析标签名失败 language={}：{}", lang, exc)
+        return []
+    return material_tag_labels_from_dictionary(
+        material,
+        language=lang,
+        name_by_code_lang=build_tag_name_by_code_language(bson_to_jsonable(rows)),
+    )
+
+
+async def _locale_source_for_index(
+    service: Any,
+    locale: dict[str, Any],
+    *,
+    material: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    flat = bson_to_jsonable(locale)
+    language = str(flat.get("language") or "")
+    material_id = str(flat.get("material_id") or "")
+    mat = material
+    if mat is None and material_id:
+        try:
+            oid = ObjectId(material_id) if ObjectId.is_valid(material_id) else material_id
+            mat = await service._materials().find_one({"_id": oid})
+        except Exception:
+            mat = None
+    tag_labels = await _tag_labels_for_locale(service, material=mat, language=language)
+    return locale_source_for_es(flat, tag_labels=tag_labels)
+
+
 async def _patch_locale_index(
     service: Any,
     locale: dict[str, Any],
     *,
     changed: set[str],
     recompute_vector: bool,
+    material: dict[str, Any] | None = None,
 ) -> None:
     es_search = service._es_search
     if not getattr(es_search, "material_locales_index", ""):
@@ -607,7 +692,7 @@ async def _patch_locale_index(
     locale_id = str(locale.get("_id") or "")
     if not locale_id:
         return
-    source = locale_source_for_es(bson_to_jsonable(locale))
+    source = await _locale_source_for_index(service, locale, material=material)
     if source is None:
         return
     fields = {key: source[key] for key in changed if key in source}
@@ -617,7 +702,7 @@ async def _patch_locale_index(
         vector_field = "description_vector_en"
     remove: list[str] = []
     if recompute_vector:
-        text = build_locale_description_text(source).strip()
+        text = str(source.get("description_text") or "").strip()
         fields["description_text"] = text
         if vector_field and text:
             vector = await _encode_vector(

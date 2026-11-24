@@ -45,7 +45,9 @@ from app.es.client import create_es_client  # noqa: E402
 from app.es.search import EsSearch  # noqa: E402
 from app.es.somni_docs import (  # noqa: E402
     has_indexable_locale,
+    build_tag_name_by_code_language,
     locale_source_for_es,
+    material_tag_labels_from_dictionary,
     somni_material_source_for_es,
 )
 
@@ -120,12 +122,16 @@ def tag_doc_to_es(doc: dict[str, Any]) -> dict[str, Any] | None:
     return payload
 
 
-def locale_doc_to_es(doc: dict[str, Any]) -> dict[str, Any] | None:
+def locale_doc_to_es(
+    doc: dict[str, Any],
+    *,
+    tag_labels: list[str] | tuple[str, ...] = (),
+) -> dict[str, Any] | None:
     """Mongo 语言文档 → ES _source；无 _id、material_id 或 language 则跳过。"""
     doc_id = mongo_doc_id(doc)
     if not doc_id:
         return None
-    payload = locale_source_for_es(bson_to_jsonable(doc))
+    payload = locale_source_for_es(bson_to_jsonable(doc), tag_labels=tag_labels)
     if payload is None:
         return None
     return payload
@@ -481,9 +487,24 @@ class LocalesSyncJob:
                 self._settings.somni_sync_material_locales_backup_path,
                 bson_to_jsonable(docs),
             )
+        name_by_code_lang = build_tag_name_by_code_language(
+            await self._mongo.fetch_tag_dictionary()
+        )
+        materials_by_id = {
+            mongo_doc_id(row): row
+            for row in await self._mongo.fetch_materials()
+            if mongo_doc_id(row)
+        }
         payloads: dict[str, dict[str, Any]] = {}
         for doc in docs:
-            es_doc = locale_doc_to_es(doc)
+            material_id = str(doc.get("material_id") or "").strip()
+            language = str(doc.get("language") or "").strip().lower()
+            tag_labels = material_tag_labels_from_dictionary(
+                materials_by_id.get(material_id),
+                language=language,
+                name_by_code_lang=name_by_code_lang,
+            )
+            es_doc = locale_doc_to_es(doc, tag_labels=tag_labels)
             if es_doc is None:
                 stats["skipped"] += 1
                 continue
