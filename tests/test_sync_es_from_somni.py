@@ -11,6 +11,7 @@ from bson import ObjectId
 
 from app.core.config import Settings
 from scripts.sync_es_from_somni import (
+    LocalesSyncJob,
     MaterialsSyncJob,
     MongoEsSyncJob,
     MongoSource,
@@ -238,6 +239,46 @@ def _locale_doc(material_id: str, *, language: str = "zh") -> dict:
 
 
 @pytest.mark.asyncio
+async def test_locale_sync_builds_text_for_disabled_material(tmp_path) -> None:
+    """停用原料的语言行也按标签拼检索文本，重新启用后无需再同步即可被搜到。"""
+    material_id = "6a33a7928030d4cf420efeb6"
+    mongo = MagicMock()
+    mongo.fetch_locales = AsyncMock(return_value=[_locale_doc(material_id)])
+    mongo.fetch_tag_dictionary = AsyncMock(
+        return_value=[
+            {"type": "content_form", "code": "rain", "language": "zh", "name": "雨声"}
+        ]
+    )
+    mongo.fetch_material_content_tags = AsyncMock(
+        return_value=[{"_id": ObjectId(material_id), "content_form_tags": [{"code": "rain"}]}]
+    )
+    mongo.fetch_materials = AsyncMock(return_value=[])
+    es_search = MagicMock()
+    es_search.material_locales_index = "somni_audio_material_locales"
+    es_search.ensure_indices = AsyncMock()
+    es_client = MagicMock()
+    es_client.indices.exists = AsyncMock(return_value=False)
+    es_client.indices.delete = AsyncMock()
+    es_client.index = AsyncMock()
+    encoder = MagicMock()
+    encoder.encode_one = AsyncMock(return_value=[0.1] * 512)
+
+    stats = await LocalesSyncJob(
+        mongo,
+        es_search,
+        es_client,
+        encoder,
+        Settings(sync_backup_dir=str(tmp_path)),
+    ).run(dry_run=False)
+
+    assert stats["created"] == 1
+    mongo.fetch_materials.assert_not_awaited()
+    document = es_client.index.await_args.kwargs["document"]
+    assert document["description_text"] == "雨声"
+    assert document["description_vector"] == [0.1] * 512
+
+
+@pytest.mark.asyncio
 async def test_material_sync_job_wipes_then_reindexes(tmp_path) -> None:
     doc = _material_doc("6a33a7928030d4cf420efeb6")
     mongo = MagicMock()
@@ -342,6 +383,7 @@ async def test_mongo_sync_job_migrates_legacy_indices() -> None:
     mongo.fetch_tag_dictionary = AsyncMock(return_value=[])
     mongo.fetch_materials = AsyncMock(return_value=[])
     mongo.fetch_locales = AsyncMock(return_value=[])
+    mongo.fetch_material_content_tags = AsyncMock(return_value=[])
     es_search = MagicMock()
     es_search.migrate_legacy_indices = AsyncMock()
     es_search.ensure_indices = AsyncMock()
@@ -372,6 +414,7 @@ async def test_mongo_sync_job_does_not_delete_tag_index_before_jobs(tmp_path) ->
     mongo.fetch_tag_dictionary = AsyncMock(return_value=[])
     mongo.fetch_materials = AsyncMock(return_value=[])
     mongo.fetch_locales = AsyncMock(return_value=[])
+    mongo.fetch_material_content_tags = AsyncMock(return_value=[])
     es_search = MagicMock()
     es_search.migrate_legacy_indices = AsyncMock()
     es_search.ensure_indices = AsyncMock()

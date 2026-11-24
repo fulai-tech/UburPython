@@ -28,6 +28,12 @@ from app.es.somni_docs import (
 AUDIO_WRITE_BATCH_LIMIT = 200
 _LOCALE_ENCODE_BATCH = 64
 _LOCALE_BULK_CHUNK = 200
+_LOCALE_REFRESH_ATTEMPTS = 3
+_PATCH_SCRIPT = (
+    "for (change in params.fields.entrySet()) {"
+    " ctx._source[change.getKey()] = change.getValue(); }"
+    " for (field in params.remove) { ctx._source.remove(field); }"
+)
 
 _MATERIAL_FIELDS = (
     "status",
@@ -220,9 +226,14 @@ async def _update_one(service: Any, material_id: str, fields: dict[str, Any]) ->
         before_locale = await _find_locale_snapshot(
             service, material_id, str(locale_fields["language"])
         )
-    tags_changing = any(name in fields for name in _TAG_FIELDS)
+    reenabling = (
+        "status" in fields
+        and bool(fields.get("status"))
+        and not bool(before_material.get("status"))
+    )
+    refresh_all_locales = reenabling or any(name in fields for name in _TAG_FIELDS)
     before_locale_rows: list[dict[str, Any]] = []
-    if tags_changing:
+    if refresh_all_locales:
         before_locale_rows = await _locale_collection(service).find(
             {"material_id": material_id}
         ).to_list(length=None)
@@ -261,6 +272,7 @@ async def _update_one(service: Any, material_id: str, fields: dict[str, Any]) ->
                 fields, before_locale=before_locale
             ),
             touch_material=touch_material,
+            refresh_all_locales=refresh_all_locales,
         )
     except Exception:
         if material_written or locale_written:
@@ -273,7 +285,7 @@ async def _update_one(service: Any, material_id: str, fields: dict[str, Any]) ->
                 touched_material=material_written,
                 touched_locale=locale_written,
                 before_locale_rows=before_locale_rows,
-                restore_all_locales=tags_changing,
+                restore_all_locales=refresh_all_locales,
             )
         raise
 
@@ -577,6 +589,7 @@ async def _sync_after_write(
     recompute_locale_vector: bool,
     create: bool = False,
     touch_material: bool = True,
+    refresh_all_locales: bool = False,
 ) -> None:
     es_search = getattr(service, "_es_search", None)
     if es_search is None:
@@ -587,7 +600,7 @@ async def _sync_after_write(
             await _index_material_document(service, material_id, body)
         else:
             await _patch_material_index(service, material_id, body, changed=changed)
-    tags_changed = any(name in changed for name in _TAG_FIELDS)
+    refresh_all = refresh_all_locales or any(name in changed for name in _TAG_FIELDS)
     if wrote_locale is not None and str(wrote_locale.get("language") or "").strip():
         if create:
             source = await _locale_source_for_index(
@@ -600,11 +613,11 @@ async def _sync_after_write(
                 service,
                 wrote_locale,
                 changed=changed,
-                recompute_vector=recompute_locale_vector or tags_changed,
+                recompute_vector=recompute_locale_vector or refresh_all,
                 material=material,
             )
-    if tags_changed and material_id and not create:
-        # 标签变更影响所有语言的 description_text / 向量；读失败上抛以便补偿回滚。
+    if refresh_all and material_id and not create:
+        # 标签变更或重新启用：重算所有语言的 description_text / 向量；读失败上抛以便补偿回滚。
         locale_rows = await _locale_collection(service).find(
             {"material_id": material_id}
         ).to_list(length=None)
@@ -839,11 +852,7 @@ async def _patch_document(
                 index=index,
                 id=doc_id,
                 script={
-                    "source": (
-                        "for (change in params.fields.entrySet()) {"
-                        " ctx._source[change.getKey()] = change.getValue(); }"
-                        " for (field in params.remove) { ctx._source.remove(field); }"
-                    ),
+                    "source": _PATCH_SCRIPT,
                     "params": {"fields": fields, "remove": remove},
                 },
                 retry_on_conflict=3,
@@ -912,7 +921,7 @@ async def refresh_locale_indexes_for_materials(
 ) -> int:
     """按原料当前 content_form 标签批量重建语言索引，返回写入条数。
 
-    语言行与词典各查一次；相同检索文本只编码一次；ES 走 bulk 整份写入。
+    语言行查一次，词典在编码前后各查一次；相同检索文本只编码一次；ES 走 bulk 只改检索字段。
     languages 非空时只刷指定语言；用于词典展示名变更后的关联刷新。
     """
     es_search = getattr(service, "_es_search", None)
@@ -939,23 +948,28 @@ async def refresh_locale_indexes_for_materials(
     codes = sorted(
         {code for material in by_id.values() for code in material_content_form_tag_codes(material)}
     )
-    name_by = await _content_form_names(
-        service,
-        codes=codes,
-        languages=sorted({str(row["language"]).strip().lower() for row in targets}),
-    )
-    sources: list[tuple[str, dict[str, Any]]] = []
-    for row in targets:
-        labels = material_tag_labels_from_dictionary(
-            by_id.get(str(row.get("material_id") or "")),
-            language=str(row["language"]),
-            name_by_code_lang=name_by,
-        )
-        source = locale_source_for_es(row, tag_labels=labels)
-        if source is not None:
-            sources.append((str(row["_id"]), source))
-    await _attach_locale_vectors(service, sources)
-    await _bulk_index_locales(service, sources)
+    languages = sorted({str(row["language"]).strip().lower() for row in targets})
+    name_by = await _content_form_names(service, codes=codes, languages=languages)
+    for _ in range(_LOCALE_REFRESH_ATTEMPTS):
+        sources: list[tuple[str, dict[str, Any]]] = []
+        for row in targets:
+            labels = material_tag_labels_from_dictionary(
+                by_id.get(str(row.get("material_id") or "")),
+                language=str(row["language"]),
+                name_by_code_lang=name_by,
+            )
+            source = locale_source_for_es(row, tag_labels=labels)
+            if source is not None:
+                sources.append((str(row["_id"]), source))
+        await _attach_locale_vectors(service, sources)
+        # 编码期间词典可能被并发改名；名称变了就按新词典重算，避免把旧文本写回。
+        latest = await _content_form_names(service, codes=codes, languages=languages)
+        if latest == name_by:
+            break
+        name_by = latest
+    else:
+        raise RuntimeError("标签词典在刷新期间持续变化，请重试")
+    await _bulk_update_locale_search_fields(service, sources)
     return len(sources)
 
 
@@ -991,16 +1005,33 @@ async def _attach_locale_vectors(
                     source[field] = vector
 
 
-async def _bulk_index_locales(
+async def _bulk_update_locale_search_fields(
     service: Any, sources: list[tuple[str, dict[str, Any]]]
 ) -> None:
+    """只更新 description_text 与向量，不覆盖标题等并发可能已改的字段；文档缺失时写入整份。"""
     es_search = service._es_search
     index = es_search.material_locales_index
     for start in range(0, len(sources), _LOCALE_BULK_CHUNK):
         operations: list[dict[str, Any]] = []
         for locale_id, source in sources[start : start + _LOCALE_BULK_CHUNK]:
-            operations.append({"index": {"_index": index, "_id": locale_id}})
-            operations.append(source)
+            fields = {"description_text": source.get("description_text", "")}
+            remove = ["description_vector", "description_vector_en"]
+            for field in ("description_vector", "description_vector_en"):
+                if field in source:
+                    fields[field] = source[field]
+                    remove.remove(field)
+            operations.append(
+                {"update": {"_index": index, "_id": locale_id, "retry_on_conflict": 3}}
+            )
+            operations.append(
+                {
+                    "script": {
+                        "source": _PATCH_SCRIPT,
+                        "params": {"fields": fields, "remove": remove},
+                    },
+                    "upsert": source,
+                }
+            )
         try:
             response = await es_search._client.bulk(operations=operations)
         except Exception as exc:
@@ -1008,9 +1039,9 @@ async def _bulk_index_locales(
         body = getattr(response, "body", response)
         if body.get("errors"):
             reasons = [
-                item.get("index", {}).get("error")
+                item.get("update", {}).get("error")
                 for item in body.get("items") or []
-                if item.get("index", {}).get("error")
+                if item.get("update", {}).get("error")
             ]
             raise RuntimeError(f"语言索引批量写入失败：{reasons[:1]}")
 

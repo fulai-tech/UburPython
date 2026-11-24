@@ -478,6 +478,59 @@ async def test_failed_update_deletes_index_of_converted_blank_locale(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_reenable_rebuilds_all_locale_search_text(monkeypatch) -> None:
+    """停用素材重新启用：所有语言行按当前标签重算检索文本与向量。"""
+    service = _bind(_writer())
+    material_id = ObjectId()
+    material = {"_id": material_id, "content_form_tags": [{"code": "rain"}]}
+    service.collection.find_one = AsyncMock(return_value={**material, "status": False})
+    service.collection.find_one_and_update = AsyncMock(return_value={**material, "status": True})
+    zh_id, en_id = ObjectId(), ObjectId()
+    service.locales.find = MagicMock(
+        return_value=SimpleNamespace(
+            to_list=AsyncMock(
+                return_value=[
+                    {"_id": zh_id, "material_id": str(material_id), "language": "zh"},
+                    {"_id": en_id, "material_id": str(material_id), "language": "en"},
+                ]
+            )
+        )
+    )
+
+    def _dictionary(query, **_kwargs):
+        names = {"zh": "雨声", "en": "Rain"}
+        lang = query["language"]["$in"][0]
+        return SimpleNamespace(
+            to_list=AsyncMock(
+                return_value=[
+                    {"type": "content_form", "code": "rain", "language": lang, "name": names[lang]}
+                ]
+            )
+        )
+
+    service.tags.find = MagicMock(side_effect=_dictionary)
+    monkeypatch.setattr(
+        "app.server.somni.audio.writes.clear_somni_audio_catalog_cache",
+        AsyncMock(),
+    )
+
+    results = await update_audios(
+        service, [{"id": str(material_id), "fields": {"status": True}}]
+    )
+
+    assert results[0]["ok"] is True
+    locale_patches = {
+        call.kwargs["id"]: call.kwargs["script"]["params"]["fields"]
+        for call in service._es_search._client.update.await_args_list
+        if call.kwargs["index"] == "somni_audio_material_locales"
+    }
+    assert locale_patches[str(zh_id)]["description_text"] == "雨声"
+    assert locale_patches[str(zh_id)]["description_vector"] == [0.2, 0.4]
+    assert locale_patches[str(en_id)]["description_text"] == "Rain"
+    assert locale_patches[str(en_id)]["description_vector_en"] == [0.2, 0.4]
+
+
+@pytest.mark.asyncio
 async def test_update_keeps_vector_when_only_status_changes(monkeypatch) -> None:
     service = _bind(_writer())
     material_id = ObjectId()

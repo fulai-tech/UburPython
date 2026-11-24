@@ -475,11 +475,17 @@ async def test_update_content_form_name_refreshes_linked_material_locales(
     service._es_search._client.bulk.assert_awaited_once()
     operations = service._es_search._client.bulk.await_args.kwargs["operations"]
     assert operations[0] == {
-        "index": {"_index": "somni_audio_material_locales", "_id": str(locale_id)}
+        "update": {
+            "_index": "somni_audio_material_locales",
+            "_id": str(locale_id),
+            "retry_on_conflict": 3,
+        }
     }
-    assert operations[1]["description_text"] == "新雨名"
-    assert operations[1]["description_vector"] == [0.2, 0.4]
-    assert operations[1]["audio_name"] == "雨曲"
+    # 只改派生检索字段，不带标题，避免覆盖并发编辑；缺文档时才 upsert 整份
+    params = operations[1]["script"]["params"]
+    assert params["fields"] == {"description_text": "新雨名", "description_vector": [0.2, 0.4]}
+    assert params["remove"] == ["description_vector_en"]
+    assert operations[1]["upsert"]["audio_name"] == "雨曲"
 
 
 @pytest.mark.asyncio
@@ -533,15 +539,75 @@ async def test_rename_batches_dictionary_encode_and_bulk_across_materials(
     )
 
     assert results[0]["ok"] is True
-    # 只刷 zh：中文词典改名不影响英文行
+    # 只刷 zh：中文词典改名不影响英文行；词典查一次 + 编码后复查一次
     service.locales.find.assert_called_once()
-    service.collection.find.assert_called_once()
+    assert service.collection.find.call_count == 2
     service._encoder.encode.assert_awaited_once()
     assert service._encoder.encode.await_args.args[0] == ["新雨"]
     service._es_search._client.bulk.assert_awaited_once()
     operations = service._es_search._client.bulk.await_args.kwargs["operations"]
     assert len(operations) == 10
-    assert all(doc["language"] == "zh" for doc in operations[1::2])
+    assert all(doc["upsert"]["language"] == "zh" for doc in operations[1::2])
+
+
+@pytest.mark.asyncio
+async def test_concurrent_rename_during_encode_recomputes_with_latest_name(
+    monkeypatch,
+) -> None:
+    """编码期间词典又被改名：按最新名称重算，不把旧文本写回。"""
+    service = _writer()
+    tag_id = ObjectId()
+    before = {
+        "_id": tag_id,
+        "type": "content_form",
+        "code": "rain",
+        "language": "zh",
+        "name": "旧雨",
+        "status": "启用",
+    }
+    material = {"_id": ObjectId(), "content_form_tags": [{"code": "rain"}]}
+    service.collection.find_one = AsyncMock(return_value=dict(before))
+    service.collection.find_one_and_update = AsyncMock(return_value={**before, "name": "新雨"})
+    service.materials.find = MagicMock(
+        return_value=SimpleNamespace(to_list=AsyncMock(return_value=[material]))
+    )
+    service.locales.find = MagicMock(
+        return_value=SimpleNamespace(
+            to_list=AsyncMock(
+                return_value=[
+                    {"_id": ObjectId(), "material_id": str(material["_id"]), "language": "zh"}
+                ]
+            )
+        )
+    )
+    snapshots = iter(["新雨", "更新的雨", "更新的雨"])
+
+    def _dictionary(*_args, **_kwargs):
+        name = next(snapshots)
+        return SimpleNamespace(
+            to_list=AsyncMock(
+                return_value=[
+                    {"type": "content_form", "code": "rain", "language": "zh", "name": name}
+                ]
+            )
+        )
+
+    service.collection.find = MagicMock(side_effect=_dictionary)
+    monkeypatch.setattr(
+        "app.server.somni.audio.tag_writes.clear_somni_audio_catalog_cache",
+        AsyncMock(),
+    )
+
+    results = await update_audio_tags(
+        service,
+        [{"id": str(tag_id), "fields": {"name": "新雨"}}],
+    )
+
+    assert results[0]["ok"] is True
+    encoded = [call.args[0] for call in service._encoder.encode.await_args_list]
+    assert encoded == [["新雨"], ["更新的雨"]]
+    operations = service._es_search._client.bulk.await_args.kwargs["operations"]
+    assert operations[1]["script"]["params"]["fields"]["description_text"] == "更新的雨"
 
 
 @pytest.mark.asyncio

@@ -252,6 +252,12 @@ class MongoSource:
     async def fetch_materials(self) -> list[dict[str, Any]]:
         return await self._fetch_active_materials()
 
+    async def fetch_material_content_tags(self) -> list[dict[str, Any]]:
+        """全部原料（含停用）的 content_form 标签；语言行检索文本不随启停变化。"""
+        coll = self._db[self._materials]
+        cursor = coll.find({}, projection={"_id": 1, "content_form_tags": 1})
+        return [doc async for doc in cursor]
+
     async def fetch_locales(self) -> list[dict[str, Any]]:
         coll = self._db[self._locales]
         return [doc async for doc in coll.find({})]
@@ -492,7 +498,7 @@ class LocalesSyncJob:
         )
         materials_by_id = {
             mongo_doc_id(row): row
-            for row in await self._mongo.fetch_materials()
+            for row in await self._mongo.fetch_material_content_tags()
             if mongo_doc_id(row)
         }
         payloads: dict[str, dict[str, Any]] = {}
