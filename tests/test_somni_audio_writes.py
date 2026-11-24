@@ -48,17 +48,22 @@ def _writer() -> SimpleNamespace:
             index=AsyncMock(),
             update=AsyncMock(),
             delete=AsyncMock(),
+            bulk=AsyncMock(return_value={"errors": False, "items": []}),
             get=AsyncMock(
                 return_value=SimpleNamespace(body={"_source": {"description_vector": [0.9, 0.1]}})
             ),
         ),
     )
-    encoder = SimpleNamespace(encode_one=AsyncMock(return_value=[0.2, 0.4]))
+    encoder = SimpleNamespace(
+        encode_one=AsyncMock(return_value=[0.2, 0.4]),
+        encode=AsyncMock(side_effect=lambda texts, language="zh": [[0.2, 0.4] for _ in texts]),
+    )
     collection = MagicMock()
     collection.find_one = AsyncMock(return_value={"_id": ObjectId(), "status": True})
     collection.replace_one = AsyncMock()
     collection.delete_one = AsyncMock(return_value=SimpleNamespace(deleted_count=1))
     collection.insert_one = AsyncMock(return_value=SimpleNamespace(inserted_id=ObjectId()))
+    collection.find = MagicMock(return_value=SimpleNamespace(to_list=AsyncMock(return_value=[])))
     locales = MagicMock()
     row = _locale_row()
     locales.find_one_and_update = AsyncMock(return_value=row)
@@ -69,7 +74,7 @@ def _writer() -> SimpleNamespace:
     locales.delete_one = AsyncMock()
     locales.replace_one = AsyncMock()
     locales.insert_many = AsyncMock()
-    locales.find = MagicMock(return_value=SimpleNamespace(to_list=AsyncMock(return_value=[])))
+    locales.find = MagicMock(return_value=SimpleNamespace(to_list=AsyncMock(return_value=[row])))
     tags = MagicMock()
     tags.find = MagicMock(return_value=SimpleNamespace(to_list=AsyncMock(return_value=[])))
     return SimpleNamespace(
@@ -499,16 +504,19 @@ async def test_reenable_rebuilds_all_locale_search_text(monkeypatch) -> None:
 
     def _dictionary(query, **_kwargs):
         names = {"zh": "雨声", "en": "Rain"}
-        lang = query["language"]["$in"][0]
         return SimpleNamespace(
             to_list=AsyncMock(
                 return_value=[
                     {"type": "content_form", "code": "rain", "language": lang, "name": names[lang]}
+                    for lang in query["language"]["$in"]
                 ]
             )
         )
 
     service.tags.find = MagicMock(side_effect=_dictionary)
+    service.collection.find = MagicMock(
+        return_value=SimpleNamespace(to_list=AsyncMock(return_value=[material]))
+    )
     monkeypatch.setattr(
         "app.server.somni.audio.writes.clear_somni_audio_catalog_cache",
         AsyncMock(),
@@ -528,6 +536,64 @@ async def test_reenable_rebuilds_all_locale_search_text(monkeypatch) -> None:
     assert locale_patches[str(zh_id)]["description_vector"] == [0.2, 0.4]
     assert locale_patches[str(en_id)]["description_text"] == "Rain"
     assert locale_patches[str(en_id)]["description_vector_en"] == [0.2, 0.4]
+    # 写后复查与 Mongo 一致，不再重写
+    service._es_search._client.bulk.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_tag_rename_after_update_write_is_fixed_by_verify(monkeypatch) -> None:
+    """单条写入用了旧词典名，写完时标签已改名：写后复查按新名重写。"""
+    service = _bind(_writer())
+    material_id = ObjectId()
+    material = {"_id": material_id, "content_form_tags": [{"code": "rain"}], "status": True}
+    service.collection.find_one = AsyncMock(return_value=dict(material))
+    service.collection.find_one_and_update = AsyncMock(return_value=dict(material))
+    service.collection.find = MagicMock(
+        return_value=SimpleNamespace(to_list=AsyncMock(return_value=[material]))
+    )
+    locale_id = ObjectId()
+    service.locales.find = MagicMock(
+        return_value=SimpleNamespace(
+            to_list=AsyncMock(
+                return_value=[{"_id": locale_id, "material_id": str(material_id), "language": "zh"}]
+            )
+        )
+    )
+    reads: list[str] = []
+
+    def _dictionary(*_args, **_kwargs):
+        name = "旧雨" if not reads else "新雨"
+        reads.append(name)
+        return SimpleNamespace(
+            to_list=AsyncMock(
+                return_value=[
+                    {"type": "content_form", "code": "rain", "language": "zh", "name": name}
+                ]
+            )
+        )
+
+    service.tags.find = MagicMock(side_effect=_dictionary)
+    monkeypatch.setattr(
+        "app.server.somni.audio.writes.clear_somni_audio_catalog_cache",
+        AsyncMock(),
+    )
+
+    results = await update_audios(
+        service,
+        [{"id": str(material_id), "fields": {"content_form_tags": [{"code": "rain"}]}}],
+    )
+
+    assert results[0]["ok"] is True
+    patched = next(
+        call.kwargs["script"]["params"]["fields"]
+        for call in service._es_search._client.update.await_args_list
+        if call.kwargs["index"] == "somni_audio_material_locales"
+    )
+    assert patched["description_text"] == "旧雨"
+    service._es_search._client.bulk.assert_awaited_once()
+    operations = service._es_search._client.bulk.await_args.kwargs["operations"]
+    assert operations[0]["update"]["_id"] == str(locale_id)
+    assert operations[1]["script"]["params"]["fields"]["description_text"] == "新雨"
 
 
 @pytest.mark.asyncio
@@ -646,7 +712,12 @@ async def test_delete_audios_continues_after_missing_item(monkeypatch) -> None:
     assert results[0]["ok"] is False
     assert "不存在" in results[0]["message"]
     assert results[1]["ok"] is True
-    service._es_search._client.delete.assert_awaited_once()
+    material_deletes = [
+        call
+        for call in service._es_search._client.delete.await_args_list
+        if call.kwargs["index"] == "somni_audio_materials"
+    ]
+    assert len(material_deletes) == 1
     clear_cache.assert_awaited_once()
 
 

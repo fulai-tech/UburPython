@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 from bson import ObjectId
@@ -470,8 +470,8 @@ async def test_update_content_form_name_refreshes_linked_material_locales(
     )
 
     assert results[0]["ok"] is True
-    service.materials.find.assert_called_with({"content_form_tags.code": "steady_rain"})
-    # 纯改名只刷一次，且一次 bulk 写完
+    assert call({"content_form_tags.code": "steady_rain"}) in service.materials.find.call_args_list
+    # 纯改名只刷一次，且一次 bulk 写完；写后复查一致，不再重写
     service._es_search._client.bulk.assert_awaited_once()
     operations = service._es_search._client.bulk.await_args.kwargs["operations"]
     assert operations[0] == {
@@ -539,8 +539,8 @@ async def test_rename_batches_dictionary_encode_and_bulk_across_materials(
     )
 
     assert results[0]["ok"] is True
-    # 只刷 zh：中文词典改名不影响英文行；词典查一次 + 编码后复查一次
-    service.locales.find.assert_called_once()
+    # 只刷 zh：中文词典改名不影响英文行；写入一轮 + 写后复查一轮，各查一次语言行与词典
+    assert service.locales.find.call_count == 2
     assert service.collection.find.call_count == 2
     service._encoder.encode.assert_awaited_once()
     assert service._encoder.encode.await_args.args[0] == ["新雨"]
@@ -608,6 +608,120 @@ async def test_concurrent_rename_during_encode_recomputes_with_latest_name(
     assert encoded == [["新雨"], ["更新的雨"]]
     operations = service._es_search._client.bulk.await_args.kwargs["operations"]
     assert operations[1]["script"]["params"]["fields"]["description_text"] == "更新的雨"
+
+
+def _rename_voice_tag(service: SimpleNamespace) -> ObjectId:
+    tag_id = ObjectId()
+    before = {
+        "_id": tag_id,
+        "type": "content_form",
+        "code": "voice",
+        "language": "zh",
+        "name": "旧人声",
+        "status": "启用",
+    }
+    service.collection.find_one = AsyncMock(return_value=dict(before))
+    service.collection.find_one_and_update = AsyncMock(
+        return_value={**before, "name": "人声引导"}
+    )
+    service.collection.find = MagicMock(
+        return_value=SimpleNamespace(
+            to_list=AsyncMock(
+                return_value=[
+                    {"type": "content_form", "code": "voice", "language": "zh", "name": "人声引导"},
+                    {"type": "content_form", "code": "rain", "language": "zh", "name": "雨声"},
+                ]
+            )
+        )
+    )
+    return tag_id
+
+
+@pytest.mark.asyncio
+async def test_material_tag_change_during_refresh_is_rewritten_with_latest_tags(
+    monkeypatch,
+) -> None:
+    """刷新编码期间另一请求把素材标签从人声引导改成雨声：写后复查按雨声重写，不回退。"""
+    service = _writer()
+    tag_id = _rename_voice_tag(service)
+    material_id = ObjectId()
+    locale_id = ObjectId()
+    current = {"_id": material_id, "content_form_tags": [{"code": "voice"}]}
+    service.materials.find = MagicMock(
+        side_effect=lambda *_a, **_k: SimpleNamespace(
+            to_list=AsyncMock(return_value=[dict(current)])
+        )
+    )
+    service.locales.find = MagicMock(
+        return_value=SimpleNamespace(
+            to_list=AsyncMock(
+                return_value=[{"_id": locale_id, "material_id": str(material_id), "language": "zh"}]
+            )
+        )
+    )
+
+    async def _encode(texts, language="zh"):
+        current["content_form_tags"] = [{"code": "rain"}]
+        return [[0.2, 0.4] for _ in texts]
+
+    service._encoder.encode = AsyncMock(side_effect=_encode)
+    monkeypatch.setattr(
+        "app.server.somni.audio.tag_writes.clear_somni_audio_catalog_cache",
+        AsyncMock(),
+    )
+
+    results = await update_audio_tags(
+        service, [{"id": str(tag_id), "fields": {"name": "人声引导"}}]
+    )
+
+    assert results[0]["ok"] is True
+    written = [
+        op["script"]["params"]["fields"]["description_text"]
+        for bulk_call in service._es_search._client.bulk.await_args_list
+        for op in bulk_call.kwargs["operations"][1::2]
+    ]
+    assert written == ["人声引导", "雨声"]
+
+
+@pytest.mark.asyncio
+async def test_locale_deleted_during_refresh_removes_upserted_document(monkeypatch) -> None:
+    """刷新编码期间素材被删：upsert 可能把文档写回，写后复查发现语言行已删就删掉。"""
+    service = _writer()
+    tag_id = _rename_voice_tag(service)
+    material_id = ObjectId()
+    locale_id = ObjectId()
+    rows = [{"_id": locale_id, "material_id": str(material_id), "language": "zh"}]
+    service.materials.find = MagicMock(
+        return_value=SimpleNamespace(
+            to_list=AsyncMock(
+                return_value=[{"_id": material_id, "content_form_tags": [{"code": "voice"}]}]
+            )
+        )
+    )
+    service.locales.find = MagicMock(
+        side_effect=lambda *_a, **_k: SimpleNamespace(to_list=AsyncMock(return_value=list(rows)))
+    )
+
+    async def _encode(texts, language="zh"):
+        rows.clear()
+        return [[0.2, 0.4] for _ in texts]
+
+    service._encoder.encode = AsyncMock(side_effect=_encode)
+    monkeypatch.setattr(
+        "app.server.somni.audio.tag_writes.clear_somni_audio_catalog_cache",
+        AsyncMock(),
+    )
+
+    results = await update_audio_tags(
+        service, [{"id": str(tag_id), "fields": {"name": "人声引导"}}]
+    )
+
+    assert results[0]["ok"] is True
+    service._es_search._client.bulk.assert_awaited_once()
+    assert (
+        call(index="somni_audio_material_locales", id=str(locale_id))
+        in service._es_search._client.delete.await_args_list
+    )
 
 
 @pytest.mark.asyncio
