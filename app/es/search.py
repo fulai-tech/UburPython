@@ -785,7 +785,7 @@ class EsSearch:
                 "size": fetch_size,
                 "query": {
                     "bool": {
-                        "filter": [{"term": {"language": lang}}],
+                        "filter": _locale_search_filters(lang),
                         "must": [build_bm25_must_clause("description_text", query_text)],
                     }
                 },
@@ -818,10 +818,7 @@ class EsSearch:
         if not vector_field:
             return []
         fetch_k = _locale_fetch_size(k)
-        filters: list[dict[str, Any]] = [
-            {"term": {"language": lang}},
-            {"exists": {"field": vector_field}},
-        ]
+        filters = _locale_search_filters(lang, vector_field=vector_field)
         response = await self._client.search(
             index=self._material_locales_index,
             body={
@@ -867,10 +864,9 @@ class EsSearch:
                     "script_score": {
                         "query": {
                             "bool": {
-                                "filter": [
-                                    {"term": {"language": lang}},
-                                    {"exists": {"field": vector_field}},
-                                ]
+                                "filter": _locale_search_filters(
+                                    lang, vector_field=vector_field
+                                ),
                             }
                         },
                         "script": {
@@ -1099,27 +1095,18 @@ class EsSearch:
             try:
                 await self._client.indices.put_mapping(index=index, body=mapping["mappings"])
             except ApiError as exc:
-                if not _is_mapping_update_conflict(exc):
+                if not _is_dense_vector_dims_conflict(exc):
                     raise
                 logger.warning(
-                    "跳过更新 ES 映射（与现有字段冲突，全量同步 wipe 后重建）：index={} err={}",
+                    "跳过更新 ES 映射（向量 dims 不可变，保留现有索引）：index={} err={}",
                     index,
                     exc.message,
                 )
 
 
 def _is_dense_vector_dims_conflict(exc: ApiError) -> bool:
-    """put_mapping 因 dense_vector.dims 与现有字段冲突而失败。"""
+    """只有向量维度不能原地改时跳过。字段类型冲突要暴露，避免静默留着旧 mapping。"""
     return "Cannot update parameter [dims]" in f"{exc.message} {exc}"
-
-
-def _is_mapping_update_conflict(exc: ApiError) -> bool:
-    """put_mapping 无法原地改字段类型 / dims 时，留给 wipe+create。"""
-    text = f"{exc.message} {exc}"
-    return _is_dense_vector_dims_conflict(exc) or (
-        "cannot be changed from type" in text
-        or "mapper [" in text and "cannot be changed" in text
-    )
 
 
 _LOCALE_SOURCE_INCLUDES = (
@@ -1134,9 +1121,30 @@ _LOCALE_SOURCE_INCLUDES = (
 
 
 def _locale_fetch_size(wanted: int) -> int:
-    """语言表先多取一些，hydrate 后再按 status/标签截断，避免后滤空窗。"""
+    """语言表先多取一些，hydrate 后再按标签截断，避免后滤空窗。"""
     base = max(1, int(wanted or 1))
     return min(max(base * 5, 50), 500)
+
+
+def _locale_search_filters(lang: str, *, vector_field: str = "") -> list[dict[str, Any]]:
+    filters: list[dict[str, Any]] = [{"term": {"language": lang}}]
+    if vector_field:
+        filters.append({"exists": {"field": vector_field}})
+    filters.append(locale_enabled_material_filter())
+    return filters
+
+
+def locale_enabled_material_filter() -> dict[str, Any]:
+    """召回时排除停用原料。没有 material_status 的旧文档仍可被搜到。"""
+    return {
+        "bool": {
+            "should": [
+                {"term": {"material_status": True}},
+                {"bool": {"must_not": [{"exists": {"field": "material_status"}}]}},
+            ],
+            "minimum_should_match": 1,
+        }
+    }
 
 
 def _overlay_locale_display(doc: dict[str, Any], locale: dict[str, Any]) -> None:

@@ -149,8 +149,7 @@ def test_locale_description_text_appends_dictionary_tag_labels() -> None:
         },
         tag_labels=zh_labels,
     )
-    assert zh_text == "人声引导 呼吸引导"
-    assert "延长呼气呼吸引导" not in zh_text
+    assert zh_text == "延长呼气呼吸引导 人声引导 呼吸引导"
     assert "旁白引导呼吸" not in zh_text
 
     source = locale_source_for_es(
@@ -163,7 +162,7 @@ def test_locale_description_text_appends_dictionary_tag_labels() -> None:
         tag_labels=zh_labels,
     )
     assert source is not None
-    assert source["description_text"] == "人声引导 呼吸引导"
+    assert source["description_text"] == "延长呼气呼吸引导 人声引导 呼吸引导"
 
 
 def test_build_tag_name_by_code_language_keeps_content_form_over_other_types() -> None:

@@ -483,9 +483,92 @@ async def test_update_content_form_name_refreshes_linked_material_locales(
     }
     # 只改派生检索字段，不带标题，避免覆盖并发编辑；缺文档时才 upsert 整份
     params = operations[1]["script"]["params"]
-    assert params["fields"] == {"description_text": "新雨名", "description_vector": [0.2, 0.4]}
+    assert params["fields"] == {
+        "description_text": "雨曲 新雨名",
+        "description_vector": [0.2, 0.4],
+    }
     assert params["remove"] == ["description_vector_en"]
     assert operations[1]["upsert"]["audio_name"] == "雨曲"
+    assert "material_status" not in operations[1]["upsert"]
+
+
+@pytest.mark.asyncio
+async def test_created_locale_status_uses_material_status_after_upsert(monkeypatch) -> None:
+    """缺文档被 upsert 建出来后，按写入当时的原料状态补 material_status。"""
+    service = _writer()
+    tag_id = ObjectId()
+    material_id = ObjectId()
+    locale_id = ObjectId()
+    before = {
+        "_id": tag_id,
+        "type": "content_form",
+        "code": "steady_rain",
+        "language": "zh",
+        "name": "旧雨名",
+        "status": "启用",
+    }
+    material = {
+        "_id": material_id,
+        "content_form_tags": [{"code": "steady_rain"}],
+        "status": True,
+    }
+    locale = {
+        "_id": locale_id,
+        "material_id": str(material_id),
+        "language": "zh",
+        "audio_name": "雨曲",
+    }
+    service.collection.find_one = AsyncMock(return_value=dict(before))
+    service.collection.find_one_and_update = AsyncMock(return_value={**before, "name": "新雨名"})
+    service.materials.find = MagicMock(
+        return_value=SimpleNamespace(to_list=AsyncMock(return_value=[material]))
+    )
+    service.locales.find = MagicMock(
+        return_value=SimpleNamespace(to_list=AsyncMock(return_value=[locale]))
+    )
+    service.collection.find = MagicMock(
+        return_value=SimpleNamespace(
+            to_list=AsyncMock(
+                return_value=[
+                    {
+                        "type": "content_form",
+                        "code": "steady_rain",
+                        "language": "zh",
+                        "name": "新雨名",
+                    }
+                ]
+            )
+        )
+    )
+
+    async def _bulk(**kwargs):
+        material["status"] = False
+        return {
+            "errors": False,
+            "items": [{"update": {"_id": str(locale_id), "result": "created"}}],
+        }
+
+    service._es_search._client.bulk = AsyncMock(side_effect=_bulk)
+    monkeypatch.setattr(
+        "app.server.somni.audio.tag_writes.clear_somni_audio_catalog_cache",
+        AsyncMock(),
+    )
+
+    results = await update_audio_tags(
+        service,
+        [{"id": str(tag_id), "fields": {"name": "新雨名"}}],
+    )
+
+    assert results[0]["ok"] is True
+    upsert = service._es_search._client.bulk.await_args.kwargs["operations"][1]["upsert"]
+    assert "material_status" not in upsert
+    status_writes = [
+        call.kwargs["doc"]["material_status"]
+        for call in service._es_search._client.update.await_args_list
+        if call.kwargs.get("index") == "somni_audio_material_locales"
+        and "material_status" in (call.kwargs.get("doc") or {})
+    ]
+    assert status_writes == [False]
 
 
 @pytest.mark.asyncio
@@ -543,7 +626,7 @@ async def test_rename_batches_dictionary_encode_and_bulk_across_materials(
     assert service.locales.find.call_count == 2
     assert service.collection.find.call_count == 2
     service._encoder.encode.assert_awaited_once()
-    assert service._encoder.encode.await_args.args[0] == ["新雨"]
+    assert service._encoder.encode.await_args.args[0] == ["x 新雨"]
     service._es_search._client.bulk.assert_awaited_once()
     operations = service._es_search._client.bulk.await_args.kwargs["operations"]
     assert len(operations) == 10

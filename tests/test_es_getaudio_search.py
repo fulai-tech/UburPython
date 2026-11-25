@@ -9,6 +9,7 @@ from app.es.search import (
     GET_AUDIO_SOURCE_INCLUDES,
     EsSearch,
     build_get_audio_filters,
+    locale_enabled_material_filter,
 )
 
 
@@ -76,6 +77,8 @@ async def test_locale_hydrate_keeps_engineering_and_evidence_tags() -> None:
     docs = await es.search_get_audio_bm25("雨", language="zh", size=5)
 
     assert docs[0]["_id"] == "m1"
+    locale_body = client.search.await_args_list[0].kwargs["body"]
+    assert locale_enabled_material_filter() in locale_body["query"]["bool"]["filter"]
     assert docs[0]["audio_engineering_tags"][0]["value"]["code"] == "false"
     assert docs[0]["evidence_level_tags"][0]["code"] == "B"
     material_body = client.search.await_args_list[1].kwargs["body"]
@@ -257,6 +260,26 @@ async def test_ensure_indices_skips_dense_vector_dims_conflict() -> None:
 
     assert client.indices.create.await_count == 0
     assert client.indices.put_mapping.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_ensure_indices_raises_on_field_type_conflict() -> None:
+    """字段类型不能原地改时要失败，不能当成向量维度冲突跳过。"""
+    from elasticsearch import ApiError
+
+    client = MagicMock()
+    client.indices.exists = AsyncMock(return_value=True)
+    client.indices.create = AsyncMock()
+    conflict = ApiError(
+        message="mapper [description_text] cannot be changed from type [keyword] to [text]",
+        meta=MagicMock(status=400),
+        body={},
+    )
+    client.indices.put_mapping = AsyncMock(side_effect=conflict)
+    es = EsSearch(client, Settings())
+
+    with pytest.raises(ApiError):
+        await es.ensure_indices()
 
 
 @pytest.mark.asyncio

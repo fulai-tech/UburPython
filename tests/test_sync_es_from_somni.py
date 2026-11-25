@@ -250,7 +250,13 @@ async def test_locale_sync_builds_text_for_disabled_material(tmp_path) -> None:
         ]
     )
     mongo.fetch_material_content_tags = AsyncMock(
-        return_value=[{"_id": ObjectId(material_id), "content_form_tags": [{"code": "rain"}]}]
+        return_value=[
+            {
+                "_id": ObjectId(material_id),
+                "status": False,
+                "content_form_tags": [{"code": "rain"}],
+            }
+        ]
     )
     mongo.fetch_materials = AsyncMock(return_value=[])
     es_search = MagicMock()
@@ -274,7 +280,8 @@ async def test_locale_sync_builds_text_for_disabled_material(tmp_path) -> None:
     assert stats["created"] == 1
     mongo.fetch_materials.assert_not_awaited()
     document = es_client.index.await_args.kwargs["document"]
-    assert document["description_text"] == "雨声"
+    assert document["description_text"] == "测试音频 雨声"
+    assert document["material_status"] is False
     assert document["description_vector"] == [0.1] * 512
 
 

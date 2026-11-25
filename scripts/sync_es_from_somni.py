@@ -35,7 +35,6 @@ if str(_ROOT) not in sys.path:
 from loguru import logger  # noqa: E402
 from motor.motor_asyncio import AsyncIOMotorClient  # noqa: E402
 
-from app.server.somni.audio.catalog import AudioCatalogService  # noqa: E402
 from app.core.bson_util import bson_to_jsonable  # noqa: E402
 from app.core.config import Settings, get_settings  # noqa: E402
 from app.core.logging import setup_logging  # noqa: E402
@@ -44,12 +43,14 @@ from app.embedding.encoder import Encoder, create_encoder  # noqa: E402
 from app.es.client import create_es_client  # noqa: E402
 from app.es.search import EsSearch  # noqa: E402
 from app.es.somni_docs import (  # noqa: E402
-    has_indexable_locale,
     build_tag_name_by_code_language,
+    has_indexable_locale,
     locale_source_for_es,
+    material_is_enabled,
     material_tag_labels_from_dictionary,
     somni_material_source_for_es,
 )
+from app.server.somni.audio.catalog import AudioCatalogService  # noqa: E402
 
 if TYPE_CHECKING:
     from elasticsearch import AsyncElasticsearch
@@ -126,12 +127,17 @@ def locale_doc_to_es(
     doc: dict[str, Any],
     *,
     tag_labels: list[str] | tuple[str, ...] = (),
+    material_status: bool | None = None,
 ) -> dict[str, Any] | None:
     """Mongo 语言文档 → ES _source；无 _id、material_id 或 language 则跳过。"""
     doc_id = mongo_doc_id(doc)
     if not doc_id:
         return None
-    payload = locale_source_for_es(bson_to_jsonable(doc), tag_labels=tag_labels)
+    payload = locale_source_for_es(
+        bson_to_jsonable(doc),
+        tag_labels=tag_labels,
+        material_status=material_status,
+    )
     if payload is None:
         return None
     return payload
@@ -255,7 +261,7 @@ class MongoSource:
     async def fetch_material_content_tags(self) -> list[dict[str, Any]]:
         """全部原料（含停用）的 content_form 标签；语言行检索文本不随启停变化。"""
         coll = self._db[self._materials]
-        cursor = coll.find({}, projection={"_id": 1, "content_form_tags": 1})
+        cursor = coll.find({}, projection={"_id": 1, "content_form_tags": 1, "status": 1})
         return [doc async for doc in cursor]
 
     async def fetch_locales(self) -> list[dict[str, Any]]:
@@ -505,12 +511,16 @@ class LocalesSyncJob:
         for doc in docs:
             material_id = str(doc.get("material_id") or "").strip()
             language = str(doc.get("language") or "").strip().lower()
+            material = materials_by_id.get(material_id)
             tag_labels = material_tag_labels_from_dictionary(
-                materials_by_id.get(material_id),
+                material,
                 language=language,
                 name_by_code_lang=name_by_code_lang,
             )
-            es_doc = locale_doc_to_es(doc, tag_labels=tag_labels)
+            material_status = material_is_enabled(material)
+            es_doc = locale_doc_to_es(
+                doc, tag_labels=tag_labels, material_status=material_status
+            )
             if es_doc is None:
                 stats["skipped"] += 1
                 continue

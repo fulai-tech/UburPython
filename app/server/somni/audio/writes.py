@@ -23,6 +23,7 @@ from app.es.somni_docs import (
     extract_sleep_stage_names,
     locale_source_for_es,
     material_content_form_tag_codes,
+    material_is_enabled,
     material_tag_labels_from_dictionary,
 )
 
@@ -235,9 +236,7 @@ async def _update_one(service: Any, material_id: str, fields: dict[str, Any]) ->
     refresh_all_locales = reenabling or any(name in fields for name in _TAG_FIELDS)
     before_locale_rows: list[dict[str, Any]] = []
     if refresh_all_locales:
-        before_locale_rows = await _locale_collection(service).find(
-            {"material_id": material_id}
-        ).to_list(length=None)
+        before_locale_rows = await _load_locale_rows(service, material_id)
     clear_embedding = await _apply_description_embedding(
         service, material_id, fields, material_fields
     )
@@ -287,6 +286,7 @@ async def _update_one(service: Any, material_id: str, fields: dict[str, Any]) ->
                 touched_locale=locale_written,
                 before_locale_rows=before_locale_rows,
                 restore_all_locales=refresh_all_locales,
+                restore_material_status="status" in fields,
             )
         raise
 
@@ -344,19 +344,32 @@ def _parse_id(material_id: str) -> ObjectId:
     return ObjectId(material_id)
 
 
+def _locale_text_changed(
+    fields: dict[str, Any],
+    before_locale: dict[str, Any] | None,
+    name: str,
+) -> bool:
+    """标题或语言实际变了才重算检索文本。请求里带上同值不重算。"""
+    if name not in fields:
+        return False
+    raw = str(fields.get(name) or "").strip()
+    new = raw.lower() if name == "language" else raw
+    if before_locale is None:
+        return bool(new)
+    old_raw = str(before_locale.get(name) or "").strip()
+    old = old_raw.lower() if name == "language" else old_raw
+    return bool(new) and new != old
+
+
 def _recompute_locale_vector(
     fields: dict[str, Any],
     before_locale: dict[str, Any] | None = None,
 ) -> bool:
-    # description_text 仅由 content_form 标签决定；仅当 language 实际变化时换向量字段。
-    # 标签变更由 tags_changed 另行触发重算。请求里顺带带上同值 language 不重算。
-    if "language" not in fields:
-        return False
-    new_lang = str(fields.get("language") or "").strip().lower()
-    if before_locale is None:
-        return bool(new_lang)
-    old_lang = str(before_locale.get("language") or "").strip().lower()
-    return bool(new_lang) and new_lang != old_lang
+    # 检索文本 = 标题 + content_form 标签。标题或语言变化时重算向量。
+    # 标签变更由 refresh_all 另行触发。
+    return _locale_text_changed(fields, before_locale, "audio_name") or _locale_text_changed(
+        fields, before_locale, "language"
+    )
 
 
 async def _apply_description_embedding(
@@ -384,6 +397,12 @@ def _locale_collection(service: Any) -> Any:
     if callable(getter):
         return getter()
     return service._db()[service._settings.somni_mongo_material_locales_collection]
+
+
+async def _load_locale_rows(service: Any, material_id: str) -> list[dict[str, Any]]:
+    return await _locale_collection(service).find(
+        {"material_id": material_id}
+    ).to_list(length=None)
 
 
 async def _find_locale_snapshot(
@@ -433,6 +452,7 @@ async def _compensate_update_failure(
     touched_locale: bool,
     before_locale_rows: list[dict[str, Any]] | None = None,
     restore_all_locales: bool = False,
+    restore_material_status: bool = False,
 ) -> None:
     """更新时 ES 失败：Mongo 写回快照，并按快照重刷 ES。
 
@@ -466,15 +486,28 @@ async def _compensate_update_failure(
         except Exception as exc:
             logger.error("更新补偿回滚原料索引失败，material_id={}，原因：{}", material_id, exc)
 
-    restore_rows: list[dict[str, Any]] = []
-    if restore_all_locales:
-        restore_rows = list(before_locale_rows or [])
-    elif touched_locale and before_locale is not None:
-        restore_rows = [before_locale]
-    if touched_locale and before_locale is None and wrote_locale is not None:
-        await _restore_locale_index(service, material_id, wrote_locale, None, before_material)
-    for row in restore_rows:
-        await _restore_locale_index(service, material_id, row, row, before_material)
+    await _restore_locales_after_failed_update(
+        service,
+        material_id,
+        before_material=before_material,
+        before_locale=before_locale,
+        wrote_locale=wrote_locale,
+        touched_locale=touched_locale,
+        before_locale_rows=before_locale_rows,
+        restore_all_locales=restore_all_locales,
+    )
+    # 只改停用时不会整表回滚语言行。写到一半失败的 material_status 要单独改回去。
+    if restore_material_status:
+        try:
+            await _set_locales_material_status(
+                service, material_id, material_is_enabled(before_material)
+            )
+        except Exception as exc:
+            logger.error(
+                "更新补偿回滚语言启用状态失败，material_id={}，原因：{}",
+                material_id,
+                exc,
+            )
 
 
 async def _restore_locale_index(
@@ -505,6 +538,74 @@ async def _restore_locale_index(
             locale_id,
             exc,
         )
+
+
+async def _restore_locale_search_fields(
+    service: Any,
+    material_id: str,
+    row: dict[str, Any],
+    before_material: dict[str, Any],
+) -> None:
+    """只把检索文本和向量写回变更前标签对应的值。
+
+    标题等展示字段以 Mongo 当前语言行为准，避免盖掉别人刚改成功的标题。
+    """
+    locale_id = str(row.get("_id") or "")
+    if not locale_id:
+        return
+    if not _row_language(row):
+        await _restore_locale_index(service, material_id, row, None, before_material)
+        return
+    try:
+        current = await _locale_collection(service).find_one({"_id": row["_id"]})
+        locale = current if current is not None and _row_language(current) else row
+        await _patch_locale_index(
+            service,
+            locale,
+            changed={"description_text"},
+            recompute_vector=True,
+            material=before_material,
+            write_material_status=False,
+        )
+    except Exception as exc:
+        logger.error(
+            "更新补偿回滚语言检索字段失败，material_id={}，locale_id={}，原因：{}",
+            material_id,
+            locale_id,
+            exc,
+        )
+
+
+async def _restore_locales_after_failed_update(
+    service: Any,
+    material_id: str,
+    *,
+    before_material: dict[str, Any],
+    before_locale: dict[str, Any] | None,
+    wrote_locale: dict[str, Any] | None,
+    touched_locale: bool,
+    before_locale_rows: list[dict[str, Any]] | None,
+    restore_all_locales: bool,
+) -> None:
+    """按快照回滚语言索引。本次改过的那一行整篇恢复，其它行只恢复检索字段。"""
+    restore_rows: list[dict[str, Any]] = []
+    if restore_all_locales:
+        restore_rows = list(before_locale_rows or [])
+    elif touched_locale and before_locale is not None:
+        restore_rows = [before_locale]
+    own_id = ""
+    if touched_locale:
+        own_id = str(
+            ((before_locale if before_locale is not None else wrote_locale) or {}).get("_id") or ""
+        )
+    if touched_locale and before_locale is None and wrote_locale is not None:
+        await _restore_locale_index(service, material_id, wrote_locale, None, before_material)
+    for row in restore_rows:
+        row_id = str(row.get("_id") or "")
+        if own_id and row_id == own_id:
+            await _restore_locale_index(service, material_id, row, row, before_material)
+        else:
+            await _restore_locale_search_fields(service, material_id, row, before_material)
 
 
 async def _compensate_delete_failure(
@@ -619,30 +720,51 @@ async def _sync_after_write(
                 changed=changed,
                 recompute_vector=recompute_locale_vector or refresh_all,
                 material=material,
+                write_material_status="status" in changed,
             )
         if key is not None and wrote_id:
             written[wrote_id] = key
     if refresh_all and material_id and not create:
-        # 标签变更或重新启用：重算所有语言的 description_text / 向量；读失败上抛以便补偿回滚。
-        locale_rows = await _locale_collection(service).find(
-            {"material_id": material_id}
-        ).to_list(length=None)
-        for row in locale_rows:
-            if not str(row.get("language") or "").strip():
-                continue
-            row_id = str(row.get("_id") or "")
-            if wrote_id and row_id == wrote_id:
-                continue
-            key = await _patch_locale_index(
-                service,
-                row,
-                changed={"description_text"},
-                recompute_vector=True,
-                material=material,
-            )
-            if key is not None and row_id:
-                written[row_id] = key
+        await _recompute_sibling_locales(
+            service,
+            material_id,
+            material,
+            wrote_id=wrote_id,
+            written=written,
+        )
+    if not create and "status" in changed:
+        # 启停单独写标记，避免改标题/标签时把别人刚写的停用状态盖回去。
+        await _set_locales_material_status(
+            service, material_id, material_is_enabled(material)
+        )
     await _verify_locale_search_fields(service, material_id, written)
+
+
+async def _recompute_sibling_locales(
+    service: Any,
+    material_id: str,
+    material: dict[str, Any],
+    *,
+    wrote_id: str,
+    written: dict[str, tuple[str, str]],
+) -> None:
+    """重算其它语言的检索文本与向量。读失败向上抛，由调用方回滚本次写入。"""
+    for row in await _load_locale_rows(service, material_id):
+        if not _row_language(row):
+            continue
+        row_id = str(row.get("_id") or "")
+        if wrote_id and row_id == wrote_id:
+            continue
+        key = await _patch_locale_index(
+            service,
+            row,
+            changed={"description_text"},
+            recompute_vector=True,
+            material=material,
+            write_material_status=False,
+        )
+        if key is not None and row_id:
+            written[row_id] = key
 
 
 async def _patch_material_index(
@@ -766,7 +888,10 @@ async def _locale_source_for_index(
         except Exception as exc:
             raise RuntimeError(f"读取原料失败，请重试：{exc}") from exc
     tag_labels = await _tag_labels_for_locale(service, material=mat, language=language)
-    return locale_source_for_es(flat, tag_labels=tag_labels)
+    material_status = material_is_enabled(mat)
+    return locale_source_for_es(
+        flat, tag_labels=tag_labels, material_status=material_status
+    )
 
 
 async def _patch_locale_index(
@@ -776,8 +901,12 @@ async def _patch_locale_index(
     changed: set[str],
     recompute_vector: bool,
     material: dict[str, Any] | None = None,
+    write_material_status: bool = False,
 ) -> tuple[str, str] | None:
-    """返回写入的 (language, description_text)；没写检索文本时返回 None。"""
+    """返回写入的 (language, description_text)；没写检索文本时返回 None。
+
+    write_material_status 仅在本次请求改了启停时打开，避免改标题/标签盖掉别人的停用标记。
+    """
     es_search = service._es_search
     if not getattr(es_search, "material_locales_index", ""):
         return None
@@ -788,6 +917,8 @@ async def _patch_locale_index(
     if source is None:
         return None
     fields = {key: source[key] for key in changed if key in source}
+    if write_material_status and "material_status" in source:
+        fields["material_status"] = source["material_status"]
     language = str(source.get("language") or "")
     vector_field = "description_vector" if language == "zh" else ""
     if language == "en":
@@ -824,6 +955,29 @@ async def _patch_locale_index(
     if not updated:
         return await _index_locale_document(service, locale_id, source)
     return _search_key(source) if recompute_vector else None
+
+
+async def _set_locales_material_status(
+    service: Any, material_id: str, enabled: bool
+) -> None:
+    """把该原料下每条语言索引的 material_status 写成当前启用状态。"""
+    es_search = service._es_search
+    if not getattr(es_search, "material_locales_index", ""):
+        return
+    for row in await _load_locale_rows(service, material_id):
+        locale_id = str(row.get("_id") or "")
+        if not locale_id or not _row_language(row):
+            continue
+        try:
+            await _patch_document(
+                es_search._client,
+                index=es_search.material_locales_index,
+                doc_id=locale_id,
+                fields={"material_status": enabled},
+                remove=[],
+            )
+        except Exception as exc:
+            raise RuntimeError(f"语言索引启用状态写入失败：{exc}") from exc
 
 
 async def _index_locale_document(
@@ -1015,7 +1169,7 @@ async def _expected_locale_sources(
     try:
         materials = await service._materials().find(
             {"_id": {"$in": [_object_id(material_id) for material_id in material_ids]}},
-            projection={"content_form_tags": 1},
+            projection={"content_form_tags": 1, "status": 1},
         ).to_list(length=None)
     except Exception as exc:
         raise RuntimeError(f"读取原料失败，请重试：{exc}") from exc
@@ -1037,7 +1191,11 @@ async def _expected_locale_sources(
             language=_row_language(row),
             name_by_code_lang=name_by,
         )
-        source = locale_source_for_es(row, tag_labels=labels)
+        material = by_id.get(str(row.get("material_id") or ""))
+        material_status = material_is_enabled(material)
+        source = locale_source_for_es(
+            row, tag_labels=labels, material_status=material_status
+        )
         if source is not None:
             expected[str(row["_id"])] = source
     return expected
@@ -1061,7 +1219,7 @@ def _search_key(source: dict[str, Any]) -> tuple[str, str]:
 async def _verify_locale_search_fields(
     service: Any, material_id: str, written: dict[str, tuple[str, str]]
 ) -> None:
-    """单条写入后的复查；Mongo 已提交，复查失败只记日志，不回滚本次写入。"""
+    """单条写入后的复查。失败只记日志：Mongo 已提交，不回滚本次写入。"""
     if not written or not material_id:
         return
     try:
@@ -1107,12 +1265,18 @@ async def _attach_locale_vectors(
 async def _bulk_update_locale_search_fields(
     service: Any, sources: list[tuple[str, dict[str, Any]]]
 ) -> None:
-    """只更新 description_text 与向量，不覆盖标题等并发可能已改的字段；文档缺失时写入整份。"""
+    """只更新 description_text 与向量，不覆盖标题等并发可能已改的字段。
+
+    文档缺失时 upsert 展示字段和检索字段，不带 material_status。
+    新建文档再按当前 Mongo 补启用标记，避免用刷新开始时的快照盖掉并发停用。
+    """
     es_search = service._es_search
     index = es_search.material_locales_index
     for start in range(0, len(sources), _LOCALE_BULK_CHUNK):
+        chunk = sources[start : start + _LOCALE_BULK_CHUNK]
         operations: list[dict[str, Any]] = []
-        for locale_id, source in sources[start : start + _LOCALE_BULK_CHUNK]:
+        for locale_id, source in chunk:
+            # 只刷检索字段；启用标记由启停路径单独写，避免批量刷新盖掉并发停用。
             fields = {"description_text": source.get("description_text", "")}
             remove = ["description_vector", "description_vector_en"]
             for field in ("description_vector", "description_vector_en"):
@@ -1128,7 +1292,9 @@ async def _bulk_update_locale_search_fields(
                         "source": _PATCH_SCRIPT,
                         "params": {"fields": fields, "remove": remove},
                     },
-                    "upsert": source,
+                    "upsert": {
+                        key: value for key, value in source.items() if key != "material_status"
+                    },
                 }
             )
         try:
@@ -1143,6 +1309,47 @@ async def _bulk_update_locale_search_fields(
                 if item.get("update", {}).get("error")
             ]
             raise RuntimeError(f"语言索引批量写入失败：{reasons[:1]}")
+        await _stamp_created_locale_status(service, chunk, body)
+
+
+async def _stamp_created_locale_status(
+    service: Any,
+    sources: list[tuple[str, dict[str, Any]]],
+    body: dict[str, Any],
+) -> None:
+    """upsert 新建的语言文档按当前原料状态补 material_status。"""
+    items = body.get("items") or []
+    created: list[tuple[str, str]] = []
+    for (locale_id, source), item in zip(sources, items, strict=False):
+        update = item.get("update") if isinstance(item, dict) else None
+        if not isinstance(update, dict) or update.get("result") != "created":
+            continue
+        created.append((locale_id, str(source.get("material_id") or "")))
+    if not created:
+        return
+    material_ids = sorted({material_id for _, material_id in created if material_id})
+    try:
+        materials = await service._materials().find(
+            {"_id": {"$in": [_object_id(material_id) for material_id in material_ids]}},
+            projection={"status": 1},
+        ).to_list(length=None)
+    except Exception as exc:
+        raise RuntimeError(f"读取原料失败，请重试：{exc}") from exc
+    enabled = {str(row.get("_id") or ""): material_is_enabled(row) for row in materials}
+    es_search = service._es_search
+    for locale_id, material_id in created:
+        try:
+            updated = await _patch_document(
+                es_search._client,
+                index=es_search.material_locales_index,
+                doc_id=locale_id,
+                fields={"material_status": enabled.get(material_id, False)},
+                remove=[],
+            )
+        except Exception as exc:
+            raise RuntimeError(f"语言索引启用状态写入失败：{exc}") from exc
+        if not updated:
+            raise RuntimeError(f"语言索引启用状态写入失败：文档不存在 {locale_id}")
 
 
 async def _finish(service: Any, results: list[dict[str, Any]], *, action: str) -> None:

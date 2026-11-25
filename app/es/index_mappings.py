@@ -384,7 +384,8 @@ def build_somni_audio_material_locales_mapping(
                 "summary": "该语言短描述",
                 "audio_url": "该语言音频地址",
                 "cover_url": "该语言封面地址",
-                "description_text": "该语言检索拼接文本：仅内容形态标签展示名",
+                "description_text": "该语言检索拼接文本：标题 + 内容形态标签展示名",
+                "material_status": "原料是否启用；false 不参与语言索引召回",
                 "description_vector": f"language=zh 时 {embedding_dim} 维 embedding",
                 "description_vector_en": (
                     f"language=en 时 {embedding_dim_en} 维 embedding；其它语言省略"
@@ -403,7 +404,11 @@ def build_somni_audio_material_locales_mapping(
             "cover_url": _field("keyword", "该语言封面地址"),
             "description_text": _field(
                 "text",
-                "该语言检索拼接文本：仅内容形态标签展示名",
+                "该语言检索拼接文本：标题 + 内容形态标签展示名",
+            ),
+            "material_status": _field(
+                "boolean",
+                "原料是否启用；false 不参与语言索引召回",
             ),
             "description_vector": _field(
                 "dense_vector",

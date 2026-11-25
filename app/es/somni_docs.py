@@ -187,15 +187,32 @@ def build_locale_description_text(
     *,
     tag_labels: list[str] | tuple[str, ...] = (),
 ) -> str:
-    """语言行检索文本：仅内容形态标签展示名（不含标题/描述/短描述）。"""
-    del doc
-    return " ".join(str(label).strip() for label in tag_labels if str(label).strip()).strip()
+    """语言行检索文本：该语言标题 + 内容形态标签展示名。不含描述、短描述。"""
+    parts: list[str] = []
+    title = str((doc or {}).get("audio_name") or "").strip()
+    if title:
+        parts.append(title)
+    for label in tag_labels:
+        name = str(label).strip()
+        if name:
+            parts.append(name)
+    return " ".join(parts)
+
+
+def material_is_enabled(material: dict[str, Any] | None) -> bool:
+    """原料能否进入语言索引召回。没有 status 的旧文档按启用。"""
+    if not material:
+        return False
+    if "status" not in material:
+        return True
+    return bool(material.get("status"))
 
 
 def locale_source_for_es(
     doc: dict[str, Any],
     *,
     tag_labels: list[str] | tuple[str, ...] = (),
+    material_status: bool | None = None,
 ) -> dict[str, Any] | None:
     """语言表文档 → ES _source。缺 material_id 或 language 则跳过。"""
     material_id = str(doc.get("material_id", "")).strip()
@@ -217,6 +234,8 @@ def locale_source_for_es(
     payload["description_text"] = build_locale_description_text(
         payload, tag_labels=tag_labels
     )
+    if material_status is not None:
+        payload["material_status"] = bool(material_status)
     return payload
 
 

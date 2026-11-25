@@ -99,6 +99,40 @@ def _bind(service: SimpleNamespace) -> SimpleNamespace:
     return service
 
 
+def _locale_find(rows: list[dict]) -> MagicMock:
+    return MagicMock(return_value=SimpleNamespace(to_list=AsyncMock(return_value=rows)))
+
+
+def _bilingual_locales(
+    material_id: ObjectId,
+    zh_id: ObjectId,
+    en_id: ObjectId,
+    *,
+    zh_name: str = "",
+    en_name: str = "",
+) -> list[dict]:
+    rows = [
+        {"_id": zh_id, "material_id": str(material_id), "language": "zh"},
+        {"_id": en_id, "material_id": str(material_id), "language": "en"},
+    ]
+    if zh_name:
+        rows[0]["audio_name"] = zh_name
+    if en_name:
+        rows[1]["audio_name"] = en_name
+    return rows
+
+
+def _rain_tag(language: str, name: str, *, status: str | None = "启用") -> dict:
+    tag = {"type": "content_form", "code": "rain", "language": language, "name": name}
+    if status is not None:
+        tag["status"] = status
+    return tag
+
+
+def _tags_result(rows: list[dict]) -> MagicMock:
+    return MagicMock(return_value=SimpleNamespace(to_list=AsyncMock(return_value=rows)))
+
+
 @pytest.mark.asyncio
 async def test_successful_write_refreshes_es_before_clearing_cache(monkeypatch) -> None:
     """写成功后先 refresh，再清目录缓存，避免立刻读回旧结果并长期缓存。"""
@@ -222,9 +256,9 @@ async def test_create_audios_returns_each_item_and_indexes_chinese_vector(monkey
         if call.kwargs["index"] == "somni_audio_material_locales"
     ][0]
     assert locale_indexed["document"]["audio_name"] == "雨声"
-    # 无 content_form 标签时 description_text 为空，不写检索向量
-    assert locale_indexed["document"].get("description_text", "") == ""
-    assert "description_vector" not in locale_indexed["document"]
+    # 无标签时检索文本就是标题，向量按这段文本编码
+    assert locale_indexed["document"]["description_text"] == "雨声"
+    assert locale_indexed["document"]["description_vector"] == [0.2, 0.4]
     clear_cache.assert_awaited_once()
     service._retrieval.clear_sleep_stage_cache.assert_awaited_once()
 
@@ -339,9 +373,9 @@ async def test_update_recomputes_vector_when_title_description_or_tags_are_sent(
     )
 
     assert results[0]["ok"] is True
-    # description 只驱动原料 embedding；语言索引 description_text 仅看 content_form
+    # description 只驱动原料 embedding；语言检索文本是标题，不含描述正文
     encoded_texts = [call.args[0] for call in service._encoder.encode_one.await_args_list]
-    assert encoded_texts == ["同样的描述"]
+    assert encoded_texts == ["同样的描述", "雨声"]
     stored = service.collection.find_one_and_update.await_args.args[1]["$set"]
     assert stored["embedding"] == [0.2, 0.4]
     locale_patch = next(
@@ -349,12 +383,116 @@ async def test_update_recomputes_vector_when_title_description_or_tags_are_sent(
         for call in service._es_search._client.update.await_args_list
         if call.kwargs["index"] == "somni_audio_material_locales"
     )
-    # 无 content_form 时重算结果为空文本并清向量
     fields = locale_patch["script"]["params"]["fields"]
     assert fields["description"] == "同样的描述"
-    assert fields["description_text"] == ""
-    assert "description_vector" not in fields
+    assert fields["description_text"] == "雨声"
+    assert "同样的描述" not in fields["description_text"]
+    assert fields["description_vector"] == [0.2, 0.4]
     assert "embedding" not in fields
+
+
+@pytest.mark.asyncio
+async def test_update_title_rebuilds_search_text_and_vector(monkeypatch) -> None:
+    """改标题后，检索文本变成「新标题 + 标签」，向量按这段文本重算。"""
+    service = _bind(_writer())
+    material_id = ObjectId()
+    service.collection.find_one = AsyncMock(
+        return_value={
+            "_id": material_id,
+            "content_form_tags": [{"code": "rain"}],
+            "status": True,
+        }
+    )
+    service.collection.find_one_and_update = AsyncMock(
+        return_value={
+            "_id": material_id,
+            "content_form_tags": [{"code": "rain"}],
+            "status": True,
+        }
+    )
+    service.locale_row["audio_name"] = "雨声"
+    service.locales.find_one = AsyncMock(return_value=dict(service.locale_row))
+    service.locales.find_one_and_update = AsyncMock(
+        return_value={
+            **service.locale_row,
+            "audio_name": "幽林细雨",
+            "material_id": str(material_id),
+        }
+    )
+    service.tags.find = _tags_result([_rain_tag("zh", "雨声")])
+    monkeypatch.setattr(
+        "app.server.somni.audio.writes.clear_somni_audio_catalog_cache",
+        AsyncMock(),
+    )
+
+    results = await update_audios(
+        service,
+        [
+            {
+                "id": str(material_id),
+                "fields": {"language": "zh", "audio_name": "幽林细雨"},
+            }
+        ],
+    )
+
+    assert results[0]["ok"] is True
+    locale_patch = next(
+        call.kwargs
+        for call in service._es_search._client.update.await_args_list
+        if call.kwargs["index"] == "somni_audio_material_locales"
+    )
+    fields = locale_patch["script"]["params"]["fields"]
+    assert fields["audio_name"] == "幽林细雨"
+    assert fields["description_text"] == "幽林细雨 雨声"
+    assert fields["description_vector"] == [0.2, 0.4]
+    assert "material_status" not in fields
+    assert service._encoder.encode_one.await_args.args[0] == "幽林细雨 雨声"
+
+
+@pytest.mark.asyncio
+async def test_locale_verify_failure_keeps_the_mongo_write(monkeypatch) -> None:
+    """写后复查失败只记日志，保留本次 Mongo 写入。"""
+    service = _bind(_writer())
+    material_id = ObjectId()
+    material = {"_id": material_id, "content_form_tags": [{"code": "rain"}], "status": True}
+    service.collection.find_one = AsyncMock(return_value=dict(material))
+    service.collection.find_one_and_update = AsyncMock(return_value=dict(material))
+    service.locales.find = _locale_find(
+        [
+            {
+                "_id": service.locale_row["_id"],
+                "material_id": str(material_id),
+                "language": "zh",
+                "audio_name": "幽林细雨",
+            }
+        ]
+    )
+    service.tags.find = _tags_result([_rain_tag("zh", "雨声")])
+
+    async def _boom(*_args, **_kwargs):
+        raise RuntimeError("复查失败")
+
+    monkeypatch.setattr(
+        "app.server.somni.audio.writes._converge_locale_search_fields",
+        _boom,
+    )
+    monkeypatch.setattr(
+        "app.server.somni.audio.writes.clear_somni_audio_catalog_cache",
+        AsyncMock(),
+    )
+
+    results = await update_audios(
+        service,
+        [
+            {
+                "id": str(material_id),
+                "fields": {"content_form_tags": [{"code": "rain"}]},
+            }
+        ],
+    )
+
+    assert results[0]["ok"] is True
+    service.collection.replace_one.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -491,23 +629,14 @@ async def test_reenable_rebuilds_all_locale_search_text(monkeypatch) -> None:
     service.collection.find_one = AsyncMock(return_value={**material, "status": False})
     service.collection.find_one_and_update = AsyncMock(return_value={**material, "status": True})
     zh_id, en_id = ObjectId(), ObjectId()
-    service.locales.find = MagicMock(
-        return_value=SimpleNamespace(
-            to_list=AsyncMock(
-                return_value=[
-                    {"_id": zh_id, "material_id": str(material_id), "language": "zh"},
-                    {"_id": en_id, "material_id": str(material_id), "language": "en"},
-                ]
-            )
-        )
-    )
+    service.locales.find = _locale_find(_bilingual_locales(material_id, zh_id, en_id))
 
     def _dictionary(query, **_kwargs):
         names = {"zh": "雨声", "en": "Rain"}
         return SimpleNamespace(
             to_list=AsyncMock(
                 return_value=[
-                    {"type": "content_form", "code": "rain", "language": lang, "name": names[lang]}
+                    _rain_tag(lang, names[lang], status=None)
                     for lang in query["language"]["$in"]
                 ]
             )
@@ -531,11 +660,21 @@ async def test_reenable_rebuilds_all_locale_search_text(monkeypatch) -> None:
         call.kwargs["id"]: call.kwargs["script"]["params"]["fields"]
         for call in service._es_search._client.update.await_args_list
         if call.kwargs["index"] == "somni_audio_material_locales"
+        and "script" in call.kwargs
     }
     assert locale_patches[str(zh_id)]["description_text"] == "雨声"
     assert locale_patches[str(zh_id)]["description_vector"] == [0.2, 0.4]
     assert locale_patches[str(en_id)]["description_text"] == "Rain"
     assert locale_patches[str(en_id)]["description_vector_en"] == [0.2, 0.4]
+    status_patches = {
+        call.kwargs["id"]: call.kwargs["doc"]
+        for call in service._es_search._client.update.await_args_list
+        if call.kwargs["index"] == "somni_audio_material_locales" and "doc" in call.kwargs
+    }
+    assert status_patches == {
+        str(zh_id): {"material_status": True},
+        str(en_id): {"material_status": True},
+    }
     # 写后复查与 Mongo 一致，不再重写
     service._es_search._client.bulk.assert_not_awaited()
 
@@ -552,12 +691,8 @@ async def test_tag_rename_after_update_write_is_fixed_by_verify(monkeypatch) -> 
         return_value=SimpleNamespace(to_list=AsyncMock(return_value=[material]))
     )
     locale_id = ObjectId()
-    service.locales.find = MagicMock(
-        return_value=SimpleNamespace(
-            to_list=AsyncMock(
-                return_value=[{"_id": locale_id, "material_id": str(material_id), "language": "zh"}]
-            )
-        )
+    service.locales.find = _locale_find(
+        [{"_id": locale_id, "material_id": str(material_id), "language": "zh"}]
     )
     reads: list[str] = []
 
@@ -565,11 +700,7 @@ async def test_tag_rename_after_update_write_is_fixed_by_verify(monkeypatch) -> 
         name = "旧雨" if not reads else "新雨"
         reads.append(name)
         return SimpleNamespace(
-            to_list=AsyncMock(
-                return_value=[
-                    {"type": "content_form", "code": "rain", "language": "zh", "name": name}
-                ]
-            )
+            to_list=AsyncMock(return_value=[_rain_tag("zh", name, status=None)])
         )
 
     service.tags.find = MagicMock(side_effect=_dictionary)
@@ -616,9 +747,20 @@ async def test_update_keeps_vector_when_only_status_changes(monkeypatch) -> None
     assert results[0]["ok"] is True
     service._encoder.encode_one.assert_not_called()
     service._es_search._client.index.assert_not_called()
-    patched = service._es_search._client.update.await_args.kwargs["doc"]
-    assert patched["status"] is False
-    assert "description_vector" not in patched
+    material_patch = next(
+        call.kwargs["doc"]
+        for call in service._es_search._client.update.await_args_list
+        if call.kwargs["index"] == "somni_audio_materials"
+    )
+    assert material_patch["status"] is False
+    locale_patch = next(
+        call.kwargs["doc"]
+        for call in service._es_search._client.update.await_args_list
+        if call.kwargs["index"] == "somni_audio_material_locales"
+    )
+    assert locale_patch == {"material_status": False}
+    assert "description_text" not in locale_patch
+    assert "description_vector" not in locale_patch
     stored = service.collection.find_one_and_update.await_args.args[1]["$set"]
     assert "embedding" not in stored
 
@@ -887,6 +1029,247 @@ async def test_update_restores_mongo_snapshot_when_es_fails(monkeypatch) -> None
     restored = service.collection.replace_one.await_args.args[1]
     assert restored["status"] is True
     assert "_id" not in restored
+
+
+@pytest.mark.asyncio
+async def test_disable_failure_restores_locale_material_status(monkeypatch) -> None:
+    """停用写到一半失败时，已写成 false 的语言索引要改回启用。"""
+    service = _bind(_writer())
+    material_id = ObjectId()
+    zh_id, en_id = ObjectId(), ObjectId()
+    before = {"_id": material_id, "status": True}
+    service.collection.find_one = AsyncMock(return_value=dict(before))
+    service.collection.find_one_and_update = AsyncMock(
+        return_value={"_id": material_id, "status": False}
+    )
+    service.collection.replace_one = AsyncMock()
+    service.locales.find = _locale_find(
+        _bilingual_locales(
+            material_id, zh_id, en_id, zh_name="幽林细雨", en_name="Night Rain"
+        )
+    )
+    false_writes = 0
+
+    async def _update(**kwargs):
+        nonlocal false_writes
+        if kwargs.get("index") != "somni_audio_material_locales":
+            return {"result": "updated"}
+        if kwargs.get("doc", {}).get("material_status") is False:
+            false_writes += 1
+            if false_writes >= 2:
+                raise RuntimeError("es down")
+        return {"result": "updated"}
+
+    service._es_search._client.update = AsyncMock(side_effect=_update)
+    monkeypatch.setattr(
+        "app.server.somni.audio.writes.clear_somni_audio_catalog_cache",
+        AsyncMock(),
+    )
+
+    results = await update_audios(
+        service,
+        [{"id": str(material_id), "fields": {"status": False}}],
+    )
+
+    assert results[0]["ok"] is False
+    assert "es down" in results[0]["message"]
+    restored = service.collection.replace_one.await_args.args[1]
+    assert restored["status"] is True
+    locale_status: dict[str, bool] = {}
+    saw_false = False
+    for call in service._es_search._client.update.await_args_list:
+        if call.kwargs.get("index") != "somni_audio_material_locales":
+            continue
+        status = call.kwargs.get("doc", {}).get("material_status")
+        if status is False:
+            saw_false = True
+        if isinstance(status, bool):
+            locale_status[call.kwargs["id"]] = status
+    assert saw_false is True
+    assert locale_status == {str(zh_id): True, str(en_id): True}
+
+
+@pytest.mark.asyncio
+async def test_failed_tag_update_restores_search_text_without_overwriting_titles(
+    monkeypatch,
+) -> None:
+    """改标签失败时，其它语言只回滚检索文本，不把标题整篇写回。"""
+    service = _bind(_writer())
+    material_id = ObjectId()
+    before = {
+        "_id": material_id,
+        "status": True,
+        "content_form_tags": [{"code": "rain"}],
+    }
+    service.collection.find_one = AsyncMock(return_value=dict(before))
+    service.collection.find_one_and_update = AsyncMock(return_value=dict(before))
+    zh_id, en_id = ObjectId(), ObjectId()
+    service.locales.find = _locale_find(
+        _bilingual_locales(
+            material_id, zh_id, en_id, zh_name="幽林细雨", en_name="Night Rain"
+        )
+    )
+    service.tags.find = _tags_result(
+        [_rain_tag("zh", "雨声"), _rain_tag("en", "Rain")]
+    )
+
+    async def _update(**kwargs):
+        if kwargs.get("index") == "somni_audio_materials":
+            raise RuntimeError("es down")
+        return {"result": "updated"}
+
+    service._es_search._client.update = AsyncMock(side_effect=_update)
+    monkeypatch.setattr(
+        "app.server.somni.audio.writes.clear_somni_audio_catalog_cache",
+        AsyncMock(),
+    )
+
+    results = await update_audios(
+        service,
+        [{"id": str(material_id), "fields": {"content_form_tags": [{"code": "rain"}]}}],
+    )
+
+    assert results[0]["ok"] is False
+    locale_indexes = [
+        call.kwargs
+        for call in service._es_search._client.index.await_args_list
+        if call.kwargs["index"] == "somni_audio_material_locales"
+    ]
+    assert locale_indexes == []
+    locale_updates = [
+        call.kwargs
+        for call in service._es_search._client.update.await_args_list
+        if call.kwargs["index"] == "somni_audio_material_locales"
+    ]
+    texts = {
+        call["id"]: call["script"]["params"]["fields"]["description_text"]
+        for call in locale_updates
+    }
+    assert texts == {
+        str(zh_id): "幽林细雨 雨声",
+        str(en_id): "Night Rain Rain",
+    }
+    assert all("audio_name" not in call["script"]["params"]["fields"] for call in locale_updates)
+    assert all(
+        "material_status" not in call["script"]["params"]["fields"] for call in locale_updates
+    )
+
+
+@pytest.mark.asyncio
+async def test_failed_tag_update_uses_current_title_when_restoring_search_text(
+    monkeypatch,
+) -> None:
+    """改标签失败回滚时，用别人刚改成功的标题拼检索文本，不用请求开头的旧标题。"""
+    service = _bind(_writer())
+    material_id = ObjectId()
+    before = {
+        "_id": material_id,
+        "status": True,
+        "content_form_tags": [{"code": "rain"}],
+    }
+    service.collection.find_one = AsyncMock(return_value=dict(before))
+    service.collection.find_one_and_update = AsyncMock(return_value=dict(before))
+    zh_id, en_id = ObjectId(), ObjectId()
+    # 请求开始时英文标题还是 Rain；回滚前 Mongo 已被别人改成 Night Rain。
+    service.locales.find = _locale_find(
+        _bilingual_locales(material_id, zh_id, en_id, zh_name="幽林细雨", en_name="Rain")
+    )
+    current_by_id = {
+        zh_id: {
+            "_id": zh_id,
+            "material_id": str(material_id),
+            "language": "zh",
+            "audio_name": "幽林细雨",
+        },
+        en_id: {
+            "_id": en_id,
+            "material_id": str(material_id),
+            "language": "en",
+            "audio_name": "Night Rain",
+        },
+    }
+    service.locales.find_one = AsyncMock(
+        side_effect=lambda query: current_by_id.get(query.get("_id"))
+    )
+    service.tags.find = _tags_result(
+        [_rain_tag("zh", "雨声"), _rain_tag("en", "Rain")]
+    )
+
+    async def _update(**kwargs):
+        if kwargs.get("index") == "somni_audio_materials":
+            raise RuntimeError("es down")
+        return {"result": "updated"}
+
+    service._es_search._client.update = AsyncMock(side_effect=_update)
+    monkeypatch.setattr(
+        "app.server.somni.audio.writes.clear_somni_audio_catalog_cache",
+        AsyncMock(),
+    )
+
+    results = await update_audios(
+        service,
+        [{"id": str(material_id), "fields": {"content_form_tags": [{"code": "rain"}]}}],
+    )
+
+    assert results[0]["ok"] is False
+    texts = {
+        call.kwargs["id"]: call.kwargs["script"]["params"]["fields"]["description_text"]
+        for call in service._es_search._client.update.await_args_list
+        if call.kwargs.get("index") == "somni_audio_material_locales"
+    }
+    assert texts[str(en_id)] == "Night Rain Rain"
+    assert texts[str(zh_id)] == "幽林细雨 雨声"
+
+
+@pytest.mark.asyncio
+async def test_title_update_does_not_overwrite_material_status(monkeypatch) -> None:
+    """只改标题时不写 material_status，避免把别人刚停用的标记改回启用。"""
+    service = _bind(_writer())
+    material_id = ObjectId()
+    service.collection.find_one = AsyncMock(
+        return_value={
+            "_id": material_id,
+            "content_form_tags": [{"code": "rain"}],
+            "status": True,
+        }
+    )
+    service.collection.find_one_and_update = AsyncMock(
+        return_value={
+            "_id": material_id,
+            "content_form_tags": [{"code": "rain"}],
+            "status": True,
+        }
+    )
+    service.locale_row["audio_name"] = "雨声"
+    service.locales.find_one = AsyncMock(return_value=dict(service.locale_row))
+    service.locales.find_one_and_update = AsyncMock(
+        return_value={
+            **service.locale_row,
+            "audio_name": "幽林细雨",
+            "material_id": str(material_id),
+        }
+    )
+    service.tags.find = _tags_result([_rain_tag("zh", "雨声")])
+    monkeypatch.setattr(
+        "app.server.somni.audio.writes.clear_somni_audio_catalog_cache",
+        AsyncMock(),
+    )
+
+    results = await update_audios(
+        service,
+        [{"id": str(material_id), "fields": {"language": "zh", "audio_name": "幽林细雨"}}],
+    )
+
+    assert results[0]["ok"] is True
+    locale_updates = [
+        call.kwargs
+        for call in service._es_search._client.update.await_args_list
+        if call.kwargs.get("index") == "somni_audio_material_locales"
+    ]
+    assert locale_updates
+    for call in locale_updates:
+        fields = call.get("script", {}).get("params", {}).get("fields") or call.get("doc") or {}
+        assert "material_status" not in fields
 
 
 @pytest.mark.asyncio
