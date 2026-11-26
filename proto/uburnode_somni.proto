@@ -164,7 +164,7 @@ message SleepQuality {
   int32 sleep_efficiency = 3;
   string bedtime = 4;
   string wake_up_time = 5;
-  int32 wake_to_leave_bed_minutes = 6;
+  int32 wake_to_leave_bed_minutes = 6;  // 离床时刻 − 最后一个睡眠段结束。离床：T_off 后距离跳变且有动作的首段起点，否则首次无人，再否则最后一条数据
 }
 
 message GetSleepQualityRes {
@@ -437,6 +437,16 @@ message AudioContentTagList { repeated AudioContentTag items = 1; }
 message AudioEngineeringTagList { repeated AudioEngineeringTag items = 1; }
 message AudioEmbedding { repeated double values = 1; }
 
+// 声学实测指标。未测字段不设置。proto 传不了 null，确认无节拍用 tempo_no_beat。
+message AcousticMetrics {
+  optional double duration_seconds = 1;
+  optional double tempo_bpm = 2;
+  optional double transient_ratio = 3;
+  optional double transient_max_delta_db = 4;
+  optional double voice_presence_ratio = 5;
+  optional bool tempo_no_beat = 6;
+}
+
 // 只序列化调用方显式传入的字段。列表字段用包装消息，空列表也能表示“清空”。
 message AudioMaterialInput {
   optional string audio_name = 1;
@@ -452,15 +462,13 @@ message AudioMaterialInput {
   optional string updated_by = 11;
   optional AudioTagRefList sleep_stage_tags = 12;
   optional AudioContentTagList content_form_tags = 13;
-  reserved 14;
-  reserved "mechanism_tags";
   optional AudioEngineeringTagList audio_engineering_tags = 15;
-  reserved 16;
-  reserved "medical_risk_tags";
   optional AudioTagRefList evidence_level_tags = 17;
   optional AudioEmbedding embedding = 18;
   // 语言表行。新增必填；更新标题、描述、短描述或地址时也必填。
   optional string language = 19;
+  optional string origin_file_name = 20;
+  optional AcousticMetrics acoustic_metrics = 21;
 }
 
 message UpdateAudioItem {

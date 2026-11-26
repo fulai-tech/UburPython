@@ -44,8 +44,11 @@ from app.embedding.encoder import Encoder, create_encoder  # noqa: E402
 from app.es.client import create_es_client  # noqa: E402
 from app.es.search import EsSearch  # noqa: E402
 from app.es.somni_docs import (  # noqa: E402
+    build_tag_name_by_code_language,
     has_indexable_locale,
     locale_source_for_es,
+    material_is_enabled,
+    material_tag_labels_from_dictionary,
     somni_material_source_for_es,
 )
 
@@ -120,12 +123,21 @@ def tag_doc_to_es(doc: dict[str, Any]) -> dict[str, Any] | None:
     return payload
 
 
-def locale_doc_to_es(doc: dict[str, Any]) -> dict[str, Any] | None:
-    """Mongo 语言文档 → ES _source；无 _id、material_id 或 language 则跳过。"""
+def locale_doc_to_es(
+    doc: dict[str, Any],
+    *,
+    material_status: bool,
+    tag_labels: list[str] | tuple[str, ...] = (),
+) -> dict[str, Any] | None:
+    """Mongo 语言文档 → ES _source。检索文本是标题加内容形态标签名。"""
     doc_id = mongo_doc_id(doc)
     if not doc_id:
         return None
-    payload = locale_source_for_es(bson_to_jsonable(doc))
+    payload = locale_source_for_es(
+        bson_to_jsonable(doc),
+        material_status=material_status,
+        tag_labels=tag_labels,
+    )
     if payload is None:
         return None
     return payload
@@ -249,6 +261,22 @@ class MongoSource:
     async def fetch_locales(self) -> list[dict[str, Any]]:
         coll = self._db[self._locales]
         return [doc async for doc in coll.find({})]
+
+    async def fetch_material_locale_facts(
+        self,
+    ) -> tuple[dict[str, bool], dict[str, dict[str, Any]]]:
+        """一次读出全部原料的启用状态和内容形态标签。"""
+        coll = self._db[self._materials]
+        enabled: dict[str, bool] = {}
+        forms: dict[str, dict[str, Any]] = {}
+        cursor = coll.find({}, {"status": 1, "content_form_tags": 1})
+        async for doc in cursor:
+            doc_id = mongo_doc_id(doc)
+            if not doc_id:
+                continue
+            enabled[doc_id] = material_is_enabled(doc)
+            forms[doc_id] = {"content_form_tags": doc.get("content_form_tags") or []}
+        return enabled, forms
 
     async def _fetch_active(self, collection: str, status: str) -> list[dict[str, Any]]:
         coll = self._db[collection]
@@ -476,6 +504,14 @@ class LocalesSyncJob:
         }
         docs = await self._mongo.fetch_locales()
         stats["fetched"] = len(docs)
+        status_by_id: dict[str, bool] = {}
+        name_by_code_lang: dict[tuple[str, str], str] = {}
+        forms_by_id: dict[str, dict[str, Any]] = {}
+        if docs:
+            status_by_id, forms_by_id = await self._mongo.fetch_material_locale_facts()
+            name_by_code_lang = build_tag_name_by_code_language(
+                await self._mongo.fetch_tag_dictionary()
+            )
         if not dry_run:
             write_backup(
                 self._settings.somni_sync_material_locales_backup_path,
@@ -483,7 +519,18 @@ class LocalesSyncJob:
             )
         payloads: dict[str, dict[str, Any]] = {}
         for doc in docs:
-            es_doc = locale_doc_to_es(doc)
+            material_id = str(doc.get("material_id") or "").strip()
+            language = str(doc.get("language") or "").strip().lower()
+            tag_labels = material_tag_labels_from_dictionary(
+                forms_by_id.get(material_id),
+                language=language,
+                name_by_code_lang=name_by_code_lang,
+            )
+            es_doc = locale_doc_to_es(
+                doc,
+                material_status=bool(status_by_id.get(material_id, False)),
+                tag_labels=tag_labels,
+            )
             if es_doc is None:
                 stats["skipped"] += 1
                 continue

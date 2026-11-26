@@ -29,6 +29,20 @@ def ensure_aware(value: datetime) -> datetime:
     return value
 
 
+def epoch_ms(value: Any) -> int:
+    """datetime / ISO8601 / 数字 → epoch 毫秒；非法返回 0。"""
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, (int, float)):
+        if not math.isfinite(value):
+            return 0
+        return int(value)
+    dt = coerce_datetime(value)
+    if dt is None:
+        return 0
+    return int(ensure_aware(dt).timestamp() * 1000)
+
+
 def to_report_tz(value: datetime) -> datetime:
     return ensure_aware(value).astimezone(REPORT_TZ)
 
@@ -252,7 +266,7 @@ _STAGE_NAME = {
 def as_ms(value: Any) -> int:
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0
 
 
@@ -496,10 +510,134 @@ def sleep_structure_from_segments(
     }
 
 
+# 离床时刻：与《在床时刻 / 离床时刻》一致，不额外加启发式。
+OUT_BED_SAMPLE_INTERVAL_MS = 5_000
+OUT_BED_HOLD_MS = 60_000
+OUT_BED_HOLD_MIN_SAMPLES = 12
+OUT_BED_GAP_TOL_MS = 10_000
+OUT_BED_DIST_JUMP_CM = 50
+_SLEEP_STAGE_CODES = frozenset({STAGE_LIGHT, STAGE_DEEP, STAGE_REM})
+
+
+def last_sleep_segment_end_ms(segments: list[dict[str, Any]]) -> int:
+    """清醒起点 T_off：最后一个 LIGHT/DEEP/REM 段的结束时刻。没有睡眠段则 0。"""
+    end = 0
+    for seg in segments:
+        if as_int(seg.get("stage")) not in _SLEEP_STAGE_CODES:
+            continue
+        end = as_ms(seg.get("start_ts_ms")) + as_ms(seg.get("duration_ms"))
+    return end
+
+
+def sleep_samples_from_telemetry(docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """睡眠遥测 → 按 ts 升序的体征样本。"""
+    samples: list[dict[str, Any]] = []
+    for doc in docs:
+        if not isinstance(doc, dict):
+            continue
+        data = doc.get("data") if isinstance(doc.get("data"), dict) else {}
+        ts = epoch_ms(doc.get("ts"))
+        if ts <= 0:
+            ts = as_ms(doc.get("ts_ms"))
+        if ts <= 0:
+            continue
+        samples.append(
+            {
+                "ts": ts,
+                "motion": data.get("motion", doc.get("motion")),
+                "presence": data.get("presence", doc.get("presence")),
+                "distance": data.get("distance", doc.get("distance")),
+            }
+        )
+    samples.sort(key=lambda item: int(item["ts"]))
+    return samples
+
+
+def _finite_cm(value: Any) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return number
+
+
+def _window_from(samples: list[dict[str, Any]], index: int) -> list[dict[str, Any]] | None:
+    """前视 1 分钟窗口：样本数、覆盖时长、相邻间隔都满足才成立。"""
+    start = as_ms(samples[index].get("ts"))
+    window: list[dict[str, Any]] = []
+    limit = start + OUT_BED_HOLD_MS
+    for sample in samples[index:]:
+        ts = as_ms(sample.get("ts"))
+        if ts > limit:
+            break
+        window.append(sample)
+    if len(window) < OUT_BED_HOLD_MIN_SAMPLES:
+        return None
+    if as_ms(window[-1].get("ts")) < start + OUT_BED_HOLD_MS - OUT_BED_SAMPLE_INTERVAL_MS:
+        return None
+    for prev, curr in zip(window, window[1:]):
+        if as_ms(curr.get("ts")) - as_ms(prev.get("ts")) > OUT_BED_GAP_TOL_MS:
+            return None
+    return window
+
+
+def _is_out_bed_candidate(samples: list[dict[str, Any]], index: int) -> bool:
+    window = _window_from(samples, index)
+    if window is None:
+        return False
+    distances = [
+        dist
+        for sample in window
+        if (dist := _finite_cm(sample.get("distance"))) is not None
+    ]
+    if len(distances) < 2 or max(distances) - min(distances) < OUT_BED_DIST_JUMP_CM:
+        return False
+    return any(as_int(sample.get("motion"), default=-1) in (3, 4) for sample in window)
+
+
+def _presence_absent(sample: dict[str, Any]) -> bool:
+    presence = sample.get("presence")
+    return not isinstance(presence, bool) and presence == 0
+
+
+def out_bed_ts_ms(samples: list[dict[str, Any]], t_off: int) -> int:
+    """离床时刻。候选取第一段起点；否则 T_off 后首次无人；再否则最后一条数据。"""
+    if t_off <= 0 or not samples:
+        return 0
+    candidates: list[int] = []
+    for index, sample in enumerate(samples):
+        ts = as_ms(sample.get("ts"))
+        if ts < t_off:
+            continue
+        if _is_out_bed_candidate(samples, index):
+            candidates.append(ts)
+    if candidates:
+        return candidates[0]
+
+    prior = [sample for sample in samples if as_ms(sample.get("ts")) < t_off]
+    already_absent = bool(prior) and _presence_absent(prior[-1])
+    if not already_absent:
+        for sample in samples:
+            ts = as_ms(sample.get("ts"))
+            if ts >= t_off and _presence_absent(sample):
+                return ts
+
+    for sample in reversed(samples):
+        ts = as_ms(sample.get("ts"))
+        if ts >= t_off:
+            return ts
+    return as_ms(samples[-1].get("ts"))
+
+
 def sleep_quality_from_session(
     on_bed: Any,
     segments: list[dict[str, Any]],
     timezone_name: str = "",
+    sleep_samples: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     bed_from, bed_to = on_bed_bounds(on_bed)
     _stage_ms, stage_end = _stage_timeline_ms(segments)
@@ -516,14 +654,12 @@ def sleep_quality_from_session(
             sol = ms_to_minutes(as_ms(seg.get("start_ts_ms")) - bed_from)
             break
 
-    # 醒后到离床：有效离床时间 − 最后一个清醒阶段 start
+    # 觉后清醒 = 离床时刻 − 最后一个睡眠段结束（T_off）
     wake_to_leave_bed = 0
-    last_awake_start = 0
-    for seg in segments:
-        if as_int(seg.get("stage")) == STAGE_AWAKE:
-            last_awake_start = as_ms(seg.get("start_ts_ms"))
-    if last_awake_start > 0 and leave_bed_ms > last_awake_start:
-        wake_to_leave_bed = ms_to_minutes(leave_bed_ms - last_awake_start)
+    t_off = last_sleep_segment_end_ms(segments)
+    t_out = out_bed_ts_ms(sleep_samples or [], t_off)
+    if t_off > 0 and t_out > t_off:
+        wake_to_leave_bed = ms_to_minutes(t_out - t_off)
 
     return {
         "time_in_bed_minutes": tib,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from bson import ObjectId
@@ -13,6 +14,7 @@ from pymongo.errors import DuplicateKeyError
 from app.cache.somni_audio_catalog_cache import clear_somni_audio_catalog_cache
 from app.core.bson_util import bson_to_jsonable, utc_now
 from app.core.exceptions import AppError
+from app.server.somni.audio.writes import refresh_locales_for_content_codes
 
 _FIELDS = (
     "type",
@@ -26,12 +28,22 @@ _FIELDS = (
 )
 _REQUIRED = ("type", "code", "language", "name")
 _VECTOR_FIELDS = ("name", "language")
+_LABEL_FIELDS = ("name", "status", "language", "code", "type")
+_LABEL_TOUCH = ("name", "status", "language", "type")
 _CREATE_DEFAULTS: dict[str, Any] = {
     "status": "启用",
     "parent_id": None,
     "created_by": "",
     "updated_by": "",
 }
+
+
+class TagCreateUncertainError(RuntimeError):
+    """创建失败且补偿未完成；tag_id 对调用方仍有核对价值。"""
+
+    def __init__(self, tag_id: str, cause: Exception) -> None:
+        super().__init__(str(cause) or cause.__class__.__name__)
+        self.tag_id = tag_id
 
 
 def audio_tag_input_to_fields(message: Any) -> dict[str, Any]:
@@ -51,6 +63,8 @@ async def create_audio_tags(service: Any, items: list[dict[str, Any]]) -> list[d
             tag_id = await _create_one(service, fields)
             results.append(_ok(index, tag_id))
         except Exception as exc:
+            if isinstance(exc, TagCreateUncertainError):
+                tag_id = exc.tag_id
             results.append(_fail(index, tag_id, exc))
     await _finish(service, results, action="创建")
     return results
@@ -89,15 +103,37 @@ async def _create_one(service: Any, fields: dict[str, Any]) -> str:
     doc = {**_CREATE_DEFAULTS, **payload}
     doc["created_at"] = now
     doc["updated_at"] = now
+    if _is_content_form(doc):
+        doc["locale_refresh_pending"] = True
+    tag_oid = ObjectId()
+    doc["_id"] = tag_oid
     try:
         result = await service._tags().insert_one(doc)
+    except asyncio.CancelledError:
+        _clear_cancellation()
+        await _compensate_create_failure(service, str(tag_oid), doc)
+        raise
     except DuplicateKeyError as exc:
         raise ValueError("标签已存在：type + code + language") from exc
+    except Exception as exc:
+        compensated = await _compensate_create_failure(service, str(tag_oid), doc)
+        if not compensated:
+            raise TagCreateUncertainError(str(tag_oid), exc) from exc
+        raise
     tag_id = str(result.inserted_id)
+    saved = {**doc, "_id": result.inserted_id}
     try:
-        await _index_tag(service, tag_id, {**doc, "_id": result.inserted_id})
-    except Exception:
-        await _compensate_create_failure(service, tag_id)
+        await _index_tag(service, tag_id, saved)
+        await _refresh_content_labels(service, saved)
+        await _clear_locale_refresh_pending(service, result.inserted_id, saved)
+    except asyncio.CancelledError:
+        _clear_cancellation()
+        await _compensate_create_failure(service, tag_id, saved)
+        raise
+    except Exception as exc:
+        compensated = await _compensate_create_failure(service, tag_id, saved)
+        if not compensated:
+            raise TagCreateUncertainError(tag_id, exc) from exc
         raise
     return tag_id
 
@@ -111,16 +147,33 @@ async def _update_one(service: Any, tag_id: str, fields: dict[str, Any]) -> None
     before = await service._tags().find_one({"_id": oid})
     if before is None:
         raise ValueError(f"标签不存在：{tag_id}")
+    if "code" in payload and payload["code"] != str(before.get("code") or "").strip():
+        raise ValueError("code 不能修改")
+    payload.pop("code", None)
+    if not payload and not before.get("locale_refresh_pending"):
+        return
+    if _should_refresh_labels(before, payload):
+        payload["locale_refresh_pending"] = True
+    if not payload:
+        return
     recompute_vector = any(name in payload for name in _VECTOR_FIELDS)
     payload["updated_at"] = utc_now()
+    saved = before
     try:
         saved = await service._tags().find_one_and_update(
             {"_id": oid},
             {"$set": payload},
             return_document=ReturnDocument.AFTER,
         )
+    except asyncio.CancelledError:
+        _clear_cancellation()
+        await _compensate_update_failure(service, tag_id, before=before, after=saved)
+        raise
     except DuplicateKeyError as exc:
         raise ValueError("标签已存在：type + code + language") from exc
+    except Exception:
+        await _compensate_update_failure(service, tag_id, before=before, after=saved)
+        raise
     if saved is None:
         raise ValueError(f"标签不存在：{tag_id}")
     try:
@@ -128,11 +181,18 @@ async def _update_one(service: Any, tag_id: str, fields: dict[str, Any]) -> None
             service,
             tag_id,
             saved,
-            changed=set(payload),
+            changed=set(payload) - {"locale_refresh_pending"},
             recompute_vector=recompute_vector,
         )
+        if _content_label_refresh_due(before, saved):
+            await _refresh_content_labels(service, before, saved)
+            await _clear_locale_refresh_pending(service, oid, saved)
+    except asyncio.CancelledError:
+        _clear_cancellation()
+        await _compensate_update_failure(service, tag_id, before=before, after=saved)
+        raise
     except Exception:
-        await _compensate_update_failure(service, tag_id, before=before)
+        await _compensate_update_failure(service, tag_id, before=before, after=saved)
         raise
 
 
@@ -141,14 +201,93 @@ async def _delete_one(service: Any, tag_id: str) -> None:
     before = await service._tags().find_one({"_id": oid})
     if before is None:
         raise ValueError(f"标签不存在：{tag_id}")
-    result = await service._tags().delete_one({"_id": oid})
+    try:
+        result = await service._tags().delete_one({"_id": oid})
+    except asyncio.CancelledError:
+        _clear_cancellation()
+        await _compensate_delete_failure(service, before)
+        raise
+    except Exception:
+        await _compensate_delete_failure(service, before)
+        raise
     if result.deleted_count == 0:
         raise ValueError(f"标签不存在：{tag_id}")
     try:
         await _delete_index(service, tag_id)
+        await _refresh_content_labels(service, before)
+    except asyncio.CancelledError:
+        _clear_cancellation()
+        await _compensate_delete_failure(service, before)
+        raise
     except Exception:
         await _compensate_delete_failure(service, before)
         raise
+
+
+def _content_codes(doc: dict[str, Any] | None) -> set[str]:
+    if not doc or str(doc.get("type") or "").strip() != "content_form":
+        return set()
+    code = str(doc.get("code") or "").strip()
+    return {code} if code else set()
+
+
+def _content_ids(doc: dict[str, Any] | None) -> set[str]:
+    if not _is_content_form(doc):
+        return set()
+    tag_id = str((doc or {}).get("_id") or "").strip()
+    return {tag_id} if tag_id else set()
+
+
+def _label_inputs_changed(before: dict[str, Any], after: dict[str, Any]) -> bool:
+    return any(before.get(name) != after.get(name) for name in _LABEL_FIELDS)
+
+
+def _is_content_form(doc: dict[str, Any] | None) -> bool:
+    return str((doc or {}).get("type") or "").strip() == "content_form"
+
+
+def _labels_touched(before: dict[str, Any], payload: dict[str, Any]) -> bool:
+    return any(
+        name in payload and payload[name] != before.get(name) for name in _LABEL_TOUCH
+    )
+
+
+def _content_label_refresh_due(before: dict[str, Any], saved: dict[str, Any]) -> bool:
+    if not (_is_content_form(before) or _is_content_form(saved)):
+        return False
+    return bool(saved.get("locale_refresh_pending")) or _label_inputs_changed(before, saved)
+
+
+def _should_refresh_labels(before: dict[str, Any], payload: dict[str, Any]) -> bool:
+    """内容形态标签的名字或启停还没刷完，或者这次又改了检索会用到的字段。"""
+    merged = {**before, **payload}
+    if not (_is_content_form(before) or _is_content_form(merged)):
+        return False
+    if before.get("locale_refresh_pending"):
+        return True
+    return _labels_touched(before, payload)
+
+
+async def _clear_locale_refresh_pending(
+    service: Any, tag_oid: Any, doc: dict[str, Any]
+) -> None:
+    if not doc.get("locale_refresh_pending") and not _content_codes(doc):
+        return
+    if not _is_content_form(doc) and not doc.get("locale_refresh_pending"):
+        return
+    await service._tags().update_one(
+        {"_id": tag_oid},
+        {"$set": {"locale_refresh_pending": False}},
+    )
+
+
+async def _refresh_content_labels(service: Any, *docs: dict[str, Any]) -> None:
+    codes: set[str] = set()
+    tag_ids: set[str] = set()
+    for doc in docs:
+        codes.update(_content_codes(doc))
+        tag_ids.update(_content_ids(doc))
+    await refresh_locales_for_content_codes(service, codes, tag_ids)
 
 
 def _normalize(fields: dict[str, Any]) -> dict[str, Any]:
@@ -174,7 +313,11 @@ def _require_identity(fields: dict[str, Any]) -> None:
 
 
 def _reject_blank_identity(fields: dict[str, Any]) -> None:
-    blank = [name for name in _REQUIRED if name in fields and not str(fields.get(name) or "").strip()]
+    blank = [
+        name
+        for name in _REQUIRED
+        if name in fields and not str(fields.get(name) or "").strip()
+    ]
     if blank:
         raise ValueError(f"{'、'.join(blank)} 不能为空")
 
@@ -185,9 +328,18 @@ def _parse_id(tag_id: str) -> ObjectId:
     return ObjectId(tag_id)
 
 
+def _clear_cancellation() -> None:
+    """先清除当前任务的取消状态，确保补偿 await 能执行完。"""
+    task = asyncio.current_task()
+    if task is None:
+        return
+    while task.cancelling():
+        task.uncancel()
+
+
 def _tag_source(doc: dict[str, Any]) -> dict[str, Any]:
     payload = bson_to_jsonable(doc)
-    for key in ("_id", "id", "name_en", "name_vector", "name_en_vector"):
+    for key in ("_id", "id", "name_en", "name_vector", "name_en_vector", "locale_refresh_pending"):
         payload.pop(key, None)
     parent = payload.pop("parent_id", None)
     payload.pop("parent_tag_id", None)
@@ -328,22 +480,48 @@ async def _delete_index(service: Any, tag_id: str) -> None:
         raise RuntimeError(f"标签索引删除失败：{exc}") from exc
 
 
-async def _compensate_create_failure(service: Any, tag_id: str) -> None:
+async def _compensate_create_failure(
+    service: Any, tag_id: str, doc: dict[str, Any]
+) -> bool:
     try:
         await service._tags().delete_one({"_id": ObjectId(tag_id)})
         await _delete_index(service, tag_id)
+        await refresh_locales_for_content_codes(
+            service,
+            _content_codes(doc),
+            _content_ids(doc),
+        )
+        return True
     except Exception as exc:
         logger.error("标签创建补偿失败，tag_id={}，原因：{}", tag_id, exc)
+        return False
 
 
 async def _compensate_update_failure(
-    service: Any, tag_id: str, *, before: dict[str, Any]
+    service: Any,
+    tag_id: str,
+    *,
+    before: dict[str, Any],
+    after: dict[str, Any],
 ) -> None:
     try:
         oid = ObjectId(tag_id)
         restore = {key: value for key, value in before.items() if key != "_id"}
+        codes = _content_codes(before) | _content_codes(after)
+        if codes:
+            restore["locale_refresh_pending"] = True
         await service._tags().replace_one({"_id": oid}, restore)
         await _index_tag(service, tag_id, before)
+        await refresh_locales_for_content_codes(
+            service,
+            codes,
+            _content_ids(before) | _content_ids(after),
+        )
+        if codes:
+            await service._tags().update_one(
+                {"_id": oid},
+                {"$set": {"locale_refresh_pending": False}},
+            )
     except Exception as exc:
         logger.error("标签更新补偿失败，tag_id={}，原因：{}", tag_id, exc)
 
@@ -351,9 +529,24 @@ async def _compensate_update_failure(
 async def _compensate_delete_failure(service: Any, before: dict[str, Any]) -> None:
     tag_id = str(before.get("_id") or "")
     try:
-        await service._tags().insert_one(dict(before))
+        tag_oid = before.get("_id")
+        restored = {key: value for key, value in before.items() if key != "_id"}
+        codes = _content_codes(before)
+        if codes:
+            restored["locale_refresh_pending"] = True
+        await service._tags().replace_one(
+            {"_id": tag_oid},
+            restored,
+            upsert=True,
+        )
         if tag_id:
             await _index_tag(service, tag_id, before)
+        await refresh_locales_for_content_codes(service, codes, _content_ids(before))
+        if codes and tag_id:
+            await service._tags().update_one(
+                {"_id": before.get("_id")},
+                {"$set": {"locale_refresh_pending": False}},
+            )
     except Exception as exc:
         logger.error("标签删除补偿失败，tag_id={}，原因：{}", tag_id, exc)
 
