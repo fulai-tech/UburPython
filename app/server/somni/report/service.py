@@ -169,9 +169,13 @@ class ReportService:
     ) -> dict[str, Any]:
         _ = uid, record_date
         on_bed, segments, timezone_name = await self._session_segments(session_id)
+        docs = await self._store.list_telemetry_by_session(session_id, "sleep")
         return {
             "sleep_quality": calc.sleep_quality_from_session(
-                on_bed, segments, timezone_name=timezone_name
+                on_bed,
+                segments,
+                timezone_name=timezone_name,
+                sleep_samples=calc.sleep_samples_from_telemetry(docs),
             )
         }
 

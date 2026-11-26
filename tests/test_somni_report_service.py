@@ -383,12 +383,23 @@ async def test_get_structure_and_sleep_quality() -> None:
     assert weekly["week_days"][0]["record_date"] == "2026-08-10"
     store.list_records.assert_awaited_once_with("u1", "2026-07-28", "2026-08-10")
 
+    t_off = int(datetime(2026, 8, 9, 22, 42, tzinfo=UTC).timestamp() * 1000)
+    store.list_telemetry_by_session = AsyncMock(
+        return_value=[
+            {
+                "ts": t_off + 20 * 60 * 1000,
+                "data": {"presence": 0, "motion": 1, "distance": 80},
+            }
+        ]
+    )
     quality = (
         await svc.get_sleep_quality("u1", "2026-08-10", "sess-1")
     )["sleep_quality"]
     assert quality["time_in_bed_minutes"] == 540
     assert quality["bedtime"] == "23:30"
     assert quality["wake_up_time"] == "08:30"
+    # 最后一段睡眠在 22:42 结束；其后 20 分钟首次无人，走离床兜底
+    assert quality["wake_to_leave_bed_minutes"] == 20
 
 
 @pytest.mark.asyncio
