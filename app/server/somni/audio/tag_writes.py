@@ -35,6 +35,7 @@ _CREATE_DEFAULTS: dict[str, Any] = {
     "parent_id": None,
     "created_by": "",
     "updated_by": "",
+    "version": 0,
 }
 
 
@@ -44,6 +45,10 @@ class TagCreateUncertainError(RuntimeError):
     def __init__(self, tag_id: str, cause: Exception) -> None:
         super().__init__(str(cause) or cause.__class__.__name__)
         self.tag_id = tag_id
+
+
+class TagVersionConflictError(ValueError):
+    """读到的标签版本已过期，别的请求先写入了；调用方应刷新后重试。"""
 
 
 def audio_tag_input_to_fields(message: Any) -> dict[str, Any]:
@@ -158,24 +163,44 @@ async def _update_one(service: Any, tag_id: str, fields: dict[str, Any]) -> None
         return
     recompute_vector = any(name in payload for name in _VECTOR_FIELDS)
     payload["updated_at"] = utc_now()
+    # 版本号 CAS：只有库里仍是读到的那一版才写入，并把版本 +1。
+    # 老数据没有 version 字段时 filter 写 None，可同时匹配缺失和 null。
+    base_version = before.get("version")
+    written_version = int(base_version or 0) + 1
+    payload["version"] = written_version
+    written_fields = _own_fields(payload)
     saved = before
     try:
         saved = await service._tags().find_one_and_update(
-            {"_id": oid},
+            {"_id": oid, "version": base_version},
             {"$set": payload},
             return_document=ReturnDocument.AFTER,
         )
     except asyncio.CancelledError:
         _clear_cancellation()
-        await _compensate_update_failure(service, tag_id, before=before, after=saved)
+        await _compensate_update_failure(
+            service,
+            tag_id,
+            before=before,
+            after=saved,
+            written_version=written_version,
+            written_fields=written_fields,
+        )
         raise
     except DuplicateKeyError as exc:
         raise ValueError("标签已存在：type + code + language") from exc
     except Exception:
-        await _compensate_update_failure(service, tag_id, before=before, after=saved)
+        await _compensate_update_failure(
+            service,
+            tag_id,
+            before=before,
+            after=saved,
+            written_version=written_version,
+            written_fields=written_fields,
+        )
         raise
     if saved is None:
-        raise ValueError(f"标签不存在：{tag_id}")
+        raise TagVersionConflictError(f"标签已被其他请求修改，请刷新后重试：{tag_id}")
     try:
         await _patch_tag(
             service,
@@ -189,10 +214,24 @@ async def _update_one(service: Any, tag_id: str, fields: dict[str, Any]) -> None
             await _clear_locale_refresh_pending(service, oid, saved)
     except asyncio.CancelledError:
         _clear_cancellation()
-        await _compensate_update_failure(service, tag_id, before=before, after=saved)
+        await _compensate_update_failure(
+            service,
+            tag_id,
+            before=before,
+            after=saved,
+            written_version=written_version,
+            written_fields=written_fields,
+        )
         raise
     except Exception:
-        await _compensate_update_failure(service, tag_id, before=before, after=saved)
+        await _compensate_update_failure(
+            service,
+            tag_id,
+            before=before,
+            after=saved,
+            written_version=written_version,
+            written_fields=written_fields,
+        )
         raise
 
 
@@ -393,6 +432,7 @@ async def _patch_tag(
             doc_id=tag_id,
             fields=fields,
             remove=remove,
+            guard=("version", int(doc.get("version") or 0)),
         )
     except Exception as exc:
         raise RuntimeError(f"标签索引写入失败：{exc}") from exc
@@ -440,20 +480,30 @@ async def _patch_document(
     doc_id: str,
     fields: dict[str, Any],
     remove: list[str],
+    guard: tuple[str, int] | None = None,
 ) -> bool:
+    """局部更新。guard=(字段名, 版本号)：ES 上该字段已更大时整次更新 noop，防止旧版本盖掉新版本。"""
     try:
-        if remove:
+        if remove or guard is not None:
+            body = (
+                "for (change in params.fields.entrySet()) {"
+                " ctx._source[change.getKey()] = change.getValue(); }"
+                " for (field in params.remove) { ctx._source.remove(field); }"
+            )
+            params: dict[str, Any] = {"fields": fields, "remove": remove}
+            if guard is not None:
+                params["guard_field"], params["guard_value"] = guard
+                body = (
+                    "if (ctx._source[params.guard_field] != null"
+                    " && ctx._source[params.guard_field] > params.guard_value) {"
+                    " ctx.op = 'noop'; } else { "
+                    + body
+                    + " ctx._source[params.guard_field] = params.guard_value; }"
+                )
             await client.update(
                 index=index,
                 id=doc_id,
-                script={
-                    "source": (
-                        "for (change in params.fields.entrySet()) {"
-                        " ctx._source[change.getKey()] = change.getValue(); }"
-                        " for (field in params.remove) { ctx._source.remove(field); }"
-                    ),
-                    "params": {"fields": fields, "remove": remove},
-                },
+                script={"source": body, "params": params},
                 retry_on_conflict=3,
             )
         else:
@@ -497,33 +547,77 @@ async def _compensate_create_failure(
         return False
 
 
+_FLAG_FIELDS = ("updated_at", "version", "locale_refresh_pending")
+
+
+def _own_fields(payload: dict[str, Any]) -> dict[str, Any]:
+    """本次请求真正要写的业务字段，用于版本已被推进时只撤销这些字段。"""
+    return {key: value for key, value in payload.items() if key not in _FLAG_FIELDS}
+
+
 async def _compensate_update_failure(
     service: Any,
     tag_id: str,
     *,
     before: dict[str, Any],
-    after: dict[str, Any],
+    after: dict[str, Any] | None,
+    written_version: int,
+    written_fields: dict[str, Any],
 ) -> None:
+    """更新失败的补偿。
+
+    - 库里仍是本次写入的版本：整条回滚到 before，版本号 +1，让旧版本的写入再也匹配不上。
+    - 版本已被别的请求推进：整条回滚会抹掉对方的修改，只撤销本次改过、且仍是本次写入值的字段。
+    索引与检索文本最后都以数据库当前记录为准，不用快照。
+    """
     try:
         oid = ObjectId(tag_id)
-        restore = {key: value for key, value in before.items() if key != "_id"}
-        codes = _content_codes(before) | _content_codes(after)
-        if codes:
-            restore["locale_refresh_pending"] = True
-        await service._tags().replace_one({"_id": oid}, restore)
-        await _index_tag(service, tag_id, before)
+        tags = service._tags()
+        codes = _content_codes(before) | _content_codes(after or {})
+        result = await tags.replace_one(
+            {"_id": oid, "version": written_version},
+            _restore_doc(before, written_version + 1, codes),
+        )
+        whole_restored = bool(getattr(result, "matched_count", 1))
+        if not whole_restored:
+            await _revert_own_fields(tags, oid, before, written_fields)
+        current = await tags.find_one({"_id": oid})
+        if current is not None:
+            await _index_tag(service, tag_id, current)
         await refresh_locales_for_content_codes(
             service,
             codes,
-            _content_ids(before) | _content_ids(after),
+            _content_ids(current) | _content_ids(after or {}),
         )
-        if codes:
-            await service._tags().update_one(
-                {"_id": oid},
+        if codes and whole_restored:
+            await tags.update_one(
+                {"_id": oid, "version": written_version + 1},
                 {"$set": {"locale_refresh_pending": False}},
             )
     except Exception as exc:
         logger.error("标签更新补偿失败，tag_id={}，原因：{}", tag_id, exc)
+
+
+def _restore_doc(before: dict[str, Any], version: int, codes: set[str]) -> dict[str, Any]:
+    restore = {key: value for key, value in before.items() if key not in ("_id", "version")}
+    restore["version"] = version
+    if codes:
+        restore["locale_refresh_pending"] = True
+    return restore
+
+
+async def _revert_own_fields(
+    tags: Any,
+    oid: ObjectId,
+    before: dict[str, Any],
+    written_fields: dict[str, Any],
+) -> None:
+    """逐字段撤销：只有字段当前仍是本次写入的值时才改回原值，别人改过的字段保持不动。"""
+    for name, written_value in written_fields.items():
+        await tags.update_one(
+            {"_id": oid, name: written_value},
+            {"$set": {name: before.get(name)}},
+        )
 
 
 async def _compensate_delete_failure(service: Any, before: dict[str, Any]) -> None:

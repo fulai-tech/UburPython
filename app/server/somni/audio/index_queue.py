@@ -14,6 +14,7 @@ from datetime import timedelta
 from typing import Any
 
 from loguru import logger
+from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
 from app.core.bson_util import utc_now
@@ -46,30 +47,53 @@ def _lease_collection(service: Any) -> Any | None:
         return None
 
 
-async def _acquire_lease(collection: Any, material_id: str, token: str) -> None:
+def fence_filter(fence: int | None) -> dict[str, Any]:
+    """写入条件：原料文档还没被更高编号的租约写过。字段缺失（老数据）也允许写。"""
+    if fence is None:
+        return {}
+    return {"$or": [{"fence_token": None}, {"fence_token": {"$lte": fence}}]}
+
+
+def fence_set(fence: int | None) -> dict[str, Any]:
+    """写入成功后把本次租约编号落到文档上，供后来者和补偿比对。"""
+    return {} if fence is None else {"fence_token": fence}
+
+
+async def _acquire_lease(collection: Any, material_id: str, token: str) -> int:
+    """取得租约，返回本次编号。编号只增不减：接管时原地 +1，释放时不删除文档。"""
     deadline = asyncio.get_running_loop().time() + _WAIT_SECONDS
     while True:
         now = utc_now()
         try:
             await collection.insert_one(
-                {"_id": material_id, "token": token, "expires_at": now + _LEASE}
+                {"_id": material_id, "token": token, "expires_at": now + _LEASE, "fence_token": 1}
             )
-            return
+            return 1
         except DuplicateKeyError:
             # 过期与否交给 Mongo 比较。读回的时间不带时区，和 utc_now() 不能直接比。
-            stolen = await collection.find_one_and_delete(
-                {"_id": material_id, "expires_at": {"$lte": now}}
+            # 原地接管而不是删除再插入，否则计数器会丢，编号会倒退。
+            stolen = await collection.find_one_and_update(
+                {"_id": material_id, "expires_at": {"$lte": now}},
+                {
+                    "$set": {"token": token, "expires_at": now + _LEASE},
+                    "$inc": {"fence_token": 1},
+                },
+                return_document=ReturnDocument.AFTER,
             )
             if stolen is not None:
-                continue
+                return int(stolen["fence_token"])
             if asyncio.get_running_loop().time() >= deadline:
                 raise RuntimeError("同一条原料的索引写入仍在进行，请重试")
             await asyncio.sleep(_POLL_SECONDS)
 
 
 async def _release_lease(collection: Any, material_id: str, token: str) -> None:
+    """释放时只把租约标记为过期，保留文档和编号计数器。"""
     try:
-        await collection.delete_one({"_id": material_id, "token": token})
+        await collection.update_one(
+            {"_id": material_id, "token": token},
+            {"$set": {"expires_at": utc_now()}},
+        )
     except Exception as exc:
         logger.error("释放原料索引租约失败，material_id={}，原因：{}", material_id, exc)
 
@@ -115,24 +139,28 @@ _LEASE_HOLDERS: dict[str, asyncio.Task[Any]] = {}
 
 
 @asynccontextmanager
-async def material_index_turn(service: Any, material_id: str) -> AsyncIterator[None]:
-    """同一 material_id 同时只有一个写入。调用方在退出前写完 Mongo 和 ES。"""
+async def material_index_turn(service: Any, material_id: str) -> AsyncIterator[int | None]:
+    """同一 material_id 同时只有一个写入。yield 本次租约编号（无 Mongo 时为 None）。
+
+    调用方在退出前写完 Mongo 和 ES，写入时带上编号，旧编号的写入会被拒绝。
+    """
     local = await _process_lock(material_id)
     async with local:
         collection = _lease_collection(service)
         token = uuid.uuid4().hex
         stop = asyncio.Event()
         renew: asyncio.Task[None] | None = None
+        fence: int | None = None
         holder = asyncio.current_task()
         if holder is not None:
             _LEASE_HOLDERS[material_id] = holder
         if collection is not None:
-            await _acquire_lease(collection, material_id, token)
+            fence = await _acquire_lease(collection, material_id, token)
             renew = asyncio.create_task(
                 _keep_lease_alive(collection, material_id, token, stop)
             )
         try:
-            yield
+            yield fence
         finally:
             task = asyncio.current_task()
             if task is not None:

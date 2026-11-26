@@ -26,7 +26,7 @@ from app.es.somni_docs import (
     material_is_enabled,
     material_tag_labels_from_dictionary,
 )
-from app.server.somni.audio.index_queue import material_index_turn
+from app.server.somni.audio.index_queue import fence_filter, fence_set, material_index_turn
 
 AUDIO_WRITE_BATCH_LIMIT = 200
 
@@ -37,6 +37,16 @@ class AudioCreateUncertainError(RuntimeError):
     def __init__(self, material_id: str, cause: Exception) -> None:
         super().__init__(str(cause) or cause.__class__.__name__)
         self.material_id = material_id
+
+
+class StaleLeaseError(RuntimeError):
+    """本次写入持有的租约编号已落后，原料已被更新的租约接管，写入被拒绝。"""
+
+
+def _write_rejected(fence: int | None, material_id: str) -> Exception:
+    if fence is None:
+        return ValueError(f"音频原料不存在：{material_id}")
+    return StaleLeaseError(f"原料已被更新的租约接管，写入被拒绝：{material_id}")
 
 
 _MATERIAL_FIELDS = (
@@ -283,8 +293,10 @@ async def _update_one(service: Any, material_id: str, fields: dict[str, Any]) ->
         if not language:
             raise ValueError("language 不能为空")
         locale_fields["language"] = language
-    async with material_index_turn(service, material_id):
-        await _update_one_locked(service, material_id, fields, material_fields, locale_fields)
+    async with material_index_turn(service, material_id) as fence:
+        await _update_one_locked(
+            service, material_id, fields, material_fields, locale_fields, fence
+        )
 
 
 async def _update_one_locked(
@@ -293,6 +305,7 @@ async def _update_one_locked(
     fields: dict[str, Any],
     material_fields: dict[str, Any],
     locale_fields: dict[str, Any],
+    fence: int | None = None,
 ) -> None:
     oid = _parse_id(material_id)
     before_material = await service._materials().find_one({"_id": oid})
@@ -314,17 +327,17 @@ async def _update_one_locked(
     try:
         if touch_material:
             material_fields["updated_at"] = utc_now()
-            update: dict[str, Any] = {"$set": material_fields}
+            update: dict[str, Any] = {"$set": {**material_fields, **fence_set(fence)}}
             if clear_embedding:
                 update["$unset"] = {"embedding": ""}
             material_written = True
             saved = await service._materials().find_one_and_update(
-                {"_id": oid},
+                {"_id": oid, **fence_filter(fence)},
                 update,
                 return_document=ReturnDocument.AFTER,
             )
         if saved is None:
-            raise ValueError(f"音频原料不存在：{material_id}")
+            raise _write_rejected(fence, material_id)
         if locale_fields:
             locale_written = True
             locale = await _save_locale(service, material_id, locale_fields)
@@ -336,6 +349,7 @@ async def _update_one_locked(
             wrote_locale=locale,
             recompute_locale_vector=_recompute_locale_vector(fields),
             touch_material=touch_material,
+            fence=fence,
         )
     except asyncio.CancelledError:
         if material_written or locale_written:
@@ -349,6 +363,7 @@ async def _update_one_locked(
                 locale_language=str(locale_fields.get("language") or ""),
                 touched_material=material_written,
                 touched_locale=locale_written,
+                fence=fence,
             )
         raise
     except Exception:
@@ -362,24 +377,30 @@ async def _update_one_locked(
                 locale_language=str(locale_fields.get("language") or ""),
                 touched_material=material_written,
                 touched_locale=locale_written,
+                fence=fence,
             )
         raise
 
 
 async def _delete_one(service: Any, material_id: str) -> None:
     oid = _parse_id(material_id)
-    async with material_index_turn(service, material_id):
-        await _delete_one_locked(service, material_id, oid)
+    async with material_index_turn(service, material_id) as fence:
+        await _delete_one_locked(service, material_id, oid, fence)
 
 
-async def _delete_one_locked(service: Any, material_id: str, oid: ObjectId) -> None:
+async def _delete_one_locked(
+    service: Any,
+    material_id: str,
+    oid: ObjectId,
+    fence: int | None = None,
+) -> None:
     locales = _locale_collection(service)
     before_material = await service._materials().find_one({"_id": oid})
     if before_material is None:
         raise ValueError(f"音频原料不存在：{material_id}")
     rows = await locales.find({"material_id": material_id}).to_list(length=None)
     try:
-        result = await service._materials().delete_one({"_id": oid})
+        result = await service._materials().delete_one({"_id": oid, **fence_filter(fence)})
     except asyncio.CancelledError:
         _clear_cancellation()
         await _compensate_delete_failure(
@@ -387,6 +408,7 @@ async def _delete_one_locked(service: Any, material_id: str, oid: ObjectId) -> N
             before_material,
             rows,
             locales_deleted=False,
+            fence=fence,
         )
         raise
     except Exception:
@@ -395,10 +417,11 @@ async def _delete_one_locked(service: Any, material_id: str, oid: ObjectId) -> N
             before_material,
             rows,
             locales_deleted=False,
+            fence=fence,
         )
         raise
     if result.deleted_count == 0:
-        raise ValueError(f"音频原料不存在：{material_id}")
+        raise _write_rejected(fence, material_id)
     locales_deleted = False
     try:
         locales_deleted = True
@@ -413,6 +436,7 @@ async def _delete_one_locked(service: Any, material_id: str, oid: ObjectId) -> N
             before_material,
             rows,
             locales_deleted=locales_deleted,
+            fence=fence,
         )
         raise
     except Exception:
@@ -421,6 +445,7 @@ async def _delete_one_locked(service: Any, material_id: str, oid: ObjectId) -> N
             before_material,
             rows,
             locales_deleted=locales_deleted,
+            fence=fence,
         )
         raise
 
@@ -578,13 +603,14 @@ async def _compensate_update_failure(
     locale_language: str,
     touched_material: bool,
     touched_locale: bool,
+    fence: int | None = None,
 ) -> None:
-    """更新时 ES 失败：Mongo 写回快照，并按快照重刷 ES。"""
+    """更新失败：只撤销本租约写入的原料；之后按数据库当前状态重刷 ES，不用快照。"""
     try:
         oid = _parse_id(material_id)
+        owned = True
         if touched_material:
-            restore = {key: value for key, value in before_material.items() if key != "_id"}
-            await service._materials().replace_one({"_id": oid}, restore)
+            owned = await _restore_material_if_owned(service, oid, before_material, fence)
         if touched_locale:
             locales = _locale_collection(service)
             if before_locale is None:
@@ -605,11 +631,14 @@ async def _compensate_update_failure(
                 await locales.replace_one({"_id": locale_oid}, restore_locale)
         # 原料文档不依赖标签词典，先恢复；语言索引要读词典，放后面，
         # 词典不可用时才不会拦住原料文档的恢复。
-        if touched_material:
-            await _index_material_document(
-                service, material_id, _material_index_body(before_material)
-            )
-        await _reindex_material_locales(service, material_id, before_material)
+        # 索引一律以数据库当前内容为准：本租约已不是最后写入者时，原料索引留给新持有者。
+        current = await service._materials().find_one({"_id": oid})
+        if current is not None:
+            if touched_material and owned:
+                await _index_material_document(
+                    service, material_id, _material_index_body(current)
+                )
+            await _reindex_material_locales(service, material_id, current)
     except Exception as exc:
         logger.error(
             "更新补偿失败，material_id={}，原因：{}",
@@ -618,22 +647,46 @@ async def _compensate_update_failure(
         )
 
 
+async def _restore_material_if_owned(
+    service: Any,
+    oid: ObjectId,
+    before_material: dict[str, Any],
+    fence: int | None,
+) -> bool:
+    """库里仍是本租约写入的那一版才回滚。返回是否真的回滚了。
+
+    回滚后编号仍保持本租约的值，不能用快照里的旧编号覆盖，否则编号会倒退。
+    """
+    restore = {
+        key: value for key, value in before_material.items() if key not in ("_id", "fence_token")
+    }
+    restore.update(fence_set(fence))
+    owned_filter = {"fence_token": fence} if fence is not None else {}
+    result = await service._materials().replace_one({"_id": oid, **owned_filter}, restore)
+    return bool(getattr(result, "matched_count", 1))
+
+
 async def _compensate_delete_failure(
     service: Any,
     before_material: dict[str, Any],
     locale_rows: list[dict[str, Any]],
     *,
     locales_deleted: bool,
+    fence: int | None = None,
 ) -> None:
-    """删除失败：幂等恢复原料与语言行，并尽量重刷 ES。"""
+    """删除失败：幂等恢复原料与语言行，并尽量重刷 ES。
+
+    原料恢复带编号门禁：若已有更高编号的写入，_id 冲突会被记为补偿失败，而不是覆盖新数据。
+    """
     material_id = str(before_material.get("_id") or "")
     try:
         material_oid = before_material["_id"]
         restore_material = {
-            key: value for key, value in before_material.items() if key != "_id"
+            key: value for key, value in before_material.items() if key not in ("_id", "fence_token")
         }
+        restore_material.update(fence_set(fence))
         await service._materials().replace_one(
-            {"_id": material_oid},
+            {"_id": material_oid, **fence_filter(fence)},
             restore_material,
             upsert=True,
         )
@@ -652,8 +705,11 @@ async def _compensate_delete_failure(
                     upsert=True,
                 )
         if material_id:
+            # 与刚恢复到库里的文档一致：编号是恢复时写入的本租约编号，不是快照里的旧编号。
             await _index_material_document(
-                service, material_id, _material_index_body(before_material)
+                service,
+                material_id,
+                _material_index_body({**before_material, **fence_set(fence)}),
             )
         names = (
             await _content_form_names(service, before_material) if locale_rows else {}
@@ -722,6 +778,7 @@ async def _sync_after_write(
     recompute_locale_vector: bool,
     create: bool = False,
     touch_material: bool = True,
+    fence: int | None = None,
 ) -> None:
     es_search = getattr(service, "_es_search", None)
     if es_search is None:
@@ -731,7 +788,9 @@ async def _sync_after_write(
         if create:
             await _index_material_document(service, material_id, body)
         else:
-            await _patch_material_index(service, material_id, body, changed=changed)
+            await _patch_material_index(
+                service, material_id, body, changed=changed, fence=fence
+            )
     tags_changed = "content_form_tags" in changed
     index_locales = bool(
         wrote_locale is not None and str(wrote_locale.get("language") or "").strip()
@@ -773,6 +832,7 @@ async def _patch_material_index(
     body: dict[str, Any],
     *,
     changed: set[str],
+    fence: int | None = None,
 ) -> None:
     es_search = service._es_search
     fields = {
@@ -794,11 +854,17 @@ async def _patch_material_index(
             doc_id=material_id,
             fields=fields,
             remove=[],
+            guard=_es_guard("fence_token", fence),
         )
     except Exception as exc:
         raise RuntimeError(f"检索索引写入失败：{exc}") from exc
     if not updated:
         await _index_material_document(service, material_id, body)
+
+
+def _es_guard(field: str, value: int | None) -> tuple[str, int] | None:
+    """ES 文档上记录的编号比本次大时，局部更新直接 noop，防止旧写入盖掉新写入。"""
+    return None if value is None else (field, value)
 
 
 def _material_index_body(material: dict[str, Any]) -> dict[str, Any]:
@@ -1138,21 +1204,33 @@ async def _patch_document(
     doc_id: str,
     fields: dict[str, Any],
     remove: list[str],
+    guard: tuple[str, int] | None = None,
 ) -> bool:
-    """局部更新。文档不存在时返回 False，调用方再整份写入。"""
+    """局部更新。文档不存在时返回 False，调用方再整份写入。
+
+    guard=(字段名, 编号)：文档上该字段已大于编号时整次更新 noop，并把字段写成编号。
+    """
     try:
-        if remove:
+        if remove or guard is not None:
+            body = (
+                "for (change in params.fields.entrySet()) {"
+                " ctx._source[change.getKey()] = change.getValue(); }"
+                " for (field in params.remove) { ctx._source.remove(field); }"
+            )
+            params: dict[str, Any] = {"fields": fields, "remove": remove}
+            if guard is not None:
+                params["guard_field"], params["guard_value"] = guard
+                body = (
+                    "if (ctx._source[params.guard_field] != null"
+                    " && ctx._source[params.guard_field] > params.guard_value) {"
+                    " ctx.op = 'noop'; } else { "
+                    + body
+                    + " ctx._source[params.guard_field] = params.guard_value; }"
+                )
             await client.update(
                 index=index,
                 id=doc_id,
-                script={
-                    "source": (
-                        "for (change in params.fields.entrySet()) {"
-                        " ctx._source[change.getKey()] = change.getValue(); }"
-                        " for (field in params.remove) { ctx._source.remove(field); }"
-                    ),
-                    "params": {"fields": fields, "remove": remove},
-                },
+                script={"source": body, "params": params},
                 retry_on_conflict=3,
             )
         else:

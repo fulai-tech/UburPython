@@ -237,7 +237,7 @@ async def test_update_name_recomputes_and_status_keeps_vector(monkeypatch) -> No
     assert paused[0]["ok"] is True
     service._encoder.encode_one.assert_not_called()
     service._es_search._client.index.assert_not_called()
-    kept = service._es_search._client.update.await_args.kwargs["doc"]
+    kept = service._es_search._client.update.await_args.kwargs["script"]["params"]["fields"]
     assert kept["status"] == "停用"
     assert "name_vector" not in kept
     assert "name_en_vector" not in kept
