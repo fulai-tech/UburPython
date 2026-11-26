@@ -11,9 +11,11 @@ from app.server.somni.report.calc import (
     STAGE_REM,
     align_weekly_days,
     allocate_percentages,
+    as_ms,
     baseline_start,
     coerce_datetime,
     default_week_bounds,
+    epoch_ms,
     floor_avg,
     floor_metric_stats,
     format_collected_at,
@@ -144,6 +146,18 @@ def test_coerce_datetime_and_format_string() -> None:
         "2026-08-09T15:30:00+00:00", timezone_name="Not/AZone"
     ) == ("2026-08-09T23:30:00+08:00")
     assert format_collected_at("bad") == ""
+
+
+def test_epoch_ms_rejects_non_finite_numbers() -> None:
+    assert epoch_ms(float("nan")) == 0
+    assert epoch_ms(float("inf")) == 0
+    assert epoch_ms(float("-inf")) == 0
+
+
+def test_as_ms_rejects_non_finite_numbers() -> None:
+    assert as_ms(float("nan")) == 0
+    assert as_ms(float("inf")) == 0
+    assert as_ms(float("-inf")) == 0
 
 
 def test_weekly_day_metric_from_record() -> None:
@@ -382,7 +396,7 @@ def test_sleep_structure_percent_uses_stage_minutes_not_tib() -> None:
     assert structure["deep_sleep"] == {"minutes": 70, "percent": 14}
 
 
-def test_sleep_quality_wake_to_leave_bed_uses_last_on_bed_to_minus_last_awake_start() -> None:
+def test_sleep_quality_reports_bedtime_and_efficiency() -> None:
     on_bed = [
         {"from": 1_000_000, "to": 1_600_000, "duration_ms": 600_000},
         {"from": 2_000_000, "to": 3_200_000, "duration_ms": 1_200_000},
@@ -416,14 +430,84 @@ def test_sleep_quality_wake_to_leave_bed_uses_last_on_bed_to_minus_last_awake_st
     quality = sleep_quality_from_session(on_bed, segments, timezone_name="UTC")
     assert quality["time_in_bed_minutes"] == 30
     assert quality["sleep_onset_latency_minutes"] == 5  # 300000ms
-    # 醒后到离床 = last on_bed.to(3200000) - last awake start(2500000) = 700000ms → 11
-    assert quality["wake_to_leave_bed_minutes"] == 11
+    # 未提供最后一条睡眠遥测时，觉后清醒为 0
+    assert quality["wake_to_leave_bed_minutes"] == 0
     assert quality["bedtime"] == "00:16"
     assert quality["wake_up_time"] == "00:53"
     assert quality["sleep_efficiency"] == 76  # TST 23 / TIB 30
     sh = sleep_quality_from_session(on_bed, segments, timezone_name="Asia/Shanghai")
     assert sh["bedtime"] == "08:16"
     assert sh["wake_up_time"] == "08:53"
+
+
+def _quiet_sample(ts: int, presence: int = 1, distance: float = 80) -> dict:
+    return {"ts": ts, "motion": 1, "presence": presence, "distance": distance}
+
+
+def _leave_bed_window(start: int) -> list[dict]:
+    """从 start 起每 5 秒一条，覆盖满 1 分钟，距离跳变且含动作。"""
+    samples = []
+    for index in range(13):
+        samples.append(
+            {
+                "ts": start + index * 5_000,
+                "motion": 4 if index == 1 else 1,
+                "presence": 1,
+                "distance": 40 if index < 6 else 120,
+            }
+        )
+    return samples
+
+
+def test_wake_to_leave_bed_uses_document_out_bed_time() -> None:
+    """觉后清醒 = 文档离床时刻 − 最后一个睡眠段结束。"""
+    on_bed = [{"from": 1_000_000, "to": 4_000_000, "duration_ms": 3_000_000}]
+    light_end = 2_620_000 + 480_000
+    segments = [
+        {
+            "stage": STAGE_AWAKE,
+            "stage_name": "AWAKE",
+            "duration_ms": 120_000,
+            "start_ts_ms": 2_500_000,
+        },
+        {
+            "stage": STAGE_LIGHT,
+            "stage_name": "LIGHT",
+            "duration_ms": 480_000,
+            "start_ts_ms": 2_620_000,
+        },
+    ]
+    assert sleep_quality_from_session(on_bed, segments)["wake_to_leave_bed_minutes"] == 0
+
+    absent = sleep_quality_from_session(
+        on_bed,
+        segments,
+        sleep_samples=[
+            _quiet_sample(light_end - 5_000, presence=1),
+            _quiet_sample(light_end + 12 * 60_000, presence=0),
+        ],
+    )
+    assert absent["wake_to_leave_bed_minutes"] == 12
+
+    jumped = sleep_quality_from_session(
+        on_bed,
+        segments,
+        sleep_samples=[
+            *_leave_bed_window(light_end + 3 * 60_000),
+            _quiet_sample(light_end + 20 * 60_000, presence=0),
+        ],
+    )
+    assert jumped["wake_to_leave_bed_minutes"] == 3
+
+    tail = sleep_quality_from_session(
+        on_bed,
+        segments,
+        sleep_samples=[
+            _quiet_sample(light_end + 60_000, presence=1),
+            _quiet_sample(light_end + 8 * 60_000, presence=1),
+        ],
+    )
+    assert tail["wake_to_leave_bed_minutes"] == 8
 
 
 def test_sleep_efficiency_pads_on_bed_when_shorter_than_stage_timeline() -> None:
@@ -462,7 +546,7 @@ def test_sleep_efficiency_pads_on_bed_when_shorter_than_stage_timeline() -> None
 
 
 def test_wake_up_time_pads_when_on_bed_ends_before_stages() -> None:
-    """on_bed 在 01:28 断档、分期仍到 08:20 时，wake_up / 醒后离床按分期末尾。"""
+    """on_bed 在 01:28 断档、分期仍到 08:20 时，wake_up 对齐分期末尾。"""
     bed_from = int(datetime(2026, 11, 19, 15, 10, tzinfo=UTC).timestamp() * 1000)
     on_bed_end = int(datetime(2026, 11, 19, 17, 28, tzinfo=UTC).timestamp() * 1000)
     stage_end = int(datetime(2026, 11, 20, 0, 20, tzinfo=UTC).timestamp() * 1000)
@@ -491,8 +575,7 @@ def test_wake_up_time_pads_when_on_bed_ends_before_stages() -> None:
     quality = sleep_quality_from_session(on_bed, segments, timezone_name="Asia/Shanghai")
     assert quality["bedtime"] == "23:10"
     assert quality["wake_up_time"] == "08:20"
-    # 07:53 → 08:20 = 27 分钟
-    assert quality["wake_to_leave_bed_minutes"] == 27
+    assert quality["wake_to_leave_bed_minutes"] == 0
 
 
 def test_sleep_efficiency_does_not_pad_when_stage_ends_before_on_bed() -> None:

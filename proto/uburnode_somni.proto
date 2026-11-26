@@ -164,7 +164,7 @@ message SleepQuality {
   int32 sleep_efficiency = 3;
   string bedtime = 4;
   string wake_up_time = 5;
-  int32 wake_to_leave_bed_minutes = 6;
+  int32 wake_to_leave_bed_minutes = 6;  // 离床时刻 − 最后一个睡眠段结束。离床：T_off 后距离跳变且有动作的首段起点，否则首次无人，再否则最后一条数据
 }
 
 message GetSleepQualityRes {
