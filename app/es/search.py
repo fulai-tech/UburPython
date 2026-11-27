@@ -785,7 +785,10 @@ class EsSearch:
                 "size": fetch_size,
                 "query": {
                     "bool": {
-                        "filter": [{"term": {"language": lang}}],
+                        "filter": [
+                            {"term": {"language": lang}},
+                            locale_enabled_material_filter(),
+                        ],
                         "must": [build_bm25_must_clause("description_text", query_text)],
                     }
                 },
@@ -821,6 +824,7 @@ class EsSearch:
         filters: list[dict[str, Any]] = [
             {"term": {"language": lang}},
             {"exists": {"field": vector_field}},
+            locale_enabled_material_filter(),
         ]
         response = await self._client.search(
             index=self._material_locales_index,
@@ -870,6 +874,7 @@ class EsSearch:
                                 "filter": [
                                     {"term": {"language": lang}},
                                     {"exists": {"field": vector_field}},
+                                    locale_enabled_material_filter(),
                                 ]
                             }
                         },
@@ -1131,6 +1136,19 @@ _LOCALE_SOURCE_INCLUDES = (
     "audio_url",
     "cover_url",
 )
+
+
+def locale_enabled_material_filter() -> dict[str, Any]:
+    """召回时排除停用原料。没有 material_status 的旧文档仍可被搜到。"""
+    return {
+        "bool": {
+            "should": [
+                {"term": {"material_status": True}},
+                {"bool": {"must_not": [{"exists": {"field": "material_status"}}]}},
+            ],
+            "minimum_should_match": 1,
+        }
+    }
 
 
 def _locale_fetch_size(wanted: int) -> int:

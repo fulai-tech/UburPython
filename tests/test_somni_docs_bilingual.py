@@ -1,12 +1,16 @@
 """双语混合文本与检索语言解析。"""
 
 from app.es.somni_docs import (
+    build_locale_description_text,
     build_material_description_text,
     build_material_description_text_en,
+    build_tag_name_by_code_language,
     description_text_field,
     description_vector_field,
+    locale_source_for_es,
     locale_vector_field,
     material_source_for_es,
+    material_tag_labels_from_dictionary,
     resolve_locale_language,
     resolve_query_language,
     resolve_search_language,
@@ -97,3 +101,105 @@ def test_description_fields_by_language() -> None:
     assert description_vector_field("en", override="description_vector") == (
         "description_vector"
     )
+
+
+def test_locale_description_text_uses_title_and_enabled_tag_names() -> None:
+    name_by = build_tag_name_by_code_language(
+        [
+            {"type": "content_form", "status": "启用", "code": "voice_guidance", "language": "zh", "name": "人声引导"},
+            {"type": "content_form", "status": "启用", "code": "voice_guidance", "language": "en", "name": "Voice Guidance"},
+            {"type": "content_form", "status": "启用", "code": "breathing_guidance", "language": "zh", "name": "呼吸引导"},
+            {"type": "content_form", "status": "停用", "code": "wave", "language": "zh", "name": "海浪"},
+            {"type": "mechanism", "status": "启用", "code": "voice_guidance", "language": "zh", "name": "作用机制"},
+        ]
+    )
+    material = {
+        "content_form_tags": [
+            {"code": "voice_guidance"},
+            {"code": "breathing_guidance"},
+            {"code": "wave"},
+        ]
+    }
+    zh_labels = material_tag_labels_from_dictionary(
+        material, language="zh", name_by_code_lang=name_by
+    )
+    en_labels = material_tag_labels_from_dictionary(
+        material, language="en", name_by_code_lang=name_by
+    )
+    assert zh_labels == ["人声引导", "呼吸引导"]
+    assert en_labels == ["Voice Guidance"]
+
+    text = build_locale_description_text(
+        {
+            "audio_name": "延长呼气呼吸引导",
+            "description": "旁白引导呼吸",
+            "summary": "短描述",
+        },
+        tag_labels=zh_labels,
+    )
+    assert text == "延长呼气呼吸引导 人声引导 呼吸引导"
+    assert "旁白引导呼吸" not in text
+    assert "短描述" not in text
+
+    source = locale_source_for_es(
+        {
+            "material_id": "m1",
+            "language": "zh",
+            "audio_name": "延长呼气呼吸引导",
+            "description": "旁白引导呼吸",
+        },
+        tag_labels=zh_labels,
+        material_status=False,
+    )
+    assert source is not None
+    assert source["description_text"] == "延长呼气呼吸引导 人声引导 呼吸引导"
+    assert source["material_status"] is False
+
+
+def test_ambiguous_content_form_name_is_skipped_unless_tag_id_matches() -> None:
+    name_by = build_tag_name_by_code_language(
+        [
+            {
+                "_id": "light",
+                "type": "content_form",
+                "status": "启用",
+                "code": "rain",
+                "language": "zh",
+                "name": "小雨",
+            },
+            {
+                "_id": "heavy",
+                "type": "content_form",
+                "status": "启用",
+                "code": "rain",
+                "language": "zh",
+                "name": "暴雨",
+            },
+            {
+                "_id": "rain-en",
+                "type": "content_form",
+                "status": "启用",
+                "code": "rain",
+                "language": "en",
+                "name": "Rain",
+            },
+        ]
+    )
+    skipped = material_tag_labels_from_dictionary(
+        {"content_form_tags": [{"code": "rain"}]},
+        language="zh",
+        name_by_code_lang=name_by,
+    )
+    chosen = material_tag_labels_from_dictionary(
+        {"content_form_tags": [{"tag_id": "heavy", "code": "rain"}]},
+        language="zh",
+        name_by_code_lang=name_by,
+    )
+    english = material_tag_labels_from_dictionary(
+        {"content_form_tags": [{"tag_id": "heavy", "code": "rain"}]},
+        language="en",
+        name_by_code_lang=name_by,
+    )
+    assert skipped == []
+    assert chosen == ["暴雨"]
+    assert english == ["Rain"]

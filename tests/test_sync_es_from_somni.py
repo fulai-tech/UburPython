@@ -11,6 +11,7 @@ from bson import ObjectId
 
 from app.core.config import Settings
 from scripts.sync_es_from_somni import (
+    LocalesSyncJob,
     MaterialsSyncJob,
     MongoEsSyncJob,
     MongoSource,
@@ -235,6 +236,57 @@ def _locale_doc(material_id: str, *, language: str = "zh") -> dict:
         "audio_name": "测试音频",
         "audio_url": "https://cdn.example.com/a.mp3",
     }
+
+
+@pytest.mark.asyncio
+async def test_locale_sync_writes_material_status(tmp_path) -> None:
+    enabled_id = "6a33a7928030d4cf420efeb6"
+    disabled_id = "6a33a7928030d4cf420efeb7"
+    mongo = MagicMock()
+    mongo.fetch_locales = AsyncMock(
+        return_value=[_locale_doc(enabled_id), _locale_doc(disabled_id)]
+    )
+    mongo.fetch_material_locale_facts = AsyncMock(
+        return_value=(
+            {enabled_id: True, disabled_id: False},
+            {
+                enabled_id: {"content_form_tags": [{"code": "rain"}, {"code": "wave"}]},
+                disabled_id: {"content_form_tags": [{"code": "rain"}]},
+            },
+        )
+    )
+    mongo.fetch_tag_dictionary = AsyncMock(
+        return_value=[
+            {"type": "content_form", "status": "启用", "code": "rain", "language": "zh", "name": "雨声"},
+            {"type": "content_form", "status": "停用", "code": "wave", "language": "zh", "name": "海浪"},
+        ]
+    )
+    es_search = MagicMock()
+    es_search.material_locales_index = "somni_audio_material_locales"
+    es_search.ensure_indices = AsyncMock()
+    es_client = MagicMock()
+    es_client.indices.exists = AsyncMock(return_value=False)
+    es_client.index = AsyncMock()
+    encoder = MagicMock()
+    encoder.encode_one = AsyncMock(return_value=[0.1] * 512)
+
+    stats = await LocalesSyncJob(
+        mongo,
+        es_search,
+        es_client,
+        encoder,
+        Settings(sync_backup_dir=str(tmp_path)),
+    ).run(dry_run=False)
+
+    assert stats["created"] == 2
+    indexed = {
+        call.kwargs["document"]["material_id"]: call.kwargs["document"]
+        for call in es_client.index.await_args_list
+    }
+    assert indexed[enabled_id]["material_status"] is True
+    assert indexed[disabled_id]["material_status"] is False
+    assert indexed[enabled_id]["description_text"] == "测试音频 雨声"
+    assert "海浪" not in indexed[enabled_id]["description_text"]
 
 
 @pytest.mark.asyncio
