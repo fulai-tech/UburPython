@@ -766,7 +766,9 @@ async def test_create_rolls_back_mongo_when_es_index_fails(monkeypatch) -> None:
     assert "es down" in results[0]["message"]
     service.collection.delete_one.assert_awaited()
     assert service.collection.delete_one.await_args.args[0]["_id"] == inserted
-    service.locales.delete_many.assert_awaited_with({"material_id": str(inserted)})
+    service.locales.delete_many.assert_awaited_with(
+        {"material_id": str(inserted), "fence_token": None}
+    )
 
 
 @pytest.mark.asyncio
@@ -854,7 +856,9 @@ async def test_create_rolls_back_when_insert_await_is_cancelled(monkeypatch) -> 
         )
 
     assert isinstance(inserted_doc["_id"], ObjectId)
-    service.collection.delete_one.assert_awaited_once_with({"_id": inserted_doc["_id"]})
+    service.collection.delete_one.assert_awaited_once_with(
+        {"_id": inserted_doc["_id"], "fence_token": None}
+    )
 
 
 @pytest.mark.asyncio
@@ -886,7 +890,9 @@ async def test_create_reports_id_when_insert_error_compensation_fails(monkeypatc
 
     assert results[0]["ok"] is False
     assert results[0]["id"] == str(inserted_doc["_id"])
-    service.collection.delete_one.assert_awaited_once_with({"_id": inserted_doc["_id"]})
+    service.collection.delete_one.assert_awaited_once_with(
+        {"_id": inserted_doc["_id"], "fence_token": None}
+    )
 
 
 @pytest.mark.asyncio

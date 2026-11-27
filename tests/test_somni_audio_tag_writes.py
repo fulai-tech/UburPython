@@ -514,7 +514,9 @@ async def test_create_tag_rolls_back_when_cancelled_after_insert(monkeypatch) ->
             ],
         )
 
-    service.collection.delete_one.assert_awaited_once_with({"_id": inserted})
+    service.collection.delete_one.assert_awaited_once_with(
+        {"_id": inserted, "version": 0}
+    )
 
 
 @pytest.mark.asyncio
@@ -547,7 +549,9 @@ async def test_create_tag_rolls_back_when_insert_await_is_cancelled(monkeypatch)
         )
 
     assert isinstance(inserted_doc["_id"], ObjectId)
-    service.collection.delete_one.assert_awaited_once_with({"_id": inserted_doc["_id"]})
+    service.collection.delete_one.assert_awaited_once_with(
+        {"_id": inserted_doc["_id"], "version": 0}
+    )
 
 
 @pytest.mark.asyncio
@@ -582,7 +586,9 @@ async def test_create_tag_reports_id_when_insert_error_compensation_fails(
 
     assert results[0]["ok"] is False
     assert results[0]["id"] == str(inserted_doc["_id"])
-    service.collection.delete_one.assert_awaited_once_with({"_id": inserted_doc["_id"]})
+    service.collection.delete_one.assert_awaited_once_with(
+        {"_id": inserted_doc["_id"], "version": 0}
+    )
 
 
 @pytest.mark.asyncio
@@ -613,8 +619,13 @@ async def test_update_tag_restores_snapshot_when_cancelled(monkeypatch) -> None:
             [{"id": str(tag_id), "fields": {"name": "环境噪音遮蔽"}}],
         )
 
-    service.collection.replace_one.assert_awaited_once()
-    assert service.collection.replace_one.await_args.args[0]["_id"] == tag_id
+    reverts = [
+        call.args
+        for call in service.collection.update_one.await_args_list
+        if call.args[0].get("_id") == tag_id and "_ops.name" in call.args[0]
+    ]
+    assert len(reverts) == 1
+    assert reverts[0][1]["$set"] == {"name": "噪音遮蔽"}
 
 
 @pytest.mark.asyncio
@@ -644,8 +655,13 @@ async def test_update_tag_restores_snapshot_when_mongo_await_is_cancelled(
             [{"id": str(tag_id), "fields": {"name": "环境噪音遮蔽"}}],
         )
 
-    service.collection.replace_one.assert_awaited_once()
-    assert service.collection.replace_one.await_args.args[0]["_id"] == tag_id
+    reverts = [
+        call.args
+        for call in service.collection.update_one.await_args_list
+        if call.args[0].get("_id") == tag_id and "_ops.name" in call.args[0]
+    ]
+    assert len(reverts) == 1
+    assert reverts[0][1]["$set"] == {"name": "噪音遮蔽"}
 
 
 @pytest.mark.asyncio
@@ -672,9 +688,8 @@ async def test_delete_tag_restores_snapshot_when_cancelled(monkeypatch) -> None:
     with pytest.raises(asyncio.CancelledError):
         await delete_audio_tags(service, [{"id": str(tag_id)}])
 
-    service.collection.replace_one.assert_awaited_once()
-    assert service.collection.replace_one.await_args.args[0]["_id"] == tag_id
-    assert service.collection.replace_one.await_args.kwargs["upsert"] is True
+    service.collection.insert_one.assert_awaited_once()
+    assert service.collection.insert_one.await_args.args[0]["_id"] == tag_id
 
 
 @pytest.mark.asyncio
@@ -701,9 +716,8 @@ async def test_delete_tag_restores_snapshot_when_mongo_await_is_cancelled(
     with pytest.raises(asyncio.CancelledError):
         await delete_audio_tags(service, [{"id": str(tag_id)}])
 
-    service.collection.replace_one.assert_awaited_once()
-    assert service.collection.replace_one.await_args.args[0]["_id"] == tag_id
-    assert service.collection.replace_one.await_args.kwargs["upsert"] is True
+    service.collection.insert_one.assert_awaited_once()
+    assert service.collection.insert_one.await_args.args[0]["_id"] == tag_id
 
 
 @pytest.mark.asyncio
@@ -731,9 +745,8 @@ async def test_delete_tag_restores_mongo_when_es_fails(monkeypatch) -> None:
 
     assert results[0]["ok"] is False
     assert "es down" in results[0]["message"]
-    service.collection.replace_one.assert_awaited()
-    assert service.collection.replace_one.await_args.args[0]["_id"] == tag_id
-    assert service.collection.replace_one.await_args.kwargs["upsert"] is True
+    service.collection.insert_one.assert_awaited()
+    assert service.collection.insert_one.await_args.args[0]["_id"] == tag_id
 
 
 @pytest.mark.asyncio
@@ -781,7 +794,7 @@ async def test_tag_update_refreshes_locales_again_after_rollback(monkeypatch) ->
     )
 
     assert results[0]["ok"] is False
-    assert events == ["refresh", "restore", "refresh"]
+    assert events == ["refresh", "refresh"]
 
 
 @pytest.mark.asyncio

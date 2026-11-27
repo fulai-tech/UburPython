@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 from typing import Any
 
 from bson import ObjectId
@@ -14,7 +15,14 @@ from pymongo.errors import DuplicateKeyError
 from app.cache.somni_audio_catalog_cache import clear_somni_audio_catalog_cache
 from app.core.bson_util import bson_to_jsonable, utc_now
 from app.core.exceptions import AppError
-from app.server.somni.audio.writes import refresh_locales_for_content_codes
+from app.server.somni.audio.index_queue import fence_filter, fence_set, material_index_turn
+from app.server.somni.audio.writes import (
+    StaleLeaseError,
+    _clear_own_delete_tombstone,
+    _is_superseded_by_newer_delete,
+    _record_delete_tombstone,
+    refresh_locales_for_content_codes,
+)
 
 _FIELDS = (
     "type",
@@ -112,35 +120,54 @@ async def _create_one(service: Any, fields: dict[str, Any]) -> str:
         doc["locale_refresh_pending"] = True
     tag_oid = ObjectId()
     doc["_id"] = tag_oid
-    try:
-        result = await service._tags().insert_one(doc)
-    except asyncio.CancelledError:
-        _clear_cancellation()
-        await _compensate_create_failure(service, str(tag_oid), doc)
-        raise
-    except DuplicateKeyError as exc:
-        raise ValueError("标签已存在：type + code + language") from exc
-    except Exception as exc:
-        compensated = await _compensate_create_failure(service, str(tag_oid), doc)
-        if not compensated:
-            raise TagCreateUncertainError(str(tag_oid), exc) from exc
-        raise
-    tag_id = str(result.inserted_id)
-    saved = {**doc, "_id": result.inserted_id}
-    try:
-        await _index_tag(service, tag_id, saved)
-        await _refresh_content_labels(service, saved)
-        await _clear_locale_refresh_pending(service, result.inserted_id, saved)
-    except asyncio.CancelledError:
-        _clear_cancellation()
-        await _compensate_create_failure(service, tag_id, saved)
-        raise
-    except Exception as exc:
-        compensated = await _compensate_create_failure(service, tag_id, saved)
-        if not compensated:
-            raise TagCreateUncertainError(tag_id, exc) from exc
-        raise
-    return tag_id
+    # 与更新、删除共用同一把锁，避免创建还在写索引时，更新先成功又被创建时的文档盖掉。
+    async with material_index_turn(service, _tag_key(str(tag_oid))) as fence:
+        if fence is not None:
+            doc["fence_token"] = fence
+        try:
+            result = await service._tags().insert_one(doc)
+        except asyncio.CancelledError:
+            _clear_cancellation()
+            await _compensate_create_failure(service, str(tag_oid), doc, fence=fence)
+            raise
+        except DuplicateKeyError as exc:
+            raise ValueError("标签已存在：type + code + language") from exc
+        except Exception as exc:
+            compensated = await _compensate_create_failure(
+                service, str(tag_oid), doc, fence=fence
+            )
+            if not compensated:
+                raise TagCreateUncertainError(str(tag_oid), exc) from exc
+            raise
+        tag_id = str(result.inserted_id)
+        saved = {**doc, "_id": result.inserted_id}
+        try:
+            still_ours = await _index_tag(service, tag_id, saved)
+            if not still_ours:
+                # 租约已被接管：文档还在就留下新请求的内容，不再清待刷新标记。
+                current = await service._tags().find_one({"_id": result.inserted_id})
+                if current is None:
+                    raise ValueError(f"标签创建未完成：{tag_id}")
+                return tag_id
+            await _refresh_content_labels(service, saved)
+            await _clear_locale_refresh_pending(service, result.inserted_id, saved)
+        except asyncio.CancelledError:
+            _clear_cancellation()
+            await _compensate_create_failure(service, tag_id, saved, fence=fence)
+            raise
+        except Exception as exc:
+            compensated = await _compensate_create_failure(
+                service, tag_id, saved, fence=fence
+            )
+            if not compensated:
+                raise TagCreateUncertainError(tag_id, exc) from exc
+            raise
+        return tag_id
+
+
+def _tag_key(tag_id: str) -> str:
+    """标签写入的串行键与墓碑键；与原料键加前缀隔开。"""
+    return f"tag:{tag_id}"
 
 
 async def _update_one(service: Any, tag_id: str, fields: dict[str, Any]) -> None:
@@ -149,6 +176,18 @@ async def _update_one(service: Any, tag_id: str, fields: dict[str, Any]) -> None
     _reject_blank_identity(payload)
     if not payload:
         raise ValueError("没有要更新的字段")
+    # 同一标签的 Mongo 写、ES 补丁、补偿按顺序进行，ES 版本号与 Mongo 版本号一致。
+    async with material_index_turn(service, _tag_key(tag_id)) as fence:
+        await _update_one_locked(service, tag_id, oid, payload, fence)
+
+
+async def _update_one_locked(
+    service: Any,
+    tag_id: str,
+    oid: ObjectId,
+    payload: dict[str, Any],
+    fence: int | None,
+) -> None:
     before = await service._tags().find_one({"_id": oid})
     if before is None:
         raise ValueError(f"标签不存在：{tag_id}")
@@ -166,37 +205,29 @@ async def _update_one(service: Any, tag_id: str, fields: dict[str, Any]) -> None
     # 版本号 CAS：只有库里仍是读到的那一版才写入，并把版本 +1。
     # 老数据没有 version 字段时 filter 写 None，可同时匹配缺失和 null。
     base_version = before.get("version")
-    written_version = int(base_version or 0) + 1
-    payload["version"] = written_version
+    payload["version"] = int(base_version or 0) + 1
     written_fields = _own_fields(payload)
+    # 每笔写入一个唯一操作 ID，并按字段记在 _ops 上。补偿时只撤销仍由本笔占有的字段。
+    op = uuid.uuid4().hex
+    update_set = {**payload, **fence_set(fence), **_ownership(written_fields, op)}
     saved = before
     try:
         saved = await service._tags().find_one_and_update(
-            {"_id": oid, "version": base_version},
-            {"$set": payload},
+            {"_id": oid, "version": base_version, **fence_filter(fence)},
+            {"$set": update_set},
             return_document=ReturnDocument.AFTER,
         )
     except asyncio.CancelledError:
         _clear_cancellation()
         await _compensate_update_failure(
-            service,
-            tag_id,
-            before=before,
-            after=saved,
-            written_version=written_version,
-            written_fields=written_fields,
+            service, tag_id, before=before, after=saved, op=op, written_fields=written_fields
         )
         raise
     except DuplicateKeyError as exc:
         raise ValueError("标签已存在：type + code + language") from exc
     except Exception:
         await _compensate_update_failure(
-            service,
-            tag_id,
-            before=before,
-            after=saved,
-            written_version=written_version,
-            written_fields=written_fields,
+            service, tag_id, before=before, after=saved, op=op, written_fields=written_fields
         )
         raise
     if saved is None:
@@ -215,51 +246,62 @@ async def _update_one(service: Any, tag_id: str, fields: dict[str, Any]) -> None
     except asyncio.CancelledError:
         _clear_cancellation()
         await _compensate_update_failure(
-            service,
-            tag_id,
-            before=before,
-            after=saved,
-            written_version=written_version,
-            written_fields=written_fields,
+            service, tag_id, before=before, after=saved, op=op, written_fields=written_fields
         )
         raise
     except Exception:
         await _compensate_update_failure(
-            service,
-            tag_id,
-            before=before,
-            after=saved,
-            written_version=written_version,
-            written_fields=written_fields,
+            service, tag_id, before=before, after=saved, op=op, written_fields=written_fields
         )
         raise
 
 
 async def _delete_one(service: Any, tag_id: str) -> None:
     oid = _parse_id(tag_id)
+    async with material_index_turn(service, _tag_key(tag_id)) as fence:
+        await _delete_one_locked(service, tag_id, oid, fence)
+
+
+async def _delete_one_locked(
+    service: Any,
+    tag_id: str,
+    oid: ObjectId,
+    fence: int | None,
+) -> None:
     before = await service._tags().find_one({"_id": oid})
+    key = _tag_key(tag_id)
     if before is None:
+        # 已被前序请求删除：仍记墓碑，阻止更旧删除的补偿把标签插回。
+        await _record_delete_tombstone(service, key, fence)
         raise ValueError(f"标签不存在：{tag_id}")
+    if fence is not None and int(before.get("fence_token") or 0) > fence:
+        raise StaleLeaseError(f"标签已被更新的租约接管，写入被拒绝：{tag_id}")
+    # 先记墓碑：之后任何旧删除的补偿都能认出"已被更新的删除接管"，不再复活标签。
+    await _record_delete_tombstone(service, key, fence)
     try:
-        result = await service._tags().delete_one({"_id": oid})
+        result = await service._tags().delete_one({"_id": oid, **fence_filter(fence)})
     except asyncio.CancelledError:
         _clear_cancellation()
-        await _compensate_delete_failure(service, before)
+        await _compensate_delete_failure(service, tag_id, before, fence=fence)
         raise
     except Exception:
-        await _compensate_delete_failure(service, before)
+        await _compensate_delete_failure(service, tag_id, before, fence=fence)
         raise
     if result.deleted_count == 0:
-        raise ValueError(f"标签不存在：{tag_id}")
+        await _clear_own_delete_tombstone(service, key, fence)
+        still = await service._tags().find_one({"_id": oid})
+        if still is None:
+            raise ValueError(f"标签不存在：{tag_id}")
+        raise StaleLeaseError(f"标签已被更新的租约接管，写入被拒绝：{tag_id}")
     try:
         await _delete_index(service, tag_id)
         await _refresh_content_labels(service, before)
     except asyncio.CancelledError:
         _clear_cancellation()
-        await _compensate_delete_failure(service, before)
+        await _compensate_delete_failure(service, tag_id, before, fence=fence)
         raise
     except Exception:
-        await _compensate_delete_failure(service, before)
+        await _compensate_delete_failure(service, tag_id, before, fence=fence)
         raise
 
 
@@ -378,7 +420,16 @@ def _clear_cancellation() -> None:
 
 def _tag_source(doc: dict[str, Any]) -> dict[str, Any]:
     payload = bson_to_jsonable(doc)
-    for key in ("_id", "id", "name_en", "name_vector", "name_en_vector", "locale_refresh_pending"):
+    for key in (
+        "_id",
+        "id",
+        "name_en",
+        "name_vector",
+        "name_en_vector",
+        "locale_refresh_pending",
+        "_ops",
+        "fence_token",
+    ):
         payload.pop(key, None)
     parent = payload.pop("parent_id", None)
     payload.pop("parent_tag_id", None)
@@ -388,12 +439,25 @@ def _tag_source(doc: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
-async def _index_tag(service: Any, tag_id: str, doc: dict[str, Any]) -> None:
+async def _tag_version_not_superseded(service: Any, tag_id: str, version: int) -> bool:
+    """标签还在，且库里的版本不比本次快照更新，才允许整份写入 ES。"""
+    current = await service._tags().find_one({"_id": ObjectId(tag_id)})
+    if current is None:
+        return False
+    return int(current.get("version") or 0) <= version
+
+
+async def _index_tag(service: Any, tag_id: str, doc: dict[str, Any]) -> bool:
+    """整份写入标签索引。返回这次快照是否仍是库里的最新版本。"""
     es_search = getattr(service, "_es_search", None)
     if es_search is None:
-        return
+        return True
+    version = int(doc.get("version") or 0)
     payload = _tag_source(doc)
     _apply_tag_vector(payload, await _vector_for(service, tag_id, payload))
+    # 版本 0 是新建标签的默认版本，也要比较。算向量期间可能已被更新请求推进。
+    if not await _tag_version_not_superseded(service, tag_id, version):
+        return False
     try:
         await es_search._client.index(
             index=es_search.tag_dictionary_index,
@@ -402,6 +466,46 @@ async def _index_tag(service: Any, tag_id: str, doc: dict[str, Any]) -> None:
         )
     except Exception as exc:
         raise RuntimeError(f"标签索引写入失败：{exc}") from exc
+    if not await _tag_version_not_superseded(service, tag_id, version):
+        await _index_current_tag(service, tag_id)
+        return False
+    return True
+
+
+async def _index_current_tag(service: Any, tag_id: str) -> None:
+    """整份写入落地时版本已变：标签已删则删索引，否则按当前名字重算向量再整份写入。
+
+    向量算完后要再对一次版本。期间被改掉或删掉就重来，避免旧向量盖住新名字，
+    也避免把已经删除的标签重新写回索引。
+    """
+    es_search = getattr(service, "_es_search", None)
+    if es_search is None:
+        return
+    for _ in range(4):
+        current = await service._tags().find_one({"_id": ObjectId(tag_id)})
+        if current is None:
+            await _delete_index(service, tag_id)
+            return
+        version = int(current.get("version") or 0)
+        payload = _tag_source(current)
+        _apply_tag_vector(payload, await _vector_for(service, tag_id, payload))
+        if not await _tag_version_not_superseded(service, tag_id, version):
+            continue
+        try:
+            await es_search._client.index(
+                index=es_search.tag_dictionary_index,
+                id=tag_id,
+                document=payload,
+            )
+        except Exception as exc:
+            raise RuntimeError(f"标签索引写入失败：{exc}") from exc
+        if await _tag_version_not_superseded(service, tag_id, version):
+            return
+    current = await service._tags().find_one({"_id": ObjectId(tag_id)})
+    if current is None:
+        await _delete_index(service, tag_id)
+        return
+    raise RuntimeError("标签索引写入失败：版本持续变化")
 
 
 async def _patch_tag(
@@ -531,10 +635,20 @@ async def _delete_index(service: Any, tag_id: str) -> None:
 
 
 async def _compensate_create_failure(
-    service: Any, tag_id: str, doc: dict[str, Any]
+    service: Any,
+    tag_id: str,
+    doc: dict[str, Any],
+    *,
+    fence: int | None = None,
 ) -> bool:
+    """创建失败时只删除仍属于本次创建的文档。版本或租约编号已被推进则留下新数据。"""
     try:
-        await service._tags().delete_one({"_id": ObjectId(tag_id)})
+        version = int(doc.get("version") or 0)
+        result = await service._tags().delete_one(
+            {"_id": ObjectId(tag_id), "version": version, **fence_filter(fence)}
+        )
+        if not getattr(result, "deleted_count", 0):
+            return True
         await _delete_index(service, tag_id)
         await refresh_locales_for_content_codes(
             service,
@@ -561,26 +675,24 @@ async def _compensate_update_failure(
     *,
     before: dict[str, Any],
     after: dict[str, Any] | None,
-    written_version: int,
+    op: str,
     written_fields: dict[str, Any],
 ) -> None:
-    """更新失败的补偿。
+    """更新失败的补偿：只撤销本笔（op）仍占有的字段。
 
-    - 库里仍是本次写入的版本：整条回滚到 before，版本号 +1，让旧版本的写入再也匹配不上。
-    - 版本已被别的请求推进：整条回滚会抹掉对方的修改，只撤销本次改过、且仍是本次写入值的字段。
-    索引与检索文本最后都以数据库当前记录为准，不用快照。
+    - 字段的 _ops.<字段> 仍等于本笔操作 ID，说明这个字段最后一次由本笔写入，改回写入前的值。
+    - 字段已被别的请求写过（_ops 不再是本笔），或本笔根本没落库，都不动它。
+    - 版本号只增不减；索引与检索文本最后以数据库当前记录为准，不用快照。
     """
     try:
         oid = ObjectId(tag_id)
         tags = service._tags()
         codes = _content_codes(before) | _content_codes(after or {})
-        result = await tags.replace_one(
-            {"_id": oid, "version": written_version},
-            _restore_doc(before, written_version + 1, codes),
-        )
-        whole_restored = bool(getattr(result, "matched_count", 1))
-        if not whole_restored:
-            await _revert_own_fields(tags, oid, before, written_fields)
+        for name in written_fields:
+            await tags.update_one(
+                {"_id": oid, f"_ops.{name}": op},
+                {"$set": {name: before.get(name)}, "$unset": {f"_ops.{name}": ""}},
+            )
         current = await tags.find_one({"_id": oid})
         if current is not None:
             await _index_tag(service, tag_id, current)
@@ -589,54 +701,46 @@ async def _compensate_update_failure(
             codes,
             _content_ids(current) | _content_ids(after or {}),
         )
-        if codes and whole_restored:
-            await tags.update_one(
-                {"_id": oid, "version": written_version + 1},
-                {"$set": {"locale_refresh_pending": False}},
-            )
     except Exception as exc:
         logger.error("标签更新补偿失败，tag_id={}，原因：{}", tag_id, exc)
 
 
-def _restore_doc(before: dict[str, Any], version: int, codes: set[str]) -> dict[str, Any]:
-    restore = {key: value for key, value in before.items() if key not in ("_id", "version")}
-    restore["version"] = version
-    if codes:
-        restore["locale_refresh_pending"] = True
-    return restore
+def _ownership(written_fields: dict[str, Any], op: str) -> dict[str, str]:
+    """本笔写入对每个业务字段的归属标记，写成 _ops.<字段>。"""
+    return {f"_ops.{name}": op for name in written_fields}
 
 
-async def _revert_own_fields(
-    tags: Any,
-    oid: ObjectId,
+async def _compensate_delete_failure(
+    service: Any,
+    tag_id: str,
     before: dict[str, Any],
-    written_fields: dict[str, Any],
+    *,
+    fence: int | None = None,
 ) -> None:
-    """逐字段撤销：只有字段当前仍是本次写入的值时才改回原值，别人改过的字段保持不动。"""
-    for name, written_value in written_fields.items():
-        await tags.update_one(
-            {"_id": oid, name: written_value},
-            {"$set": {name: before.get(name)}},
-        )
+    """删除失败：只在标签确实不存在、且没有更新的删除接管时，才用快照插回去。
 
-
-async def _compensate_delete_failure(service: Any, before: dict[str, Any]) -> None:
-    tag_id = str(before.get("_id") or "")
+    插入而不是覆盖：库里已有同 _id 文档（例如别的请求刚编辑过）时直接放弃，不覆写。
+    """
     try:
-        tag_oid = before.get("_id")
+        if await _is_superseded_by_newer_delete(service, _tag_key(tag_id), fence):
+            return
         restored = {key: value for key, value in before.items() if key != "_id"}
+        restored.update(fence_set(fence))
         codes = _content_codes(before)
         if codes:
             restored["locale_refresh_pending"] = True
-        await service._tags().replace_one(
-            {"_id": tag_oid},
-            restored,
-            upsert=True,
-        )
-        if tag_id:
-            await _index_tag(service, tag_id, before)
+        try:
+            await service._tags().insert_one({"_id": before.get("_id"), **restored})
+        except DuplicateKeyError:
+            # 文档仍在：删除没有生效（或已被别人改过），保持现状。
+            return
+        # 插入与前面的检查之间可能已有更新的删除接管：复检后撤回自己刚插回的文档。
+        if await _is_superseded_by_newer_delete(service, _tag_key(tag_id), fence):
+            await service._tags().delete_one({"_id": before.get("_id"), **fence_filter(fence)})
+            return
+        await _index_tag(service, tag_id, before)
         await refresh_locales_for_content_codes(service, codes, _content_ids(before))
-        if codes and tag_id:
+        if codes:
             await service._tags().update_one(
                 {"_id": before.get("_id")},
                 {"$set": {"locale_refresh_pending": False}},
