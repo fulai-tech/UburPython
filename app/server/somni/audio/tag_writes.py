@@ -271,8 +271,10 @@ async def _delete_one_locked(
     before = await service._tags().find_one({"_id": oid})
     key = _tag_key(tag_id)
     if before is None:
-        # 已被前序请求删除：仍记墓碑，阻止更旧删除的补偿把标签插回。
+        # 标签文档已经没了。先记墓碑，再删掉还留着的索引。索引 id 就是本次请求的 id。
         await _record_delete_tombstone(service, key, fence)
+        if await _delete_index(service, tag_id):
+            return
         raise ValueError(f"标签不存在：{tag_id}")
     if fence is not None and int(before.get("fence_token") or 0) > fence:
         raise StaleLeaseError(f"标签已被更新的租约接管，写入被拒绝：{tag_id}")
@@ -622,16 +624,17 @@ async def _patch_document(
     return True
 
 
-async def _delete_index(service: Any, tag_id: str) -> None:
+async def _delete_index(service: Any, tag_id: str) -> bool:
     es_search = getattr(service, "_es_search", None)
     if es_search is None:
-        return
+        return False
     try:
         await es_search._client.delete(index=es_search.tag_dictionary_index, id=tag_id)
     except NotFoundError:
-        return
+        return False
     except Exception as exc:
         raise RuntimeError(f"标签索引删除失败：{exc}") from exc
+    return True
 
 
 async def _compensate_create_failure(

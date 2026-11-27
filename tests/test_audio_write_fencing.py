@@ -804,6 +804,18 @@ class _FakeTagEs:
         self.calls.append({"index": index, "id": id})
         self.docs.pop(id, None)
 
+    async def delete_by_query(self, *, index: str, query: dict, **_: object) -> dict:
+        self.calls.append({"index": index, "query": query})
+        material_id = (query.get("term") or {}).get("material_id")
+        removed = [
+            doc_id
+            for doc_id, doc in self.docs.items()
+            if doc.get("material_id") == material_id
+        ]
+        for doc_id in removed:
+            self.docs.pop(doc_id, None)
+        return {"deleted": len(removed)}
+
 
 # ---------- 审查补充：删除墓碑与补偿边界 ----------
 
@@ -829,6 +841,114 @@ async def test_retry_delete_of_already_removed_material_blocks_stale_compensatio
     )
 
     assert await materials.find_one({"_id": mid}) is None
+
+
+@pytest.mark.asyncio
+async def test_retry_delete_purges_leftover_locale_and_es_when_material_is_gone() -> None:
+    """原料已删、语言行和 ES 还在时，更新的删除要清掉残留，并挡住旧补偿复活。"""
+    mid = ObjectId()
+    lid = ObjectId()
+    materials = _Collection([])
+    locales = _Collection(
+        [
+            {
+                "_id": lid,
+                "material_id": str(mid),
+                "language": "zh",
+                "audio_name": "雨声",
+                "fence_token": 5,
+            }
+        ]
+    )
+    es = _FakeTagEs()
+    es.docs[str(mid)] = {"vip": 1}
+    es.docs[str(lid)] = {"audio_name": "雨声"}
+    service = _material_service(materials, locales)
+    service._es_search = SimpleNamespace(
+        audio_index="materials",
+        material_locales_index="locales",
+        _client=es,
+    )
+    tombstones = _Collection(
+        [{"_id": str(mid), "fence_token": 5, "deleted_at": None}]
+    )
+    service._db = lambda: {writes._DELETE_TOMBSTONES_COLLECTION: tombstones}
+
+    await writes._delete_one_locked(service, str(mid), mid, fence=6)
+
+    assert await materials.find_one({"_id": mid}) is None
+    assert await locales.find_one({"_id": lid}) is None
+    assert str(mid) not in es.docs
+    assert str(lid) not in es.docs
+    await writes._compensate_delete_failure(
+        service,
+        {"_id": mid, "vip": 1, "status": True},
+        [
+            {
+                "_id": lid,
+                "material_id": str(mid),
+                "language": "zh",
+                "audio_name": "雨声",
+            }
+        ],
+        locales_deleted=True,
+        fence=5,
+    )
+    assert await materials.find_one({"_id": mid}) is None
+    assert await locales.find_one({"_id": lid}) is None
+
+
+@pytest.mark.asyncio
+async def test_retry_delete_purges_locale_es_when_locale_row_is_gone() -> None:
+    """语言行已经删掉、语言索引还在时，重试仍要按原料 id 清掉检索文档。"""
+    mid = ObjectId()
+    lid = ObjectId()
+    materials = _Collection([])
+    locales = _Collection([])
+    es = _FakeTagEs()
+    es.docs[str(mid)] = {"vip": 1}
+    es.docs[str(lid)] = {"audio_name": "雨声", "material_id": str(mid)}
+    service = _material_service(materials, locales)
+    service._es_search = SimpleNamespace(
+        audio_index="materials",
+        material_locales_index="locales",
+        _client=es,
+    )
+    tombstones = _Collection([{"_id": str(mid), "fence_token": 5, "deleted_at": None}])
+    service._db = lambda: {writes._DELETE_TOMBSTONES_COLLECTION: tombstones}
+
+    await writes._delete_one_locked(service, str(mid), mid, fence=6)
+
+    assert str(mid) not in es.docs
+    assert str(lid) not in es.docs
+    assert await materials.find_one({"_id": mid}) is None
+
+
+@pytest.mark.asyncio
+async def test_retry_tag_delete_removes_leftover_es_when_tag_is_gone(monkeypatch) -> None:
+    """标签文档已经删掉、索引还在时，重试要删掉索引，并挡住旧补偿插回。"""
+    tid = ObjectId()
+    tags = _Collection([])
+    es = _FakeTagEs()
+    es.docs[str(tid)] = {"name": "雨声", "version": 1}
+    service = _tag_service(tags)
+    service._es_search = SimpleNamespace(tag_dictionary_index="tags", _client=es)
+    tombstones = _Collection(
+        [{"_id": f"tag:{tid}", "fence_token": 1, "deleted_at": None}]
+    )
+    service._db = lambda: {writes._DELETE_TOMBSTONES_COLLECTION: tombstones}
+    monkeypatch.setattr(tag_writes, "refresh_locales_for_content_codes", AsyncMock())
+
+    await tag_writes._delete_one_locked(service, str(tid), tid, fence=2)
+
+    assert str(tid) not in es.docs
+    await tag_writes._compensate_delete_failure(
+        service,
+        str(tid),
+        _content_tag(tid, name="雨声"),
+        fence=1,
+    )
+    assert await tags.find_one({"_id": tid}) is None
 
 
 @pytest.mark.asyncio

@@ -533,8 +533,31 @@ async def _delete_one_locked(
     locales = _locale_collection(service)
     before_material = await service._materials().find_one({"_id": oid})
     if before_material is None:
-        # 已被前序请求删除：仍记下本次删除的墓碑，阻止更旧删除的补偿把它复活。
+        # 原料已经没了。先记墓碑，挡住更旧的补偿把它插回去。
+        # 索引先于语言行删除：删索引失败时语言行还在，下一次重试仍能找到文档。
         await _record_delete_tombstone(service, material_id, fence)
+        rows = await locales.find({"material_id": material_id}).to_list(length=None)
+        owned = [
+            row
+            for row in rows
+            if fence is None or int(row.get("fence_token") or 0) <= fence
+        ]
+        removed_index = await _delete_index(service, material_id)
+        for row in owned:
+            locale_id = str(row.get("_id") or "")
+            if locale_id:
+                removed_index = (
+                    await _delete_locale_index(service, locale_id) or removed_index
+                )
+        removed_index = (
+            await _delete_locale_indexes_for_material(service, material_id) > 0
+            or removed_index
+        )
+        if owned:
+            await locales.delete_many({"material_id": material_id, **fence_filter(fence)})
+            return
+        if removed_index:
+            return
         raise ValueError(f"音频原料不存在：{material_id}")
     if fence is not None and int(before_material.get("fence_token") or 0) > fence:
         raise _write_rejected(fence, material_id)
@@ -1609,28 +1632,50 @@ async def _encode_vector(
         raise RuntimeError(f"检索向量重算失败：{exc}") from exc
 
 
-async def _delete_index(service: Any, material_id: str) -> None:
+async def _delete_index(service: Any, material_id: str) -> bool:
     es_search = getattr(service, "_es_search", None)
     if es_search is None:
-        return
+        return False
     try:
         await es_search._client.delete(index=es_search.audio_index, id=material_id)
     except NotFoundError:
-        return
+        return False
     except Exception as exc:
         raise RuntimeError(f"检索索引删除失败：{exc}") from exc
+    return True
 
 
-async def _delete_locale_index(service: Any, locale_id: str) -> None:
+async def _delete_locale_indexes_for_material(service: Any, material_id: str) -> int:
+    """按原料 id 删除语言索引。语言行已经不在 Mongo 里时，仍能清掉检索文档。"""
+    es_search = getattr(service, "_es_search", None)
+    if es_search is None or not getattr(es_search, "material_locales_index", ""):
+        return 0
+    deleter = getattr(es_search._client, "delete_by_query", None)
+    if not callable(deleter):
+        return 0
+    try:
+        response = await deleter(
+            index=es_search.material_locales_index,
+            query={"term": {"material_id": material_id}},
+        )
+    except Exception as exc:
+        raise RuntimeError(f"语言索引删除失败：{exc}") from exc
+    if isinstance(response, dict):
+        return int(response.get("deleted") or 0)
+    return 0
+
+
+async def _delete_locale_index(service: Any, locale_id: str) -> bool:
     es_search = getattr(service, "_es_search", None)
     if es_search is None or not locale_id or not getattr(es_search, "material_locales_index", ""):
-        return
+        return False
     try:
         await es_search._client.delete(index=es_search.material_locales_index, id=locale_id)
     except NotFoundError:
-        return
+        return False
     except Exception as exc:
         raise RuntimeError(f"语言索引删除失败：{exc}") from exc
+    return True
 
 
 async def _finish(service: Any, results: list[dict[str, Any]], *, action: str) -> None:
